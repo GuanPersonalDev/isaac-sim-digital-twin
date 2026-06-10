@@ -12,8 +12,8 @@
 ```
 extension/
   ├── omniverse_api/          ← 抽象介面層，升版時不動
-  ├── isaac_sim_impl_5_1/     ← 當前實作層（掃描目標）
-  └── isaac_sim_impl_6_0/     ← 升版後新增的實作層（重寫目標）
+  ├── isaac_sim_impl_6_0/     ← 當前實作層（掃描目標）
+  └── isaac_sim_impl_{next}/  ← 升版後新增的實作層（重寫目標）
 ```
 
 **`core/` 和 `omniverse_api/` 不在本 sub-agent 的操作範圍內。**
@@ -28,7 +28,7 @@ extension/
 
 ### 操作步驟
 
-1. 確認當前實作層資料夾路徑（例如 `extension/isaac_sim_impl_5_1/`）
+1. 確認當前實作層資料夾路徑（例如 `extension/isaac_sim_impl_6_0/`）
 2. 掃描資料夾內所有 `.py` 檔案
 3. 收集以下 import 與呼叫：
    - `omni.*`
@@ -38,7 +38,7 @@ extension/
 
 ```
 ## API 使用清單
-實作層路徑：extension/isaac_sim_impl_5_1/
+實作層路徑：extension/isaac_sim_impl_6_0/
 掃描時間：YYYY-MM-DD
 
 ### articulation_api_impl.py
@@ -84,7 +84,7 @@ Isaac Sim 發布新版本，決定升級時。
 
 ```
 ## 升版比對結果
-從 Isaac Sim 5.1 → 6.0
+從 Isaac Sim 6.0 → {next_version}
 
 | 舊 API | 狀態 | 新 API | 影響檔案 |
 |---|---|---|---|
@@ -119,7 +119,7 @@ Isaac Sim 發布新版本，決定升級時。
 
 - `omniverse_api/` 抽象介面層原則上升版時不動；若確實需要調整，需明確說明理由
 - `core/` 完全不在升版操作範圍內，任何對 `core/` 的修改都不是升版造成的
-- 舊版實作層（例如 `isaac_sim_impl_5_1/`）保留不刪除，作為對照參考
+- 舊版實作層（例如 `isaac_sim_impl_6_0/`）保留不刪除，作為對照參考
 - 升版完成後，更新專案的 DI 注入點，將舊版 impl 替換為新版 impl
 
 ---
@@ -127,10 +127,10 @@ Isaac Sim 發布新版本，決定升級時。
 ## 快速指令參考
 
 掃描當前實作層：
-> 「請掃描 extension/isaac_sim_impl_5_1/ 資料夾，列出所有使用到的 Omniverse API」
+> 「請掃描 extension/isaac_sim_impl_6_0/ 資料夾，列出所有使用到的 Omniverse API」
 
 準備升版：
-> 「Isaac Sim 6.0 發布了，請掃描 extension/isaac_sim_impl_5_1/ 並比對 6.0 Migration Guide，列出需要處理的 API 變更」
+> 「Isaac Sim 6.0 發布了，請掃描 extension/isaac_sim_impl_6_0/ 並比對 6.0 Migration Guide，列出需要處理的 API 變更」
 
 逐檔重寫：
 > 「請根據比對結果，重寫 extension/isaac_sim_impl_6_0/articulation_api_impl.py」

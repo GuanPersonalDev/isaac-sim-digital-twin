@@ -4,8 +4,8 @@
 產線仿真驗證環境——Isaac Sim + UR5 Pick & Place，預留 Physical AI 訓練接口。
 
 ## 版本資訊
-- Isaac Sim：5.1.0（Workstation 安裝）
-- Python：3.11
+- Isaac Sim：6.0.0（Workstation 安裝）
+- Python：3.12
 - 架構規範：詳見 `architecture-spec.md`
 
 ---
@@ -15,8 +15,8 @@
 
 | # | 任務 | 預估 |
 |---|---|---|
-| 0-1 | 確認硬體需求、查閱 Isaac Sim 5.1.0 系統需求文件 | 0.5h |
-| 0-2 | 下載並安裝 Isaac Sim 5.1.0 Workstation 版本 | 1h |
+| 0-1 | 確認硬體需求、查閱 Isaac Sim 6.0.0 系統需求文件 | 0.5h |
+| 0-2 | 下載並安裝 Isaac Sim 6.0.0 Workstation 版本 | 1h |
 | 0-3 | 啟動 Isaac Sim，執行 Compatibility Checker 確認環境正常 | 0.5h |
 | 0-4 | 跑官方 Hello World 範例，確認 Python API 可執行 | 0.5h |
 
@@ -40,7 +40,7 @@
 
 | # | 任務 | 預估 |
 |---|---|---|
-| 2-1 | 建立 `core/` + `extension/` 目錄骨架（含 `omniverse_api/`、`isaac_sim_impl_5_1/`、`ui/`） | 0.5h |
+| 2-1 | 建立 `core/` + `extension/` 目錄骨架（含 `omniverse_api/`、`isaac_sim_impl_6_0/`、`ui/`） | 0.5h |
 | 2-2 | 建立 pytest 執行環境，確認測試可在 WSL2 跑通 | 0.5h |
 | 2-3 | 建立資料模型：`MachineState`、`Observation`、`Action` | 0.5h |
 | 2-4 | 針對資料模型撰寫 Unit Test | 0.5h |
@@ -76,8 +76,8 @@
 |---|---|---|
 | 4-1 | 設計 `ScriptController` 狀態機（`IDLE` / `MOVING_TO_PICK` / `PICKING` / `MOVING_TO_PLACE` / `PLACING`） | 0.5h |
 | 4-2 | 撰寫狀態機 Unit Test（Mock `MotionPlannerAPI` 與 `ArticulationAPI`） | 1h |
-| 4-3 | 實作 `MotionPlannerAPIImpl`（`isaac_sim_impl_5_1/`，包裝 RMPflow） | 1h |
-| 4-4 | 實作 `ArticulationAPIImpl`（`isaac_sim_impl_5_1/`，包裝 Articulation） | 0.5h |
+| 4-3 | 實作 `MotionPlannerAPIImpl`（`isaac_sim_impl_6_0/`，包裝 RMPflow） | 1h |
+| 4-4 | 實作 `ArticulationAPIImpl`（`isaac_sim_impl_6_0/`，包裝 Articulation） | 0.5h |
 | 4-5 | 實作 `ScriptController`：`IDLE` → `MOVING_TO_PICK`（呼叫 `MotionPlannerAPI`） | 1h |
 | 4-6 | 實作 `ScriptController`：`PICKING`（呼叫 `ArticulationAPI` 控制夾爪閉合） | 0.5h |
 | 4-7 | 實作 `ScriptController`：`MOVING_TO_PLACE` | 0.5h |
@@ -125,7 +125,7 @@
 | 7-1 | Phase 3 全流程跑通確認（場景啟動 → Pick & Place → MQTT → HUD） | 1h |
 | 7-2 | Debug Menu 所有按鈕確認（視覺功能手動驗證） | 0.5h |
 | 7-3 | 穩定性測試（長時間運行，確認無記憶體洩漏或當機） | 1h |
-| 7-4 | API 掃描：執行 `api-migration-agent` 掃描 `isaac_sim_impl_5_1/`，產出 API 使用清單 | 0.5h |
+| 7-4 | API 掃描：執行 `api-migration-agent` 掃描 `isaac_sim_impl_6_0/`，產出 API 使用清單 | 0.5h |
 | 7-5 | 補坑收尾 | 1h |
 
 ---
@@ -169,7 +169,7 @@
 
 | 文件 | 用途 |
 |---|---|
-| `architecture-spec.md` | 專案架構規範（`core/` / `omniverse_api/` / `isaac_sim_impl_5_1/` 分層原則） |
+| `architecture-spec.md` | 專案架構規範（`core/` / `omniverse_api/` / `isaac_sim_impl_6_0/` 分層原則） |
 | `unit-test-rules.md` | Unit Test 判斷規則與 TDD 流程 |
 | `code-review-checklist.md` | Code Review 自我審查清單 |
 | `api-migration-agent.md` | Isaac Sim 版本升級輔助 sub-agent 說明 |

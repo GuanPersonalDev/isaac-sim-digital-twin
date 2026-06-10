@@ -12,9 +12,9 @@ Phase 3 Isaac Sim / Omniverse Kit Extension 專案的架構分層原則。
 
 - `core/` 描述「要做什麼」
 - `extension/omniverse_api/` 描述「需要平台提供什麼能力（抽象）」
-- `extension/isaac_sim_impl_5_1/` 描述「Isaac Sim 5.1 怎麼實現這些能力（實作）」
+- `extension/isaac_sim_impl_6_0/` 描述「Isaac Sim 6.0 怎麼實現這些能力（實作）」
 
-版本升級時，只需要新增 `isaac_sim_impl_6_0/` 並重寫實作層，`core/` 與 `omniverse_api/` 完全不動。
+版本升級時，只需要新增 `isaac_sim_impl_{新版本}/` 並重寫實作層，`core/` 與 `omniverse_api/` 完全不動。
 
 ---
 
@@ -45,7 +45,7 @@ project/
       │   ├── physics_api.py             ← 對應 Physics 查詢概念
       │   ├── rigid_body_api.py          ← 對應 RigidBody 概念
       │   └── ui_api.py                  ← 對應 omni.ui 概念
-      ├── isaac_sim_impl_5_1/            ← Isaac Sim 5.1 實作層（升版時整個替換）
+      ├── isaac_sim_impl_6_0/            ← Isaac Sim 6.0 實作層（升版時整個替換）
       │   ├── stage_api_impl.py
       │   ├── articulation_api_impl.py
       │   ├── physics_api_impl.py
@@ -128,10 +128,10 @@ class ArticulationAPI(ABC):
 
 ---
 
-## extension/isaac_sim_impl_5_1/ 層規範
+## extension/isaac_sim_impl_6_0/ 層規範
 
 ### 定位
-Isaac Sim 5.1 的具體實作，實作 `omniverse_api/` 定義的所有抽象介面。
+Isaac Sim 6.0 的具體實作，實作 `omniverse_api/` 定義的所有抽象介面。
 資料夾名稱明確標示版本號，升版時新增 `isaac_sim_impl_6_0/` 資料夾，不刪除舊版。
 
 ### 規範
@@ -141,12 +141,12 @@ Isaac Sim 5.1 的具體實作，實作 `omniverse_api/` 定義的所有抽象介
 
 ### 範例
 ```python
-# extension/isaac_sim_impl_5_1/articulation_api_impl.py
+# extension/isaac_sim_impl_6_0/articulation_api_impl.py
 from omni.isaac.core.articulations import Articulation
 from ..omniverse_api.articulation_api import ArticulationAPI
 
 class ArticulationAPIImpl(ArticulationAPI):
-    """Isaac Sim 5.1 Articulation 實作"""
+    """Isaac Sim 6.0 Articulation 實作"""
 
     def __init__(self, prim_path: str):
         self._articulation = Articulation(prim_path=prim_path)
@@ -158,7 +158,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         return self._articulation.get_joint_positions().tolist()
 
     def set_gripper_state(self, open: bool) -> None:
-        # Isaac Sim 5.1 夾爪控制實作
+        # Isaac Sim 6.0 夾爪控制實作
         ...
 ```
 
@@ -240,12 +240,12 @@ class HudPanel:
 | 情境 | 放在哪裡 |
 |---|---|
 | 判斷機台狀態是 WARNING 還是 ERROR | `core/` |
-| 呼叫 Isaac Sim API 移動關節 | `isaac_sim_impl_5_1/` |
+| 呼叫 Isaac Sim API 移動關節 | `isaac_sim_impl_6_0/` |
 | XZ 座標轉換為 2D 像素座標 | `core/` |
 | 定義「需要能移動關節」的介面 | `omniverse_api/` |
 | 在 omni.ui 上渲染狀態顏色 | `ui/`（透過 `ui_api` 抽象） |
 | MQTT 訊息 JSON 解析 | `core/` |
 | MQTT Client 連線建立 | `extension/`（非 impl 層） |
 | Pick & Place 狀態機邏輯 | `core/` |
-| 讀取 USD Stage 的 BBox 數值 | `isaac_sim_impl_5_1/`（結果傳入 `core/`） |
-| omni.ui Label 建立 | `isaac_sim_impl_5_1/ui_api_impl.py` |
+| 讀取 USD Stage 的 BBox 數值 | `isaac_sim_impl_6_0/`（結果傳入 `core/`） |
+| omni.ui Label 建立 | `isaac_sim_impl_6_0/ui_api_impl.py` |
