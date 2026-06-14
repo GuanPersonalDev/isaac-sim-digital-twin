@@ -132,7 +132,7 @@ class ArticulationAPI(ABC):
 
 ### 定位
 Isaac Sim 6.0 的具體實作，實作 `omniverse_api/` 定義的所有抽象介面。
-資料夾名稱明確標示版本號，升版時新增 `isaac_sim_impl_6_0/` 資料夾，不刪除舊版。
+資料夾名稱明確標示版本號，升版時新增 `isaac_sim_impl_{新版本}/` 資料夾，不刪除舊版。
 
 ### 規範
 - 每個實作檔對應一個抽象介面檔

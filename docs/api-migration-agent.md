@@ -12,8 +12,7 @@
 ```
 extension/
   ├── omniverse_api/          ← 抽象介面層，升版時不動
-  ├── isaac_sim_impl_6_0/     ← 當前實作層（掃描目標）
-  └── isaac_sim_impl_{next}/  ← 升版後新增的實作層（重寫目標）
+  └── isaac_sim_impl_6_0/     ← 當前實作層（掃描目標）
 ```
 
 **`core/` 和 `omniverse_api/` 不在本 sub-agent 的操作範圍內。**
@@ -28,7 +27,7 @@ extension/
 
 ### 操作步驟
 
-1. 確認當前實作層資料夾路徑（例如 `extension/isaac_sim_impl_6_0/`）
+1. 確認當前實作層資料夾路徑（`extension/isaac_sim_impl_6_0/`）
 2. 掃描資料夾內所有 `.py` 檔案
 3. 收集以下 import 與呼叫：
    - `omni.*`
@@ -69,7 +68,7 @@ Isaac Sim 發布新版本，決定升級時。
 ### 操作步驟
 
 **Step 1：取得升版資訊**
-- 接收新版本號（例如 `6.0`）
+- 接收新版本號（例如 `7.0`）
 - 查詢官方 Migration Guide：
   `https://docs.isaacsim.omniverse.nvidia.com/{版本}/migration_guides/`
 - 查詢官方 Release Notes：
@@ -84,7 +83,7 @@ Isaac Sim 發布新版本，決定升級時。
 
 ```
 ## 升版比對結果
-從 Isaac Sim 6.0 → {next_version}
+從 Isaac Sim 6.0 → 7.0
 
 | 舊 API | 狀態 | 新 API | 影響檔案 |
 |---|---|---|---|
@@ -101,7 +100,7 @@ Isaac Sim 發布新版本，決定升級時。
 - **需確認**：Migration Guide 未明確說明，需要查閱文件或測試
 
 **Step 4：建立新實作層資料夾**
-- 建立 `extension/isaac_sim_impl_{新版本}/`（例如 `isaac_sim_impl_6_0/`）
+- 建立 `extension/isaac_sim_impl_{新版本}/`（例如 `isaac_sim_impl_7_0/`）
 - 複製舊實作層所有檔案作為基礎
 
 **Step 5：逐檔重寫**
@@ -130,7 +129,7 @@ Isaac Sim 發布新版本，決定升級時。
 > 「請掃描 extension/isaac_sim_impl_6_0/ 資料夾，列出所有使用到的 Omniverse API」
 
 準備升版：
-> 「Isaac Sim 6.0 發布了，請掃描 extension/isaac_sim_impl_6_0/ 並比對 6.0 Migration Guide，列出需要處理的 API 變更」
+> 「Isaac Sim 7.0 發布了，請掃描 extension/isaac_sim_impl_6_0/ 並比對 7.0 Migration Guide，列出需要處理的 API 變更」
 
 逐檔重寫：
-> 「請根據比對結果，重寫 extension/isaac_sim_impl_6_0/articulation_api_impl.py」
+> 「請根據比對結果，重寫 extension/isaac_sim_impl_7_0/articulation_api_impl.py」
