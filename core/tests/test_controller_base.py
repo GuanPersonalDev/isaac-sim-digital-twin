@@ -1,8 +1,23 @@
+import importlib.util
+from pathlib import Path
+
 import pytest
 
-from core.controllers.controller_base import ControllerBase
 from core.models.action import Action
 from core.models.observation import Observation
+
+
+_CONTROLLER_BASE_PATH = (
+    Path(__file__).resolve().parents[1] / "controllers" / "controller_base.py"
+)
+_SPEC = importlib.util.spec_from_file_location(
+    "controller_base_for_test",
+    _CONTROLLER_BASE_PATH,
+)
+_CONTROLLER_BASE_MODULE = importlib.util.module_from_spec(_SPEC)
+assert _SPEC.loader is not None
+_SPEC.loader.exec_module(_CONTROLLER_BASE_MODULE)
+ControllerBase = _CONTROLLER_BASE_MODULE.ControllerBase
 
 
 class IncompleteController(ControllerBase):
@@ -15,8 +30,9 @@ class ConcreteController(ControllerBase):
 
     def get_action(self, observation: Observation) -> Action:
         return Action(
-            target_end_effector_position=observation.target_position,
-            gripper_open=observation.gripper_open,
+            cue_speed=observation.shot_params[0],
+            shot_angle=observation.shot_params[1],
+            position_offset=[observation.shot_params[2], 0.0, 0.0],
         )
 
     def reset(self) -> None:
@@ -26,10 +42,13 @@ class ConcreteController(ControllerBase):
 @pytest.fixture
 def observation() -> Observation:
     return Observation(
-        joint_positions=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-        end_effector_position=[0.4, 0.0, 0.2],
-        gripper_open=True,
-        target_position=[0.6, 0.1, 0.2],
+        ball_positions=[
+            [0.0, 0.0, 0.0],
+            [0.1, 0.2, 0.0],
+        ],
+        cue_ball_position=[-0.3, 0.0, 0.0],
+        joint_angles=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
+        shot_params=[2.5, 42.0, 0.01],
     )
 
 
@@ -58,8 +77,9 @@ class TestControllerBase:
 
         # Assert
         assert isinstance(action, Action)
-        assert action.target_end_effector_position == observation.target_position
-        assert action.gripper_open is observation.gripper_open
+        assert action.cue_speed == observation.shot_params[0]
+        assert action.shot_angle == observation.shot_params[1]
+        assert action.position_offset == [observation.shot_params[2], 0.0, 0.0]
 
     def test_reset_can_be_called(self):
         # Arrange

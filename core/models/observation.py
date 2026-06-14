@@ -7,7 +7,7 @@ class Observation:
     控制器的輸入
     """
 
-    joint_positions: list[float]
-    end_effector_position: list[float]
-    gripper_open: bool
-    target_position: list[float]
+    ball_positions: list[list[float]]
+    cue_ball_position: list[float]
+    joint_angles: list[float]
+    shot_params: list[float]
