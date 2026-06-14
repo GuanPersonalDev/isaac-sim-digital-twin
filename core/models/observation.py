@@ -4,7 +4,7 @@ from dataclasses import dataclass
 @dataclass
 class Observation:
     """
-    input for controller
+    控制器的輸入
     """
 
     joint_positions: list[float]

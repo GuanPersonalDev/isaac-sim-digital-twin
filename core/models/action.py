@@ -4,7 +4,7 @@ from dataclasses import dataclass
 @dataclass
 class Action:
     """
-    output from controller
+    控制器的輸出
     """
 
     target_end_effector_position: list[float]
