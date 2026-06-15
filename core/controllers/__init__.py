@@ -1,1 +1,1 @@
-from controllers.controller_base import ControllerBase
+from .controller_base import ControllerBase

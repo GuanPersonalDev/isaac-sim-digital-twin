@@ -1,4 +1,4 @@
-from core.models.observation import Observation
-from core.models.action import Action
-from core.models.billiard_state import BilliardState, BilliardStatus
-from core.models.shot_result import ShotResult
+from .observation import Observation
+from .action import Action
+from .billiard_state import BilliardState, BilliardStatus
+from .shot_result import ShotResult
