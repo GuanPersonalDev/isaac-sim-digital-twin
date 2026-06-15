@@ -12,7 +12,7 @@ BREAK_SHOT_POSITIONS: dict = {
     3: (_COL, _FOOT + _ROW),
     4: (-_D, _FOOT + 2 * _ROW),
     9: (0.0, _FOOT + 2 * _ROW),
-    5: (-_D, _FOOT + 2 * _ROW),
+    5: (_D, _FOOT + 2 * _ROW),
     6: (-_COL, _FOOT + 3 * _ROW),
     7: (_COL, _FOOT + 3 * _ROW),
     8: (0.0, _FOOT + 4 * _ROW),
@@ -21,4 +21,4 @@ BREAK_SHOT_POSITIONS: dict = {
 
 class BreakShotPositionProvider(BallPositionProvider):
     def get_positions(self) -> dict:
-        return BREAK_SHOT_POSITIONS
+        return dict(BREAK_SHOT_POSITIONS)
