@@ -1,1 +1,1 @@
-from articulation_api import ArticulationAPI
+from .articulation_api import ArticulationAPI
