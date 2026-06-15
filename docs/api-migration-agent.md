@@ -12,7 +12,8 @@
 ```
 extension/
   ├── omniverse_api/          ← 抽象介面層，升版時不動
-  └── isaac_sim_impl_6_0/     ← 當前實作層（掃描目標）
+  ├── isaac_sim_impl_6_0/     ← 當前實作層（掃描目標）
+  └── isaac_sim_impl_{新版本}/ ← 升版後新增的實作層（重寫目標）
 ```
 
 **`core/` 和 `omniverse_api/` 不在本 sub-agent 的操作範圍內。**
@@ -27,7 +28,7 @@ extension/
 
 ### 操作步驟
 
-1. 確認當前實作層資料夾路徑（`extension/isaac_sim_impl_6_0/`）
+1. 確認當前實作層資料夾路徑（例如 `extension/isaac_sim_impl_6_0/`）
 2. 掃描資料夾內所有 `.py` 檔案
 3. 收集以下 import 與呼叫：
    - `omni.*`

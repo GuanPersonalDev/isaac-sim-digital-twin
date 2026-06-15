@@ -14,7 +14,16 @@ Phase 3 Isaac Sim / Omniverse Kit Extension 專案的架構分層原則。
 - `extension/omniverse_api/` 描述「需要平台提供什麼能力（抽象）」
 - `extension/isaac_sim_impl_6_0/` 描述「Isaac Sim 6.0 怎麼實現這些能力（實作）」
 
-版本升級時，只需要新增 `isaac_sim_impl_{新版本}/` 並重寫實作層，`core/` 與 `omniverse_api/` 完全不動。
+版本升級時，只需要新增對應版本的 impl 資料夾並重寫實作層，`core/` 與 `omniverse_api/` 完全不動。
+
+---
+
+## 版本資訊
+
+- **Isaac Sim 版本：6.0.0.1**
+- **Python：3.12**
+- **安裝方式：** `pip install isaacsim[all,extscache]==6.0.0.1 --extra-index-url https://pypi.nvidia.com`
+- **Core API：** Isaac Sim 6.0 Warp-based Core Experimental API（PyTorch-based Core API 已廢棄）
 
 ---
 
@@ -27,16 +36,20 @@ project/
   │   │   ├── controller_base.py         ← 控制策略抽象介面
   │   │   └── script_controller.py       ← 腳本控制實作（Phase 3）
   │   ├── models/
-  │   │   ├── machine_state.py           ← 資料模型、狀態定義
-  │   │   ├── observation.py             ← Observation 資料格式（預留 RL 接口）
-  │   │   └── action.py                  ← Action 資料格式（預留 RL 接口）
+  │   │   ├── billiard_state.py          ← 撞球場景狀態資料模型
+  │   │   ├── observation.py             ← Observation 資料格式
+  │   │   ├── action.py                  ← Action 資料格式
+  │   │   └── shot_result.py             ← 擊球結果資料模型
   │   ├── services/
-  │   │   ├── coordinate_service.py      ← 座標轉換、計算邏輯
+  │   │   ├── ball_position_provider.py  ← 取得球位置的抽象介面
+  │   │   ├── break_shot_position_provider.py ← 衝球固定位置實作
+  │   │   ├── reward_service.py          ← Reward Function 計算邏輯
   │   │   └── mqtt_service.py            ← MQTT 資料處理邏輯
   │   └── tests/
   │       ├── test_controllers.py
-  │       ├── test_coordinate_service.py
-  │       └── test_mqtt_service.py
+  │       ├── test_reward_service.py
+  │       ├── test_ball_position_provider.py
+  │       └── test_models.py
   │
   └── extension/                         ← 平台橋接層
       ├── omniverse_api/                 ← 抽象介面層（版本無關）
@@ -45,12 +58,13 @@ project/
       │   ├── physics_api.py             ← 對應 Physics 查詢概念
       │   ├── rigid_body_api.py          ← 對應 RigidBody 概念
       │   └── ui_api.py                  ← 對應 omni.ui 概念
-      ├── isaac_sim_impl_6_0/            ← Isaac Sim 6.0 實作層（升版時整個替換）
+      ├── isaac_sim_impl_6_0/            ← Isaac Sim 6.0 實作層（升版時新增資料夾）
       │   ├── stage_api_impl.py
       │   ├── articulation_api_impl.py
       │   ├── physics_api_impl.py
       │   ├── rigid_body_api_impl.py
-      │   └── ui_api_impl.py
+      │   ├── ui_api_impl.py
+      │   └── live_position_provider.py  ← 即時查詢球位置（依賴 RigidBodyAPI）
       └── ui/                            ← UI 元件（透過 ui_api 抽象操作）
           ├── hud_panel.py               ← omni.ui HUD 元件
           └── debug_menu.py              ← 視覺功能手動驗證選單
@@ -63,9 +77,9 @@ project/
 ### 可以放什麼
 - 商業邏輯與決策邏輯
 - 狀態機定義與狀態切換邏輯
-- 純計算函式（座標轉換、數值處理、格式轉換）
+- 純計算函式（座標轉換、數值處理、Reward 計算）
 - 資料模型與資料驗證
-- 抽象介面定義（`ControllerBase` 等）
+- 抽象介面定義（`ControllerBase`、`BallPositionProvider` 等）
 - MQTT 訊息的解析與格式化邏輯（不含實際連線）
 
 ### 不可以放什麼
@@ -83,94 +97,108 @@ project/
 
 ## extension/omniverse_api/ 層規範
 
-### 定位
 以 Isaac Sim 原生概念為粒度定義抽象介面，命名直接對應官方 API 的概念分層。
-這一層描述「需要平台提供什麼能力」，不包含任何 Isaac Sim 的具體 import。
 
-### 抽象介面對應表
-
-| 檔案 | 對應 Isaac Sim 概念 | 主要職責 |
+| 檔案 | 對應 Isaac Sim 6.0 概念 | 主要職責 |
 |---|---|---|
-| `stage_api.py` | Stage / USD Scene | 場景載入、Prim 查詢、Stage 存取 |
-| `articulation_api.py` | Articulation | 關節控制、手臂移動、夾爪操作 |
-| `physics_api.py` | Physics Scene | 物理查詢、碰撞偵測、接觸判定 |
-| `rigid_body_api.py` | RigidBody | 物件位置、速度、姿態查詢 |
+| `stage_api.py` | Stage / USD Scene | 場景載入、Prim 查詢 |
+| `articulation_api.py` | Articulation | 關節控制、手臂移動 |
+| `physics_api.py` | Physics Scene | 碰撞偵測、接觸事件 |
+| `rigid_body_api.py` | RigidBody | 球的位置、速度查詢 |
 | `ui_api.py` | omni.ui | UI 元件建立、事件綁定 |
-
-### 範例
-```python
-# extension/omniverse_api/articulation_api.py
-from abc import ABC, abstractmethod
-
-class ArticulationAPI(ABC):
-    """關節控制抽象介面，對應 Isaac Sim Articulation 概念"""
-
-    @abstractmethod
-    def set_joint_positions(self, positions: list[float]) -> None:
-        """設定所有關節角度"""
-        pass
-
-    @abstractmethod
-    def get_joint_positions(self) -> list[float]:
-        """取得當前所有關節角度"""
-        pass
-
-    @abstractmethod
-    def set_gripper_state(self, open: bool) -> None:
-        """控制夾爪開關"""
-        pass
-```
-
-### 不可以放什麼
-- 任何 `omni.*`、`pxr.*`、`isaacsim.*` import
-- 具體的 Isaac Sim API 呼叫
-- 商業邏輯
 
 ---
 
 ## extension/isaac_sim_impl_6_0/ 層規範
 
-### 定位
-Isaac Sim 6.0 的具體實作，實作 `omniverse_api/` 定義的所有抽象介面。
-資料夾名稱明確標示版本號，升版時新增 `isaac_sim_impl_{新版本}/` 資料夾，不刪除舊版。
+Isaac Sim 6.0 的具體實作，使用 Warp-based Core Experimental API。
 
-### 規範
-- 每個實作檔對應一個抽象介面檔
+- 資料夾名稱明確標示版本號
 - 只允許在此層出現 `omni.*`、`pxr.*`、`isaacsim.*` import
 - 實作邏輯盡量薄，複雜邏輯應移到 `core/`
-
-### 範例
-```python
-# extension/isaac_sim_impl_6_0/articulation_api_impl.py
-from omni.isaac.core.articulations import Articulation
-from ..omniverse_api.articulation_api import ArticulationAPI
-
-class ArticulationAPIImpl(ArticulationAPI):
-    """Isaac Sim 6.0 Articulation 實作"""
-
-    def __init__(self, prim_path: str):
-        self._articulation = Articulation(prim_path=prim_path)
-
-    def set_joint_positions(self, positions: list[float]) -> None:
-        self._articulation.set_joint_positions(positions)
-
-    def get_joint_positions(self) -> list[float]:
-        return self._articulation.get_joint_positions().tolist()
-
-    def set_gripper_state(self, open: bool) -> None:
-        # Isaac Sim 6.0 夾爪控制實作
-        ...
-```
-
-### API 升版掃描
-升版輔助 sub-agent 以此資料夾為掃描目標。
-詳見 `api-migration-agent.md`。
+- 升版時新增 `isaac_sim_impl_6_1/` 等資料夾，不刪除舊版
 
 ---
 
-## 抽象介面設計
+## 撞球桌台座標系規範
 
-### Controller 抽象介面（Phase 3 → Phase 4 延伸）
+所有球的位置均以**桌台相對座標**表示，與 Isaac Sim 世界座標無關。
+
+### 定義
+
+| 項目 | 定義 |
+|---|---|
+| 原點 | 桌面幾何中心 |
+| +X 方向 | 向右（站在 head end 朝 foot end 的右手側） |
+| +Y 方向 | 朝 foot end（rack 側，開球菱形所在方向） |
+| +Z 方向 | 向上（右手定則，Z-up） |
+
+此座標系為標準右手座標系 Z-up，從 +Z 俯視與 Isaac Sim 預設慣例完全對齊。
+
+### 固定邊界值
+
+| 項目 | 值 |
+|---|---|
+| 桌面 Y 範圍 | -1.27 ~ +1.27 m |
+| 桌面 X 範圍 | -0.635 ~ +0.635 m |
+| Foot spot（1-ball 位置） | (0, +0.635) |
+| Head string（Kitchen 邊界） | Y = -0.635 |
+| Kitchen 範圍 | Y ∈ (-1.27, -0.635) |
+
+### 注意事項
+
+`LivePositionProvider`（Task 7-2）從 Isaac Sim 取得的是世界座標，必須搭配桌台 prim 的 transform 才能轉換為桌台相對座標。轉換方式（建構子注入 vs 即時查詢）於 Task 7-2 設計時決定。
+
+---
+
+## BallPositionProvider 抽象設計
+
+取得球位置的資料來源可抽換，上層邏輯完全不知道資料來自固定值還是即時查詢。
+
+```python
+# core/services/ball_position_provider.py
+from abc import ABC, abstractmethod
+
+class BallPositionProvider(ABC):
+    """取得各球位置的抽象介面"""
+
+    @abstractmethod
+    def get_positions(self) -> dict:
+        """
+        回傳各球的 XY 位置
+        格式：{
+            'cue': (x, y),
+            1: (x, y), ..., 9: (x, y)
+        }
+        """
+        pass
+```
+
+```python
+# core/services/break_shot_position_provider.py
+class BreakShotPositionProvider(BallPositionProvider):
+    """衝球用：直接回傳 9-ball 標準開球固定位置（菱形排列）"""
+
+    def get_positions(self) -> dict:
+        return BREAK_SHOT_POSITIONS  # 固定值，不查詢 Isaac Sim
+```
+
+```python
+# extension/isaac_sim_impl_6_0/live_position_provider.py
+class LivePositionProvider(BallPositionProvider):
+    """即時查詢：從 Isaac Sim RigidBodyAPI 取得當前位置"""
+
+    def __init__(self, rigid_body_api: RigidBodyAPI):
+        self._rigid_body_api = rigid_body_api
+
+    def get_positions(self) -> dict:
+        # 從仿真環境即時查詢
+        ...
+```
+
+---
+
+## Controller 抽象介面（Phase 3 → Phase 4 延伸）
 
 ```python
 # core/controllers/controller_base.py
@@ -190,38 +218,7 @@ class ControllerBase(ABC):
         pass
 ```
 
-```python
-# core/controllers/script_controller.py（Phase 3 實作）
-class ScriptController(ControllerBase):
-    def get_action(self, observation: dict) -> dict:
-        # 腳本控制邏輯
-        ...
-
-    def reset(self) -> None:
-        ...
-```
-
-```python
-# core/controllers/model_controller.py（Phase 4 預留）
-class ModelController(ControllerBase):
-    def get_action(self, observation: dict) -> dict:
-        # RL 模型推論
-        ...
-```
-
-### UI 資料注入介面
-
-```python
-# extension/ui/hud_panel.py
-class HudPanel:
-    def __init__(self, data_provider):
-        # data_provider 是抽象資料來源，開發期間注入假資料
-        self._data_provider = data_provider
-
-    def refresh(self):
-        data = self._data_provider.get_machine_states()
-        # 更新 UI 顯示
-```
+Phase 3 實作 `ScriptController`，Phase 4 新增 `ModelController`（載入 RL 訓練模型），高層邏輯完全不動。
 
 ---
 
@@ -229,9 +226,10 @@ class HudPanel:
 
 | 接口 | 位置 | Phase 3 狀態 | Phase 4 延伸 |
 |---|---|---|---|
-| Observation 收集 | `core/models/observation.py` | 資料格式定義完成 | 接上訓練資料 pipeline |
+| Observation 收集 | `core/models/observation.py` | 格式定義完成 | 接上訓練資料 pipeline |
 | Action Space 定義 | `core/models/action.py` | 格式定義完成 | 接上 RL policy 輸出 |
 | Controller 抽換點 | `core/controllers/controller_base.py` | `ScriptController` 實作 | 新增 `ModelController` |
+| BallPositionProvider | `core/services/ball_position_provider.py` | `BreakShotPositionProvider` 實作 | `LivePositionProvider` 供其他情境使用 |
 
 ---
 
@@ -239,13 +237,11 @@ class HudPanel:
 
 | 情境 | 放在哪裡 |
 |---|---|
-| 判斷機台狀態是 WARNING 還是 ERROR | `core/` |
-| 呼叫 Isaac Sim API 移動關節 | `isaac_sim_impl_6_0/` |
-| XZ 座標轉換為 2D 像素座標 | `core/` |
-| 定義「需要能移動關節」的介面 | `omniverse_api/` |
-| 在 omni.ui 上渲染狀態顏色 | `ui/`（透過 `ui_api` 抽象） |
-| MQTT 訊息 JSON 解析 | `core/` |
-| MQTT Client 連線建立 | `extension/`（非 impl 層） |
-| Pick & Place 狀態機邏輯 | `core/` |
-| 讀取 USD Stage 的 BBox 數值 | `isaac_sim_impl_6_0/`（結果傳入 `core/`） |
+| Reward Function 計算 | `core/services/reward_service.py` |
+| 衝球固定球位資料 | `core/services/break_shot_position_provider.py` |
+| 呼叫 Isaac Sim API 移動關節 | `isaac_sim_impl_6_0/articulation_api_impl.py` |
+| 即時查詢球的位置 | `isaac_sim_impl_6_0/live_position_provider.py` |
+| XY 座標正規化計算 | `core/` |
+| 定義「需要能移動關節」的介面 | `omniverse_api/articulation_api.py` |
+| Pick & Place 狀態機邏輯 | `core/controllers/script_controller.py` |
 | omni.ui Label 建立 | `isaac_sim_impl_6_0/ui_api_impl.py` |
