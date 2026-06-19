@@ -29,7 +29,7 @@
 | 2-6 | Block 2 | 建立 ArticulationAPI 抽象介面（omniverse_api/） | 0.5h | M1: 環境建立與架構 | TRUE | 6/15 | 2026-06-19 | #71 |
 | 2-7 | Block 2 | 建立 PhysicsAPI 抽象介面（碰撞偵測接觸事件）（omniverse_api/） | 0.5h | M1: 環境建立與架構 | TRUE | 6/16 | 2026-06-19 | #72 |
 | 2-8 | Block 2 | 建立 RigidBodyAPI 抽象介面（球的位置速度查詢）（omniverse_api/） | 0.5h | M1: 環境建立與架構 | TRUE | 6/17 | 2026-06-20 | #73 |
-| 2-9 | Block 2 | 建立 StageAPI 抽象介面（omniverse_api/） | 0.5h | M1: 環境建立與架構 | FALSE |  | 2026-06-20 | #74 |
+| 2-9 | Block 2 | 建立 StageAPI 抽象介面（omniverse_api/） | 0.5h | M1: 環境建立與架構 | TRUE | 2026-06-19 | 2026-06-20 | #74 |
 | 2-10 | Block 2 | 建立 Debug Menu 骨架（extension/ui/debug_menu.py） | 0.5h | M1: 環境建立與架構 | FALSE |  | 2026-06-21 | #75 |
 | 3-1 | Block 3 | 研究撞球桌標準尺寸（9-ball 規格）設計場景比例 | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-06-21 | #76 |
 | 3-2 | Block 3 | 建立撞球桌幾何體（桌面邊框球袋）USD 場景 | 1h | M2: 場景與機器人 | FALSE |  | 2026-06-21 | #77 |
