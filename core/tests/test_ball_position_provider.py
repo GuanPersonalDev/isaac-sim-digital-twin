@@ -45,11 +45,11 @@ class TestBreakShotPositionProvider:
     def test_get_positions_returns_dict(self, break_shot_positions: dict):
         assert isinstance(break_shot_positions, dict)
 
-    def test_get_positions_contains_cue_and_one_to_nine_ball_keys(
+    def test_get_positions_contains_zero_to_nine_ball_keys(
         self,
         break_shot_positions: dict,
     ):
-        expected_keys = {"cue", 1, 2, 3, 4, 5, 6, 7, 8, 9}
+        expected_keys = set(range(10))
 
         assert set(break_shot_positions.keys()) == expected_keys
 
@@ -72,6 +72,6 @@ class TestBreakShotPositionProvider:
         assert isclose(nine_ball_x, 0.0, abs_tol=1e-6)
 
     def test_cue_ball_is_in_kitchen(self, break_shot_positions: dict):
-        _, cue_ball_y = break_shot_positions["cue"]
+        _, cue_ball_y = break_shot_positions[0]
 
         assert cue_ball_y < -0.635

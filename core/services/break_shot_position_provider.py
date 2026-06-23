@@ -6,7 +6,7 @@ _COL = _D / 2  # x offset unit
 _FOOT = 0.635  # 1/4 table length = 2.54/4
 
 BREAK_SHOT_POSITIONS: dict = {
-    "cue": (0.0, -0.9525),
+    0: (0.0, -0.9525),
     1: (0.0, _FOOT),
     2: (-_COL, _FOOT + _ROW),
     3: (_COL, _FOOT + _ROW),
