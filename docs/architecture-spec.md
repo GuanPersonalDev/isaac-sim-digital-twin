@@ -167,7 +167,7 @@ class BallPositionProvider(ABC):
         """
         回傳各球的 XY 位置
         格式：{
-            'cue': (x, y),
+            0: (x, y),
             1: (x, y), ..., 9: (x, y)
         }
         """
