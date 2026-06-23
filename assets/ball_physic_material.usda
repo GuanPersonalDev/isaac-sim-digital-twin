@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    upAxis = "Z"
+)
+
+def Xform "Root"
+{
+    def Material "ball_physic_material" (
+        apiSchemas = ["PhysicsMaterialAPI"]
+    )
+    {
+        custom uniform bool paused = 0 (
+            customData = {
+                bool nonpersistant = 1
+            }
+            hidden = true
+        )
+        float physics:dynamicFriction = 0.05
+        float physics:restitution = 0.95
+        float physics:staticFriction = 0.05
+        token ui:displayGroup = "Material Graphs"
+        token ui:displayName = "ball_physic_material"
+        int ui:order = 1024
+        uniform token[] xformOpOrder = []
+    }
+}
+
