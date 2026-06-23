@@ -1,0 +1,36 @@
+mdl 1.8;
+
+import ::math::*;
+import ::state::*;
+import ::df::*;
+
+export material stripe_material(
+  color stripe_color = color(1.0, 1.0, 0.0),
+  color base_color = color(1.0, 1.0, 1.0),
+  float band_width = 0.4, // 色帶總寬 (0~1)
+  float edge_softness = 0.01, // 平滑過渡
+) = let{
+    // 取得 V 分量
+    float3 object_normal = state::transform_normal(
+      state::coordinate_internal,
+      state::coordinate_object,
+      state::normal()
+    );
+    float normal_z = object_normal.z;
+
+    float dist_from_equator = math::abs(normal_z);
+    float half_band = band_width * 0.5;
+
+    // smoothstep 做平滑邊緣
+    float blend = math::smoothstep(
+      half_band - edge_softness,
+      half_band + edge_softness,
+      dist_from_equator
+    );
+
+    color selected = math::lerp(stripe_color, base_color, blend);
+  } in material(
+    surface: material_surface(
+      scattering: df::diffuse_reflection_bsdf(tint: selected)
+    )
+  );

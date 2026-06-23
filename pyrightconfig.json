@@ -1,0 +1,13 @@
+{
+  "pythonPath": "C:/Other/OmniverseProjects/isaac/kit/python/python.exe",
+  "extraPaths": [
+    "C:/Other/OmniverseProjects/isaac/kit/kernel/py",
+    "C:/Other/OmniverseProjects/isaac/extscache/omni.ui-3.1.3+6312fa25.wx64.r.cp312",
+    "C:/Other/OmniverseProjects/isaac/kit/python/Lib/site-packages"
+  ],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "reportAttributeAccessIssue": false,
+  "reportOptionalMemberAccess": false
+}
