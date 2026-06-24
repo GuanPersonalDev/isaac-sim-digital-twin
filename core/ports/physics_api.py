@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Callable
 
-from ...core.models.contact_event import ContactEvent
+from ..models.contact_event import ContactEvent
 
 
 class PhysicsAPI(ABC):
