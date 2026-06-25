@@ -3,16 +3,16 @@ from __future__ import annotations
 import logging
 import os
 
+from ..services.asset_utility import (
+    BALL_TEMPLATE_PATH,
+    STRIPE_MDL_PATH,
+    STRIPE_IDENTIFIER,
+)
 from .ball_colors import BALL_COLORS
 from ..ports.material_api import MaterialAPI
 from ..ports.stage_api import StageAPI
 
 logger = logging.getLogger(__name__)
-
-_ASSET_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
-_BALL_TEMPLATE_PATH = os.path.join(_ASSET_DIR, "ball_template.usda")
-_STRIPE_MDL_PATH = os.path.join(_ASSET_DIR, "materials", "stripe_ball.mdl")
-_STRIPE_IDENTIFIER = "stripe_material"
 
 
 class TableBallSet:
@@ -48,7 +48,7 @@ class TableBallSet:
 
         for ball_id in range(10):
             prim_path = self._get_ball_prim_path(ball_id)
-            self._stage_api.create_reference_prim(prim_path, _BALL_TEMPLATE_PATH)
+            self._stage_api.create_reference_prim(prim_path, BALL_TEMPLATE_PATH)
             x, y = positions[ball_id]
             self._stage_api.set_prim_translate(prim_path, x, y, z)
 
@@ -64,9 +64,9 @@ class TableBallSet:
         return self._base_path + f"/Balls/Ball_{ball_id}"
 
     def _apply_ball9_material(self, prim_path: str) -> None:
-        if not os.path.exists(_STRIPE_MDL_PATH):
+        if not os.path.exists(STRIPE_MDL_PATH):
             logger.warning(
-                "stripe_ball.mdl 不存在（%s），fallback 為純黃色", _STRIPE_MDL_PATH
+                "stripe_ball.mdl 不存在（%s），fallback 為純黃色", STRIPE_MDL_PATH
             )
             r, g, b = BALL_COLORS[9]
             self._material_api.apply_preview_surface(prim_path, r, g, b)
@@ -74,8 +74,8 @@ class TableBallSet:
         try:
             self._material_api.apply_mdl_shader(
                 prim_path=prim_path,
-                mdl_path=_STRIPE_MDL_PATH,
-                identifier=_STRIPE_IDENTIFIER,
+                mdl_path=STRIPE_MDL_PATH,
+                identifier=STRIPE_IDENTIFIER,
                 stripe_color=(BALL_COLORS[9][0], BALL_COLORS[9][1], BALL_COLORS[9][2]),
                 base_color=(1.0, 1.0, 1.0),
             )
