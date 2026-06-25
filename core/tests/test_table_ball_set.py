@@ -52,12 +52,13 @@ def table_ball_set(stage_api: MagicMock, material_api: MagicMock):
         stage_api=stage_api,
         material_api=material_api,
         table_z=0.75,
+        base_path="/World/BilliardTable_0",
         ball_radius=0.028575,
     )
 
 
 def _prim_path(ball_id: int) -> str:
-    return f"/World/Balls/ball_{ball_id}"
+    return f"/World/BilliardTable_0/Balls/Ball_{ball_id}"
 
 
 class TestTableBallSet:

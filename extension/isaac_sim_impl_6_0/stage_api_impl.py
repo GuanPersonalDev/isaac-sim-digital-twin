@@ -1,7 +1,7 @@
 import omni.usd
 from pxr import Gf, Usd, UsdGeom
 
-from ...core.ports.stage_api import StageAPI
+from core.ports.stage_api import StageAPI
 
 
 class StageAPIImpl(StageAPI):

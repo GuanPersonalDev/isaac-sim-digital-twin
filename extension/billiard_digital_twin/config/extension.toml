@@ -1,0 +1,8 @@
+[package]
+title = "Billiard Digital Twin"
+version = "0.1.0"
+description = "9-ball billiard robot simulation extension"
+
+[[python.module]]
+name = "billiard_digital_twin"
+public = false

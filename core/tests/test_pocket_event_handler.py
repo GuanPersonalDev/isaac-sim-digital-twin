@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 from core.models.contact_event import ContactEvent
 from core.services.pocket_event_handler import PocketEventHandler
 
-BALL_PRIM_PATHS = tuple(f"/World/Balls/ball_{ball_id}" for ball_id in range(10))
+BALL_PRIM_PATHS = [f"/World/BilliardTable_0/Balls/Ball_{i}" for i in range(10)]
 
 
 def _event(path_a: str, path_b: str) -> ContactEvent:
@@ -22,7 +22,7 @@ class TestPocketEventHandler:
         on_ball_pocketed = MagicMock()
         handler = PocketEventHandler(
             physics_api=physics_api,
-            pocket_prim_paths=("/World/Table/Pocket_A",),
+            pocket_prim_paths=["/World/Table/Pocket_A"],
             ball_prim_paths=BALL_PRIM_PATHS,
             on_ball_pocketed=on_ball_pocketed,
         )
@@ -37,7 +37,7 @@ class TestPocketEventHandler:
         physics_api = MagicMock()
         handler = PocketEventHandler(
             physics_api=physics_api,
-            pocket_prim_paths=("/World/Table/Pocket_A", "/World/Table/Pocket_B"),
+            pocket_prim_paths=["/World/Table/Pocket_A", "/World/Table/Pocket_B"],
             ball_prim_paths=BALL_PRIM_PATHS,
             on_ball_pocketed=MagicMock(),
         )
@@ -50,21 +50,21 @@ class TestPocketEventHandler:
         ]
         assert "/World/Table/Pocket_A" in enabled_paths
         assert "/World/Table/Pocket_B" in enabled_paths
-        assert "/World/Balls/ball_0" in enabled_paths
-        assert "/World/Balls/ball_9" in enabled_paths
+        assert "/World/BilliardTable_0/Balls/Ball_0" in enabled_paths
+        assert "/World/BilliardTable_0/Balls/Ball_9" in enabled_paths
 
     def test_ball_pocket_contact_calls_ball_handler(self):
         physics_api = MagicMock()
         on_ball_pocketed = MagicMock()
         handler = PocketEventHandler(
             physics_api=physics_api,
-            pocket_prim_paths=("/World/Table/Pocket_A",),
+            pocket_prim_paths=["/World/Table/Pocket_A"],
             ball_prim_paths=BALL_PRIM_PATHS,
             on_ball_pocketed=on_ball_pocketed,
         )
 
         handler.handle_contact_event(
-            _event("/World/Balls/ball_3", "/World/Table/Pocket_A")
+            _event("/World/BilliardTable_0/Balls/Ball_3", "/World/Table/Pocket_A")
         )
 
         on_ball_pocketed.assert_called_once_with(3)
@@ -74,13 +74,13 @@ class TestPocketEventHandler:
         on_ball_pocketed = MagicMock()
         handler = PocketEventHandler(
             physics_api=physics_api,
-            pocket_prim_paths=("/World/Table/Pocket_A",),
+            pocket_prim_paths=["/World/Table/Pocket_A"],
             ball_prim_paths=BALL_PRIM_PATHS,
             on_ball_pocketed=on_ball_pocketed,
         )
 
         handler.handle_contact_event(
-            _event("/World/Table/Pocket_A", "/World/Balls/ball_4")
+            _event("/World/Table/Pocket_A", "/World/BilliardTable_0/Balls/Ball_4")
         )
 
         on_ball_pocketed.assert_called_once_with(4)
@@ -90,13 +90,13 @@ class TestPocketEventHandler:
         on_ball_pocketed = MagicMock()
         handler = PocketEventHandler(
             physics_api=physics_api,
-            pocket_prim_paths=("/World/Table/Pocket_A",),
+            pocket_prim_paths=["/World/Table/Pocket_A"],
             ball_prim_paths=BALL_PRIM_PATHS,
             on_ball_pocketed=on_ball_pocketed,
         )
 
         handler.handle_contact_event(
-            _event("/World/Balls/ball_3", "/World/Balls/ball_4")
+            _event("/World/BilliardTable_0/Balls/Ball_3", "/World/BilliardTable_0/Balls/Ball_4")
         )
 
         on_ball_pocketed.assert_not_called()
@@ -105,7 +105,7 @@ class TestPocketEventHandler:
         physics_api = MagicMock()
         handler = PocketEventHandler(
             physics_api=physics_api,
-            pocket_prim_paths=("/World/Table/Pocket_A",),
+            pocket_prim_paths=["/World/Table/Pocket_A"],
             ball_prim_paths=BALL_PRIM_PATHS,
             on_ball_pocketed=MagicMock(),
         )

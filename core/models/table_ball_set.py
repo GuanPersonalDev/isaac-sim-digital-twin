@@ -13,7 +13,6 @@ _ASSET_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
 _BALL_TEMPLATE_PATH = os.path.join(_ASSET_DIR, "ball_template.usda")
 _STRIPE_MDL_PATH = os.path.join(_ASSET_DIR, "materials", "stripe_ball.mdl")
 _STRIPE_IDENTIFIER = "stripe_material"
-_BALL_PRIM_BASE = "/World/Balls/ball_{}"
 
 
 class TableBallSet:
@@ -26,8 +25,10 @@ class TableBallSet:
         stage_api: StageAPI,
         material_api: MaterialAPI,
         table_z: float,
+        base_path: str,
         ball_radius: float = 0.028575,
     ) -> None:
+        self._base_path = base_path
         self._stage_api = stage_api
         self._material_api = material_api
         self._table_z = table_z
@@ -46,7 +47,7 @@ class TableBallSet:
         z = self._table_z + self._ball_radius
 
         for ball_id in range(10):
-            prim_path = _BALL_PRIM_BASE.format(ball_id)
+            prim_path = self._get_ball_prim_path(ball_id)
             self._stage_api.create_reference_prim(prim_path, _BALL_TEMPLATE_PATH)
             x, y = positions[ball_id]
             self._stage_api.set_prim_translate(prim_path, x, y, z)
@@ -59,9 +60,14 @@ class TableBallSet:
 
         self._built = True
 
+    def _get_ball_prim_path(self, ball_id: int):
+        return self._base_path + f"/Balls/Ball_{ball_id}"
+
     def _apply_ball9_material(self, prim_path: str) -> None:
         if not os.path.exists(_STRIPE_MDL_PATH):
-            logger.warning("stripe_ball.mdl 不存在（%s），fallback 為純黃色", _STRIPE_MDL_PATH)
+            logger.warning(
+                "stripe_ball.mdl 不存在（%s），fallback 為純黃色", _STRIPE_MDL_PATH
+            )
             r, g, b = BALL_COLORS[9]
             self._material_api.apply_preview_surface(prim_path, r, g, b)
             return
@@ -84,7 +90,8 @@ class TableBallSet:
         """
         self._check_built()
         self._check_ball_id(ball_id)
-        self._stage_api.set_visibility(_BALL_PRIM_BASE.format(ball_id), visible=False)
+        ball_prim_path = self._get_ball_prim_path(ball_id)
+        self._stage_api.set_visibility(ball_prim_path, visible=False)
 
     def show_ball(self, ball_id: int) -> None:
         """
@@ -92,7 +99,8 @@ class TableBallSet:
         """
         self._check_built()
         self._check_ball_id(ball_id)
-        self._stage_api.set_visibility(_BALL_PRIM_BASE.format(ball_id), visible=True)
+        ball_prim_path = self._get_ball_prim_path(ball_id)
+        self._stage_api.set_visibility(ball_prim_path, visible=True)
 
     def reset(self, positions: dict[int, tuple[float, float]]) -> None:
         """
@@ -106,7 +114,7 @@ class TableBallSet:
 
         z = self._table_z + self._ball_radius
         for ball_id in range(10):
-            prim_path = _BALL_PRIM_BASE.format(ball_id)
+            prim_path = self._get_ball_prim_path(ball_id)
             self._stage_api.set_visibility(prim_path, visible=True)
             x, y = positions[ball_id]
             self._stage_api.set_prim_translate(prim_path, x, y, z)

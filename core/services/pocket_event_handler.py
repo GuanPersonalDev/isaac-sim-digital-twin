@@ -4,7 +4,7 @@ from ..ports.physics_api import PhysicsAPI
 from ..models.contact_event import ContactEvent
 import re
 
-_BALL_PATH_PATTERN = re.compile(r"(?:^|/)ball_(\d+)(?:$|/)")
+_BALL_PATH_PATTERN = re.compile(r"(?:^|/)Ball_(\d+)(?:$|/)")
 
 
 class PocketEventHandler:
@@ -34,7 +34,7 @@ class PocketEventHandler:
         if not self._has_pocket_path(event):
             return
 
-        ball_prim_path = self._get_match_prim_path("ball_", event)
+        ball_prim_path = self._get_match_prim_path("Ball_", event)
         if ball_prim_path is None:
             return
 
