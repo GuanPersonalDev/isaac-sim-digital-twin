@@ -1,5 +1,6 @@
 import omni.usd
 from pxr import Gf, Usd, UsdGeom
+import isaacsim.core.utils.bounds as bounds_util
 
 from core.ports.stage_api import StageAPI
 
@@ -40,3 +41,14 @@ class StageAPIImpl(StageAPI):
         xform = UsdGeom.Xformable(prim)
         xform.ClearXformOpOrder()
         xform.AddTranslateOp().Set(Gf.Vec3d(x, y, z))
+
+    def get_prim_sides(self, prim_path: str) -> tuple[float, float, float]:
+        cache = bounds_util.create_bbox_cache()
+
+        aabb = bounds_util.compute_aabb(cache, prim_path=prim_path)
+
+        x_size = aabb[3] - aabb[0]
+        y_size = aabb[4] - aabb[1]
+        z_size = aabb[5] - aabb[2]
+
+        return (x_size, y_size, z_size)

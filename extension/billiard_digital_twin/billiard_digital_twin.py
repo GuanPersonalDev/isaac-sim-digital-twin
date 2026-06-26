@@ -22,7 +22,7 @@ _TABLE_COUNT = 1
 
 class BilliardExtension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
-        stage_api = StageAPIImpl()
+        self._stage_api = StageAPIImpl()
         material_api = MaterialAPIImpl()
         # stage_api.create_reference_prim(
         #     "/World/Environment",
@@ -31,7 +31,7 @@ class BilliardExtension(omni.ext.IExt):
         self._table_unit_side_length = 0
         self._tables: list[BilliardTable] = []
 
-        self._build_tables(_TABLE_COUNT, stage_api, material_api)
+        self._build_tables(_TABLE_COUNT, self._stage_api, material_api)
         self._debug_menu = DebugMenu()
 
     def _build_tables(self, total: int, stage_api: StageAPI, material_api: MaterialAPI):
@@ -39,6 +39,7 @@ class BilliardExtension(omni.ext.IExt):
         side_count = 1
         while total > side_count * side_count:
             side_count += 1
+        print(f"side count : {side_count}")
 
         index = 0
         for i in range(side_count):
@@ -48,15 +49,18 @@ class BilliardExtension(omni.ext.IExt):
                 table = BilliardTable(
                     f"/World/Table_{index}", stage_api, material_api, (x_pos, y_pos)
                 )
+                print(f"create table {index}")
                 if self._table_unit_side_length == 0:
                     self._table_unit_side_length = self._get_table_side_length(
                         table.get_table_prim_path()
                     )
+                    print(f"get length : {self._table_unit_side_length}")
                 self._tables.append(table)
+                index += 1
 
     def _get_table_side_length(self, prim_path):
-        # TODO: get side length from usd
-        return 10
+        x_length, y_length, z_length = self._stage_api.get_prim_sides(prim_path)
+        return max(x_length, y_length, z_length)
 
     def on_shutdown(self):
         if self._debug_menu:

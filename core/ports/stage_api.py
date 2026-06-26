@@ -59,3 +59,10 @@ class StageAPI(ABC):
         設定指定 prim_path 的 XYZ 位移。
         """
         ...
+
+    @abstractmethod
+    def get_prim_sides(self, prim_path: str) -> tuple[float, float, float]:
+        """
+        取得三邊長
+        """
+        ...
