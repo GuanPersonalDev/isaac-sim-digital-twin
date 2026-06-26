@@ -128,6 +128,57 @@ class TestTableBallSet:
             any_order=True,
         )
 
+    def test_reset_moves_balls_to_given_positions(
+        self,
+        table_ball_set,
+        stage_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        stage_api.set_prim_translate.reset_mock()
+
+        new_positions = {ball_id: (ball_id * 0.2, ball_id * 0.3) for ball_id in range(10)}
+        table_ball_set.reset(new_positions)
+
+        for ball_id in range(10):
+            x, y = new_positions[ball_id]
+            stage_api.set_prim_translate.assert_any_call(
+                _prim_path(ball_id), x, y, pytest.approx(0.75 + 0.028575)
+            )
+
+    def test_reset_uses_correct_z(
+        self,
+        table_ball_set,
+        stage_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        stage_api.set_prim_translate.reset_mock()
+
+        table_ball_set.reset(positions)
+
+        z_values = [c.args[3] for c in stage_api.set_prim_translate.call_args_list]
+        assert all(z == pytest.approx(0.75 + 0.028575) for z in z_values)
+
+    def test_reset_missing_position_raises(
+        self,
+        table_ball_set,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        incomplete = {ball_id: (0.0, 0.0) for ball_id in range(9)}
+
+        with pytest.raises(ValueError):
+            table_ball_set.reset(incomplete)
+
+    def test_reset_before_build_raises(
+        self,
+        table_ball_set,
+        positions: dict[int, tuple[float, float]],
+    ):
+        with pytest.raises(RuntimeError):
+            table_ball_set.reset(positions)
+
     def test_hide_ball_invalid_id_raises(
         self,
         table_ball_set,
