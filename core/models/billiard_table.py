@@ -1,4 +1,5 @@
 from .table_ball_set import TableBallSet
+from .ur5_robot import UR5Robot
 from ..ports.stage_api import StageAPI
 from ..ports.material_api import MaterialAPI
 from ..services.ball_position_provider import BallPositionProvider
@@ -35,8 +36,12 @@ class BilliardTable:
         }
         self._table_set.build(world_positions)
 
+        robot_world_position = (x_pos + 1.5, y_pos + 0.0, 0.0)
+        self._robot = UR5Robot(base_path, stage_api, robot_world_position)
+
     def get_table_prim_path(self):
         return self._table_prim_path
 
     def destroy(self):
         self._table_set = None
+        self._robot = None
