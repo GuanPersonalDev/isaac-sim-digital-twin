@@ -1,6 +1,8 @@
 import sys
 import os
 import omni.ext
+import omni.usd
+import carb.events
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _EXT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -22,12 +24,25 @@ _TABLE_COUNT = 1
 
 class BilliardExtension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
+        self._debug_menu = None
+        self._tables = []
+        stage = omni.usd.get_context().get_stage()
+        if stage is not None:
+            self._billiard_init()
+        else:
+            stream = omni.usd.get_context().get_stage_event_stream()
+            self._sub = stream.create_subscription_to_pop(
+                self._on_stage_event, name="billiard_digital_twin_stage_wait"
+            )
+
+    def _on_stage_event(self, event: carb.events.IEvent) -> None:
+        if event.type == int(omni.usd.StageEventType.OPENED):
+            self._billiard_init()
+            self._sub = None
+
+    def _billiard_init(self):
         self._stage_api = StageAPIImpl()
         material_api = MaterialAPIImpl()
-        # stage_api.create_reference_prim(
-        #     "/World/Environment",
-        #     "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Environments/Grid/gridroom_black.usd",
-        # )
         self._table_unit_side_length = 0
         self._tables: list[BilliardTable] = []
 
@@ -69,3 +84,4 @@ class BilliardExtension(omni.ext.IExt):
         for t in self._tables:
             t.destroy()
         self._tables = None
+        self._sub = None
