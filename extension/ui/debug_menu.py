@@ -27,11 +27,14 @@ class DebugMenu:
                 pass
 
     async def _dock_to_viewport(self) -> None:
+        target_window = None
         for _ in range(5):
+            target_window = omni.ui.Workspace.get_window("Viewport")
             if omni.ui.Workspace.get_window("Viewport"):
                 break
             await omni.kit.app.get_app().next_update_async()
-        self._window.dock_in_window("Viewport", omni.ui.DockPosition.RIGHT, ratio=0.25)
+        if target_window:
+            self._window.dock_in(target_window, omni.ui.DockPosition.RIGHT, ratio=0.25)
 
     def show(self) -> None:
         if self._window:
