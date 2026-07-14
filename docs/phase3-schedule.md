@@ -49,8 +49,8 @@
 | 4-3 | Block 4 | 確認關節結構能用 API 讀取關節數量與名稱 | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-13 | 2026-07-13 | #87 |
 | 4-3b | Block 4 | 建立 UR5Robot 類別（載入 Nucleus UR5 USD 設定世界座標） | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-13 | 2026-07-13 | #174 |
 | 4-3c | Block 4 | UR5Robot Unit Test | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-13 | 2026-07-14 | #175 |
-| 4-3d-impl | Block 4 | BilliardTable：移除手臂建立邏輯，新增 get_table_center() | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-14 | #184 |
-| 4-3d-test | Block 4 | BilliardTable Unit Test | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-14 | #185 |
+| 4-3d-impl | Block 4 | BilliardTable：移除手臂建立邏輯，新增 get_table_center() | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-14 | 2026-07-14 | #184 |
+| 4-3d-test | Block 4 | BilliardTable Unit Test | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-14 | 2026-07-14 | #185 |
 | 4-3e-impl | Block 4 | TableRobotManager：新增手臂操作中介層 | 1h | M2: 場景與機器人 | FALSE |  | 2026-07-15 | #186 |
 | 4-3e-test | Block 4 | TableRobotManager Unit Test | 1h | M2: 場景與機器人 | FALSE |  | 2026-07-16 | #187 |
 | 4-3f | Block 4 | BilliardExtension：分離訓練桌/Demo 桌，接入 TableRobotManager 與開關 callback | 1h | M2: 場景與機器人 | FALSE |  | 2026-07-17 | #188 |
