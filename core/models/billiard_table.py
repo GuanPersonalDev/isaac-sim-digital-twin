@@ -1,5 +1,4 @@
 from .table_ball_set import TableBallSet
-from .ur5_robot import UR5Robot
 from ..ports.stage_api import StageAPI
 from ..ports.material_api import MaterialAPI
 from ..services.ball_position_provider import BallPositionProvider
@@ -21,27 +20,30 @@ class BilliardTable:
     ):
         self._base_path = base_path
 
-        self._table_prim_path = self._base_path + f"/Table"
+        self._table_prim_path = self._base_path + "/Table"
         stage_api.create_reference_prim(self._table_prim_path, TABLE_PATH)
-        x_pos, y_pos = position
-        stage_api.set_prim_translate(self._table_prim_path, x_pos, y_pos, 0)
+        self._x_pos, self._y_pos = position
+        self._z_pos = 0
+        stage_api.set_prim_translate(
+            self._table_prim_path, self._x_pos, self._y_pos, self._z_pos
+        )
 
         self._table_set = TableBallSet(
-            stage_api, material_api, table_z=0, base_path=base_path
+            stage_api, material_api, table_z=self._z_pos, base_path=base_path
         )
 
         positions = BreakShotPositionProvider().get_positions()
         world_positions = {
-            ball_id: (x + x_pos, y + y_pos) for ball_id, (x, y) in positions.items()
+            ball_id: (x + self._x_pos, y + self._y_pos)
+            for ball_id, (x, y) in positions.items()
         }
         self._table_set.build(world_positions)
-
-        robot_world_position = (x_pos + 1.5, y_pos + 0.0, 0.0)
-        self._robot = UR5Robot(base_path, stage_api, robot_world_position)
 
     def get_table_prim_path(self):
         return self._table_prim_path
 
+    def get_table_center(self) -> tuple[float, float, float]:
+        return (self._x_pos, self._y_pos, self._z_pos)
+
     def destroy(self):
         self._table_set = None
-        self._robot = None
