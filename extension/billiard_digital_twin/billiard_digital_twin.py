@@ -45,9 +45,16 @@ class BilliardExtension(omni.ext.IExt):
         material_api = MaterialAPIImpl()
         self._table_unit_side_length = 0
         self._tables: list[BilliardTable] = []
+        
+        self._demo_table, self._table_unit_side_length = self._build_demo_table(self._stage_api, material_api)
 
         self._build_tables(_TABLE_COUNT, self._stage_api, material_api)
         self._debug_menu = DebugMenu()
+        
+    def _build_demo_table(self, stage_api: StageAPI, material_api: MaterialAPI) -> tuple[BilliardTable, float]:
+        table = self._build_table(f"/World/Table_Demo", stage_api, material_api, (0, 0))
+        side_length = self._get_table_side_length(table.get_table_prim_path())
+        return (table, side_length)
 
     def _build_tables(self, total: int, stage_api: StageAPI, material_api: MaterialAPI):
         # 計算單邊撞球桌的個數
@@ -59,19 +66,20 @@ class BilliardExtension(omni.ext.IExt):
         index = 0
         for i in range(side_count):
             for j in range(side_count):
-                x_pos = self._table_unit_side_length * i
-                y_pos = self._table_unit_side_length * j
-                table = BilliardTable(
+                x_pos = self._table_unit_side_length * (i+1)
+                y_pos = self._table_unit_side_length * (j+1)
+                table = self._build_table(
                     f"/World/Table_{index}", stage_api, material_api, (x_pos, y_pos)
                 )
                 print(f"create table {index}")
-                if self._table_unit_side_length == 0:
-                    self._table_unit_side_length = self._get_table_side_length(
-                        table.get_table_prim_path()
-                    )
-                    print(f"get length : {self._table_unit_side_length}")
                 self._tables.append(table)
                 index += 1
+                
+    def _build_table(self, table_name: str, stage_api: StageAPI, material_api: MaterialAPI, pos: tuple[float, float]) -> BilliardTable:
+        table = BilliardTable(
+            table_name, stage_api, material_api, pos 
+        )
+        return table
 
     def _get_table_side_length(self, prim_path):
         x_length, y_length, z_length = self._stage_api.get_prim_sides(prim_path)
