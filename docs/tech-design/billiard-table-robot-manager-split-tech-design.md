@@ -153,6 +153,10 @@ def _on_demo_toggle(self, enabled: bool) -> None:
 
 **職責：** 提供訓練/Demo 兩個開關的 UI，值變化時呼叫呼叫端傳入的 callback；本身不持有布林狀態（狀態放在呼叫端 `BilliardExtension`）。
 
+**UI 元件變更：** 實作時改用 `omni.ui.ToolButton`（搭配 `SimpleBoolModel` + `extension/ui/ui_style.py` 的 `UiStyle.get_toggle_style()`）取代原規劃的 `omni.ui.CheckBox`，視覺呈現為開/關兩態的開關型按鈕（類似 Extension Manager 的 enable/disable 開關），行為（callback 呼叫時機、不持有狀態）與原設計相同。
+
+**UI 文字語言：** 標籤採**英文**（`"Training"` / `"Break shot demo"`），非原規劃的中文「訓練環境執行中」「Demo 手臂執行中」。原因：此畫面會用於 LinkedIn Demo 影片/截圖，需以英文呈現。
+
 **介面：**
 ```python
 class DebugMenu:
@@ -161,16 +165,16 @@ class DebugMenu:
         on_training_toggle: Callable[[bool], None],
         on_demo_toggle: Callable[[bool], None],
     ) -> None:
-        """建構子新增兩個必要參數，呼叫端傳入自己的方法。"""
+        """建構子新增兩個必要參數，呼叫端傳入自己的方法（於 _build_ui() 之前指派，避免 callback 尚未綁定就被引用）。"""
         ...
 
     def _build_ui(self) -> None:
         """
-        新增兩個 omni.ui.CheckBox：
-        - 訓練環境執行中：model.add_value_changed_fn(
+        新增兩個 omni.ui.ToolButton（開關型按鈕）：
+        - "Training"：model.add_value_changed_fn(
               lambda m: self._on_training_toggle(m.get_value_as_bool())
           )
-        - Demo 手臂執行中：model.add_value_changed_fn(
+        - "Break shot demo"：model.add_value_changed_fn(
               lambda m: self._on_demo_toggle(m.get_value_as_bool())
           )
         """
@@ -179,7 +183,7 @@ class DebugMenu:
 
 **依賴：**
 - 輸入來源：`BilliardExtension` 傳入的 `on_training_toggle` / `on_demo_toggle` callback
-- 輸出去向：使用者操作 CheckBox 時觸發呼叫端狀態更新
+- 輸出去向：使用者操作開關按鈕時觸發呼叫端狀態更新
 
 ---
 
@@ -273,7 +277,7 @@ DebugMenu
 
 **豁免/待判斷項目（不在 `core/` pytest 覆蓋範圍，交由 unit-test agent 依專案慣例判斷）：**
 - `BilliardExtension` 的 grid 平移邏輯與 Demo 桌建立順序（`extension/` 層，依賴 `omni.ext`、`omni.usd`）
-- `DebugMenu` 的 CheckBox callback 呼叫邏輯（UI 層，依賴 `omni.ui`）
+- `DebugMenu` 的 ToolButton callback 呼叫邏輯（UI 層，依賴 `omni.ui`）
 
 ---
 
