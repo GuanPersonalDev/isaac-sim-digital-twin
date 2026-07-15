@@ -1,6 +1,9 @@
+import os
+
 import omni.usd
 from pxr import Gf, Usd, UsdGeom
 import isaacsim.core.utils.bounds as bounds_util
+from isaacsim.storage.native import get_assets_root_path
 
 from core.ports.stage_api import StageAPI
 
@@ -22,7 +25,12 @@ class StageAPIImpl(StageAPI):
     def create_reference_prim(self, prim_path: str, asset_path: str) -> Usd.Prim:
         stage = self.get_stage()
         prim = stage.DefinePrim(prim_path)
-        prim.GetReferences().AddReference(asset_path)
+        resolved_path = asset_path
+
+        # 雲端資源的路徑修正
+        if not os.path.isabs(asset_path) and not asset_path.startswith("omniverse://"):
+            resolved_path = get_assets_root_path() + "/" + asset_path
+        prim.GetReferences().AddReference(resolved_path)
         return prim
 
     def set_visibility(self, prim_path: str, visible: bool) -> None:
