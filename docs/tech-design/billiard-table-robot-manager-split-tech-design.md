@@ -120,10 +120,6 @@ self._demo_enabled: bool = False
 
 **介面（新增方法）：**
 ```python
-def _build_demo_table(self, stage_api: StageAPI, material_api: MaterialAPI) -> None:
-    """建立唯一的 Demo 桌與其手臂，固定於世界座標原點 (0, 0)。"""
-    ...
-
 def _on_training_toggle(self, enabled: bool) -> None:
     """接收 DebugMenu 訓練開關 callback，這輪只存狀態。"""
     self._training_enabled = enabled
@@ -133,9 +129,17 @@ def _on_demo_toggle(self, enabled: bool) -> None:
     self._demo_enabled = enabled
 ```
 
+**`_billiard_init()` 變更（Demo 桌建立採 inline 寫法，不獨立成 `_build_demo_table` 方法）：**
+- 原設計曾規劃獨立的 `_build_demo_table(stage_api, material_api)` 方法，但實作時發現 Demo 桌建立只有一行（呼叫既有的 `_build_table()` helper），且建立後立刻要用其結果計算 `self._table_unit_side_length`，抽成獨立方法沒有實質好處，因此改為直接寫在 `_billiard_init()` 內：
+  1. `demo_table_path = "/World/Table_Demo"`
+  2. `self._demo_table = self._build_table(demo_table_path, stage_api, material_api, (0, 0))`（沿用既有的 `_build_table()` helper，訓練桌也用同一個 helper）
+  3. `self._table_unit_side_length = self._get_table_side_length(self._demo_table.get_table_prim_path())`
+  4. `self._robot = TableRobotManager(self._demo_table.get_table_center(), demo_table_path, stage_api)`（`base_path` 直接傳 `demo_table_path`，不手動加 `/Robot` 後綴，由 `UR5Robot` 內部統一拼接一次）
+  5. 接著才呼叫 `self._build_tables(_TABLE_COUNT, stage_api, material_api)` 建立訓練桌
+
 **`_build_tables()` 變更：**
-- 移除原本「用第一張訓練桌量測邊長」的邏輯（`if self._table_unit_side_length == 0: ...`），改由 `_build_demo_table` 先用 Demo 桌量出 `self._table_unit_side_length`
-- grid 座標計算由 `x_pos = table_unit_side_length * i` 改為 `x_pos = table_unit_side_length * (i + 1)`（i 從概念上的 1 開始），避免與位於原點的 Demo 桌重疊；`y_pos` 不變
+- 移除原本「用第一張訓練桌量測邊長」的邏輯（`if self._table_unit_side_length == 0: ...`），改由 `_billiard_init()` 先用 Demo 桌量出 `self._table_unit_side_length`
+- grid 座標計算由 `x_pos = table_unit_side_length * i` 改為 `x_pos = table_unit_side_length * (i + 1)`、`y_pos = table_unit_side_length * j` 改為 `y_pos = table_unit_side_length * (j + 1)`（i、j 皆從概念上的 1 開始）。x、y 兩軸皆刻意位移，使 Demo 桌（原點）的正前後左右格位（x=0 或 y=0 的邊界列/欄）都不會被訓練桌佔用，讓 Demo 桌四周保持淨空，而不只是避免座標完全重疊
 
 **`on_shutdown()` 變更：** 新增 `self._demo_table.destroy()`、`self._robot.destroy()`，與既有 `self._tables` 迴圈、`self._debug_menu.destroy()` 並存。
 
@@ -183,17 +187,18 @@ class DebugMenu:
 
 ```
 BilliardExtension._billiard_init()
-  → _build_demo_table(stage_api, material_api)
-    → self._demo_table = BilliardTable("/World/DemoTable", stage_api, material_api, (0, 0))
-    → self._table_unit_side_length = self._get_table_side_length(demo_table.get_table_prim_path())
-    → center = self._demo_table.get_table_center()
-    → self._robot = TableRobotManager(center, "/World/DemoTable", stage_api)
+  → demo_table_path = "/World/Table_Demo"
+  → self._demo_table = self._build_table(demo_table_path, stage_api, material_api, (0, 0))
+    → 內部：BilliardTable(demo_table_path, stage_api, material_api, (0, 0))
+  → self._table_unit_side_length = self._get_table_side_length(self._demo_table.get_table_prim_path())
+  → center = self._demo_table.get_table_center()
+  → self._robot = TableRobotManager(center, demo_table_path, stage_api)
       → TableRobotManager 內部：world_position = center + _ROBOT_OFFSET_FROM_TABLE_CENTER
       → self._robot = UR5Robot(base_path, stage_api, world_position)
         → stage_api.create_reference_prim(...) + stage_api.set_prim_translate(...)
   → _build_tables(_TABLE_COUNT, stage_api, material_api)
     → for i, j in grid:
-        x_pos = table_unit_side_length * (i + 1); y_pos = table_unit_side_length * j
+        x_pos = table_unit_side_length * (i + 1); y_pos = table_unit_side_length * (j + 1)
         self._tables.append(BilliardTable(f"/World/Table_{index}", stage_api, material_api, (x_pos, y_pos)))
   → self._debug_menu = DebugMenu(
         on_training_toggle=self._on_training_toggle,
@@ -248,11 +253,11 @@ DebugMenu
 
 | 情境 | 處理方式 |
 |---|---|
-| 訓練桌 grid 與 Demo 桌（原點）座標重疊 | grid 的 i 索引從概念上的 1 開始（`x_pos = table_unit_side_length * (i + 1)`），Demo 桌位置不變，靠訓練桌整體平移解決 |
+| 訓練桌 grid 與 Demo 桌（原點）座標重疊，或緊貼 Demo 桌前後左右 | grid 的 i、j 索引皆從概念上的 1 開始（`x_pos = table_unit_side_length * (i + 1)`、`y_pos = table_unit_side_length * (j + 1)`），Demo 桌位置不變，靠訓練桌整體沿 x、y 兩軸平移解決；刻意讓 x=0 與 y=0 兩個邊界列/欄都不被訓練桌佔用，使 Demo 桌四周（前後左右）保持淨空，而非僅避免座標完全重疊 |
 | 手臂偏移量是否需依桌子不同而調整 | 目前寫死為 `TableRobotManager._ROBOT_OFFSET_FROM_TABLE_CENTER` 具名常數，不做成建構子參數（YAGNI），等 Milestone B 可達性掃描（#180）有動態需求時再擴充 |
 | 外部模組是否可直接持有/呼叫 `UR5Robot` | 不允許；`UR5Robot` 為 `TableRobotManager` 私有欄位，所有呼叫端一律透過 `TableRobotManager` 操作手臂，日後新增手臂操作方法一律加在 `TableRobotManager` |
 | Debug Menu 開關觸發後的實際行為（訓練 step / 揮桿軌跡） | 本輪不實作，僅做 UI 與狀態存放（`self._training_enabled` / `self._demo_enabled`），待 Isaac Lab BilliardEnv 訓練迴圈與 Milestone B 揮桿軌跡功能完成後再接上 |
-| `_build_tables()` 邊長量測邏輯 | 移除原本「用第一張訓練桌量測」的分支，改由 `_build_demo_table` 用 Demo 桌統一量測（訓練桌與 Demo 桌共用同一份 `TABLE_PATH` 資產，邊長相同） |
+| `_build_tables()` 邊長量測邏輯 | 移除原本「用第一張訓練桌量測」的分支，改由 `_billiard_init()` 先用 Demo 桌統一量測（訓練桌與 Demo 桌共用同一份 `TABLE_PATH` 資產，邊長相同） |
 
 ---
 
