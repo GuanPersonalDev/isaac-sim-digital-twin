@@ -55,7 +55,7 @@
 | 4-3e-test | Block 4 | TableRobotManager Unit Test | 1h | M2: 場景與機器人 | TRUE | 2026-07-14 | 2026-07-16 | #187 |
 | 4-3f | Block 4 | BilliardExtension：分離訓練桌/Demo 桌，接入 TableRobotManager 與開關 callback | 1h | M2: 場景與機器人 | TRUE | 2026-07-15 | 2026-07-17 | #188 |
 | 4-3g | Block 4 | DebugMenu：新增訓練/Demo 執行中開關 UI | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-15 | 2026-07-18 | #189 |
-| 4-4 | Block 4 | 設計球桿幾何體（USD Prim）確認尺寸比例合理 | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-18 | #88 |
+| 4-4 | Block 4 | 設計球桿幾何體（USD Prim）確認尺寸比例合理 | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-15 | 2026-07-18 | #88 |
 | 4-5 | Block 4 | 設計球桿與 UR5 末端的固定連結（Fixed Joint） | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-18 | #89 |
 | 4-8 | Block 4 | 空揮測速：單獨場景量測 TCP 峰值速度（含 asset velocity/effort limit 檢查）→ 定 A 動作空間速度上限 | 3h | M2: 場景與機器人 | FALSE |  | 2026-07-19 | #176 |
 | 9-0 | Block 9 | Early termination 設計確認（球靜止偵測 → 立即計算 reward 並 reset） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-07-19 | #178 |
