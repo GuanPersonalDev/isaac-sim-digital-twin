@@ -51,9 +51,9 @@
 | 4-3c | Block 4 | UR5Robot Unit Test | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-13 | 2026-07-14 | #175 |
 | 4-3d-impl | Block 4 | BilliardTable：移除手臂建立邏輯，新增 get_table_center() | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-14 | 2026-07-14 | #184 |
 | 4-3d-test | Block 4 | BilliardTable Unit Test | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-14 | 2026-07-14 | #185 |
-| 4-3e-impl | Block 4 | TableRobotManager：新增手臂操作中介層 | 1h | M2: 場景與機器人 | FALSE |  | 2026-07-15 | #186 |
-| 4-3e-test | Block 4 | TableRobotManager Unit Test | 1h | M2: 場景與機器人 | FALSE |  | 2026-07-16 | #187 |
-| 4-3f | Block 4 | BilliardExtension：分離訓練桌/Demo 桌，接入 TableRobotManager 與開關 callback | 1h | M2: 場景與機器人 | FALSE |  | 2026-07-17 | #188 |
+| 4-3e-impl | Block 4 | TableRobotManager：新增手臂操作中介層 | 1h | M2: 場景與機器人 | TRUE | 2026-07-14 | 2026-07-15 | #186 |
+| 4-3e-test | Block 4 | TableRobotManager Unit Test | 1h | M2: 場景與機器人 | TRUE | 2026-07-14 | 2026-07-16 | #187 |
+| 4-3f | Block 4 | BilliardExtension：分離訓練桌/Demo 桌，接入 TableRobotManager 與開關 callback | 1h | M2: 場景與機器人 | TRUE | 2026-07-15 | 2026-07-17 | #188 |
 | 4-3g | Block 4 | DebugMenu：新增訓練/Demo 執行中開關 UI | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-18 | #189 |
 | 4-4 | Block 4 | 設計球桿幾何體（USD Prim）確認尺寸比例合理 | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-18 | #88 |
 | 4-5 | Block 4 | 設計球桿與 UR5 末端的固定連結（Fixed Joint） | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-18 | #89 |
