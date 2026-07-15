@@ -17,7 +17,7 @@ from isaac_sim_impl_6_0.stage_api_impl import StageAPIImpl
 from isaac_sim_impl_6_0.material_api_impl import MaterialAPIImpl
 from ui.debug_menu import DebugMenu
 from core.models.billiard_table import BilliardTable
-from core.services.break_shot_position_provider import BreakShotPositionProvider
+from core.models.table_robot_manager import TableRobotManager
 
 _TABLE_COUNT = 1
 
@@ -26,6 +26,8 @@ class BilliardExtension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
         self._debug_menu = None
         self._tables = []
+        self._demo_table = None
+        self._robot = None
         stage = omni.usd.get_context().get_stage()
         if stage is not None:
             self._billiard_init()
@@ -45,45 +47,62 @@ class BilliardExtension(omni.ext.IExt):
         material_api = MaterialAPIImpl()
         self._table_unit_side_length = 0
         self._tables: list[BilliardTable] = []
-        
-        self._demo_table, self._table_unit_side_length = self._build_demo_table(self._stage_api, material_api)
+
+        demo_table_path = "/World/Table_Demo"
+        self._demo_table = self._build_table(
+            demo_table_path, self._stage_api, material_api, (0, 0)
+        )
+        self._table_unit_side_length = self._get_table_side_length(
+            self._demo_table.get_table_prim_path()
+        )
+
+        demo_table_center = self._demo_table.get_table_center()
+        self._robot = TableRobotManager(
+            demo_table_center, demo_table_path, self._stage_api
+        )
 
         self._build_tables(_TABLE_COUNT, self._stage_api, material_api)
+
+        self._training_enabled = False
+        self._demo_enabled = False
         self._debug_menu = DebugMenu()
-        
-    def _build_demo_table(self, stage_api: StageAPI, material_api: MaterialAPI) -> tuple[BilliardTable, float]:
-        table = self._build_table(f"/World/Table_Demo", stage_api, material_api, (0, 0))
-        side_length = self._get_table_side_length(table.get_table_prim_path())
-        return (table, side_length)
 
     def _build_tables(self, total: int, stage_api: StageAPI, material_api: MaterialAPI):
         # 計算單邊撞球桌的個數
         side_count = 1
         while total > side_count * side_count:
             side_count += 1
-        print(f"side count : {side_count}")
 
         index = 0
         for i in range(side_count):
             for j in range(side_count):
-                x_pos = self._table_unit_side_length * (i+1)
-                y_pos = self._table_unit_side_length * (j+1)
+                x_pos = self._table_unit_side_length * (i + 1)
+                y_pos = self._table_unit_side_length * (j + 1)
                 table = self._build_table(
                     f"/World/Table_{index}", stage_api, material_api, (x_pos, y_pos)
                 )
-                print(f"create table {index}")
                 self._tables.append(table)
                 index += 1
-                
-    def _build_table(self, table_name: str, stage_api: StageAPI, material_api: MaterialAPI, pos: tuple[float, float]) -> BilliardTable:
-        table = BilliardTable(
-            table_name, stage_api, material_api, pos 
-        )
+
+    def _build_table(
+        self,
+        table_name: str,
+        stage_api: StageAPI,
+        material_api: MaterialAPI,
+        pos: tuple[float, float],
+    ) -> BilliardTable:
+        table = BilliardTable(table_name, stage_api, material_api, pos)
         return table
 
     def _get_table_side_length(self, prim_path):
         x_length, y_length, z_length = self._stage_api.get_prim_sides(prim_path)
         return max(x_length, y_length, z_length)
+
+    def _on_training_toggle(self, enable: bool):
+        self._training_enabled = enable
+
+    def _on_demo_toggle(self, enable: bool):
+        self._demo_enabled = enable
 
     def on_shutdown(self):
         if self._debug_menu:
@@ -92,4 +111,10 @@ class BilliardExtension(omni.ext.IExt):
         for t in self._tables:
             t.destroy()
         self._tables = None
+        if self._demo_table:
+            self._demo_table.destroy()
+            self._demo_table = None
+        if self._robot:
+            self._robot.destroy()
+            self._robot = None
         self._sub = None
