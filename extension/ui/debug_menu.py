@@ -1,6 +1,6 @@
 import asyncio
 from typing import Callable
-from ui_style import UiStyle
+from .ui_style import UiStyle
 
 import omni.kit.app
 import omni.ui
@@ -11,7 +11,11 @@ class DebugMenu:
     Debug 用UI, 放在Viewport 右側
     """
 
-    def __init__(self, on_training_toggle: Callable[[bool], None], on_demo_toggle: Callable[[bool], None]) -> None:
+    def __init__(
+        self,
+        on_training_toggle: Callable[[bool], None],
+        on_demo_toggle: Callable[[bool], None],
+    ) -> None:
         self._window = omni.ui.Window(
             "Billiard Debug",
             width=300,
@@ -32,7 +36,11 @@ class DebugMenu:
                     omni.ui.Label("Training")
                     training_model = omni.ui.SimpleBoolModel(False)
                     omni.ui.ToolButton(
-                        text="", model=training_model,width=50,height=24, style=toggle_style
+                        text="",
+                        model=training_model,
+                        width=50,
+                        height=24,
+                        style=toggle_style,
                     )
                     training_model.add_value_changed_fn(
                         lambda m: self._on_training_toggle(m.get_value_as_bool())
@@ -41,12 +49,15 @@ class DebugMenu:
                     omni.ui.Label("Break shot demo")
                     demo_model = omni.ui.SimpleBoolModel(False)
                     omni.ui.ToolButton(
-                        text="",model=demo_model, width=50, height=24, style=toggle_style
+                        text="",
+                        model=demo_model,
+                        width=50,
+                        height=24,
+                        style=toggle_style,
                     )
                     demo_model.add_value_changed_fn(
                         lambda m: self._on_demo_toggle(m.get_value_as_bool())
                     )
-
 
     async def _dock_to_viewport(self) -> None:
         target_window = None
