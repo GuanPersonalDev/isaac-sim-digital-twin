@@ -65,7 +65,7 @@ class BilliardExtension(omni.ext.IExt):
 
         self._training_enabled = False
         self._demo_enabled = False
-        self._debug_menu = DebugMenu()
+        self._debug_menu = DebugMenu(self._on_training_toggle, self._on_demo_toggle)
 
     def _build_tables(self, total: int, stage_api: StageAPI, material_api: MaterialAPI):
         # 計算單邊撞球桌的個數
