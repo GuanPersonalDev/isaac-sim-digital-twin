@@ -16,10 +16,12 @@ from core.ports.stage_api import StageAPI
 from isaac_sim_impl_6_0.stage_api_impl import StageAPIImpl
 from isaac_sim_impl_6_0.material_api_impl import MaterialAPIImpl
 from ui.debug_menu import DebugMenu
+from ui.tool_menu_registry import discover_and_register, unregister
 from core.models.billiard_table import BilliardTable
 from core.models.table_robot_manager import TableRobotManager
 
 _TABLE_COUNT = 1
+_TOOL_MENU_NAME = "Tools"
 
 
 class BilliardExtension(omni.ext.IExt):
@@ -28,6 +30,8 @@ class BilliardExtension(omni.ext.IExt):
         self._tables = []
         self._demo_table = None
         self._robot = None
+        scripts_dir = os.path.join(_PROJECT_ROOT, "scripts")
+        self._tool_menu_items = discover_and_register(scripts_dir, _TOOL_MENU_NAME)
         stage = omni.usd.get_context().get_stage()
         if stage is not None:
             self._billiard_init()
@@ -105,6 +109,9 @@ class BilliardExtension(omni.ext.IExt):
         self._demo_enabled = enable
 
     def on_shutdown(self):
+        if self._tool_menu_items:
+            unregister(self._tool_menu_items, _TOOL_MENU_NAME)
+            self._tool_menu_items = None
         if self._debug_menu:
             self._debug_menu.destroy()
             self._debug_menu = None
