@@ -1,190 +1,291 @@
 # 球桿與 UR5 末端的固定連結（Fixed Joint）— 技術設計文件
 
 > 生成時間：2026-07-15
+>
+> 更新時間：2026-07-16
+>
 > 所屬專案：isaac-sim-digital-twin
+>
 > 關聯 GitHub：https://github.com/GuanPersonalDev/isaac-sim-digital-twin/issues/89
 
 ---
 
 ## 1. 功能概述
 
-Issue #88 已在 `TableRobotManager` 建立球桿 Prim（`get_cue_stick_prim_path()`），但球桿目前使用暫定位置（與 UR5 機器人相同世界座標），並未與機器人有任何物理關聯。本次任務以 PhysX Fixed Joint 將球桿 Prim 固定連結至 UR5 末端執行器 Prim，取代暫定定位邏輯。輸入為球桿 Prim 路徑（`TableRobotManager` 既有）與 UR5 末端執行器 Prim 路徑（本次新增查詢方法）；輸出為 Stage 中新增的 Fixed Joint Prim，效果是球桿在物理模擬中會確實跟隨 UR5 末端執行器移動，供後續 Block 5（擊球動作狀態機）使用。
+Issue #88 已由 `TableRobotManager` 建立球桿 Prim。Issue #89 進一步使用 PhysX Fixed Joint，將球桿固定連結至 UR5 的 `wrist_3_link`，使球桿能在物理模擬中穩定跟隨手臂末端移動。
+
+原始實作直接建立 Fixed Joint，卻沒有先讓球桿與 `wrist_3_link` 的世界 Transform 重合。停止狀態下，Joint 的零值 local frame 不會自動搬移球桿；開始模擬時，PhysX solver 會嘗試在極短時間內消除兩端的大幅位置誤差，造成球桿高速移動、撞擊撞球，並將約束反力傳回 UR5 Articulation，使手臂持續抖動。
+
+本次修正的核心是在建立 Joint 前，先將球桿完整世界 Transform 對齊 `wrist_3_link`，再排除球桿與連接剛體之間的碰撞，最後建立 Fixed Joint。第一版使用零位置偏移與零旋轉偏移，兩端 Joint local frame 維持零位置與 identity rotation。
 
 ---
 
-## 2. 模組清單與職責
+## 2. 設計範圍
+
+### 納入範圍
+
+- `wrist_3_link` 同時作為 Fixed Joint 的物理 body 與球桿的定位 target。
+- `StageAPI` 新增世界 Transform 對齊能力。
+- `StageAPI` 新增指定 Prim pair 的碰撞過濾能力。
+- `TableRobotManager` 依「建立球桿 → 對齊 → 過濾碰撞 → 建立 Joint」的順序初始化。
+- Core 測試驗證呼叫參數及呼叫順序。
+- 球桿質量由 USD 資產管理，不由執行階段程式設定。
+
+### 不納入範圍
+
+- 第一版不支援球桿相對 `wrist_3_link` 的位置或旋轉 offset。
+- 第一版不新增 Fixed Joint local frame 參數；兩端使用零位置與 identity rotation。
+- 不新增檔案、class 或獨立 `JointAPI` Port。
+- 不由程式設定 Mass。
+- 不停用球桿與撞球、桌面或其他外部物件的碰撞。
+
+---
+
+## 3. 模組清單與職責
 
 | 模組 | 所在層級 | 職責 | 檔案路徑 |
 |---|---|---|---|
-| `UR5Robot` | core/models | 新增 `get_end_effector_prim_path()`，回傳末端執行器 Prim 路徑（純字串組合） | `core/models/ur5_robot.py` |
-| `StageAPI` | core/ports | 新增抽象方法 `create_fixed_joint()` | `core/ports/stage_api.py` |
-| `StageAPIImpl` | extension/isaac_sim_impl_6_0 | 實作 `create_fixed_joint()`，使用 `pxr.UsdPhysics.FixedJoint` | `extension/isaac_sim_impl_6_0/stage_api_impl.py` |
-| `TableRobotManager` | core/models | 修改建構子：取得末端執行器路徑並建立 Fixed Joint，移除球桿暫定定位呼叫 | `core/models/table_robot_manager.py` |
+| `UR5Robot` | core/models | `get_end_effector_prim_path()` 回傳 `{robot_prim_path}/wrist_3_link` | `core/models/ur5_robot.py` |
+| `StageAPI` | core/ports | 定義 `align_prim_to_target()`、`filter_collision_pair()` 與既有 `create_fixed_joint()` 抽象介面 | `core/ports/stage_api.py` |
+| `StageAPIImpl` | extension/isaac_sim_impl_6_0 | 計算並寫入 Prim Transform、建立碰撞過濾關係、建立 Fixed Joint | `extension/isaac_sim_impl_6_0/stage_api_impl.py` |
+| `TableRobotManager` | core/models | 按正確順序協調球桿對齊、碰撞過濾與 Fixed Joint 建立 | `core/models/table_robot_manager.py` |
+| `ball_stick.usd` | assets | 保存球桿 Rigid Body 的 Mass，目標值為 `0.5 kg` | `assets/ball_stick.usd` |
+
+本次沿用既有檔案與 class，不建立任何新檔案或新 class。
 
 ---
 
-## 3. 類別設計
+## 4. 類別與介面設計
 
-### UR5Robot（修改部分）
+### 4.1 UR5Robot
 
-**職責（新增）：** 提供末端執行器 Prim 路徑查詢，供 Fixed Joint 建立時使用。
+**職責：** 提供已確認的 UR5 末端剛體 Prim 路徑。
 
-**介面：**
 ```python
 class UR5Robot:
-    _END_EFFECTOR_LINK_NAME = "tool0"  # 佔位常數，待查證 UR5 USD 實際連桿名稱
+    _END_EFFECTOR_LINK_NAME = "wrist_3_link"
 
     def get_end_effector_prim_path(self) -> str:
-        """回傳末端執行器 Prim 的完整路徑，例如 {prim_path}/tool0。
-        純字串路徑組合，不呼叫 ArticulationAPI（UR5 是 Nucleus 現成資產，
-        結構已知；耦合 ArticulationAPI 會提早綁定控制層生命週期，
-        而 TableRobotManager 建構發生在場景初始化階段，
-        ArticulationAPI.initialize() 需等場景穩定才能呼叫）。
-        """
+        """回傳 {prim_path}/wrist_3_link。"""
         ...
 ```
 
-**依賴：**
-- 輸入來源：既有 `self._prim_path`（建構子已組好）
-- 輸出去向：`TableRobotManager` 建構子，作為 `create_fixed_joint` 的 `body1_path`
+`wrist_3_link` 已確認是要連接的 Articulation Link。場景中不存在 `tool0`，因此設計與測試均不得再使用 `tool0`。
 
----
+### 4.2 StageAPI
 
-### StageAPI / StageAPIImpl（新增部分）
+**職責：** 將所有 USD／PhysX 細節留在 extension 實作層，讓 core 僅透過平台無關的路徑介面表達初始化流程。
 
-**職責：** 在 Stage 中建立 PhysX Fixed Joint Prim，連結兩個已存在的 Prim。
-
-**介面：**
 ```python
 class StageAPI(ABC):
     @abstractmethod
-    def create_fixed_joint(self, joint_path: str, body0_path: str, body1_path: str) -> None:
-        """
-        在 joint_path 建立 Fixed Joint Prim，將 body0_path 與 body1_path
-        兩端固定連結。
-        """
+    def align_prim_to_target(self, prim_path: str, target_path: str) -> None:
+        """使 prim_path 的完整世界 Transform 與 target_path 重合。"""
+        ...
+
+    @abstractmethod
+    def filter_collision_pair(self, prim_path_a: str, prim_path_b: str) -> None:
+        """排除指定兩個 Prim 之間的碰撞，不影響其他碰撞 pair。"""
+        ...
+
+    @abstractmethod
+    def create_fixed_joint(
+        self,
+        joint_path: str,
+        body0_path: str,
+        body1_path: str,
+    ) -> None:
+        """在 joint_path 建立 Fixed Joint，固定連結兩端剛體。"""
         ...
 ```
 
-實作（`StageAPIImpl`）：
+### 4.3 StageAPIImpl
+
+#### `align_prim_to_target()`
+
+實作必須處理 Prim parent 不同的情況，不能只複製 local translate。Transform 計算原則為：
+
+```text
+desired_prim_world = target_world
+prim_local = inverse(prim_parent_world) × desired_prim_world
+```
+
+寫入內容須包含完整位置與旋轉，而非只處理 translate。第一版不套用額外 offset，因此對齊完成後：
+
+```text
+CueStick world transform = wrist_3_link world transform
+```
+
+若球桿 root 既有必要的 scale 或 pivot transform，實作時必須保留或納入矩陣計算，不能在未檢查資產結構的情況下遺失既有 transform op。
+
+#### `filter_collision_pair()`
+
+使用 USD Physics filtered-pairs 關係，只過濾以下碰撞 pair：
+
+```text
+CueStick ↔ wrist_3_link
+```
+
+不得排除以下碰撞：
+
+```text
+CueStick ↔ 撞球
+CueStick ↔ 桌面
+CueStick ↔ 其他外部物件
+```
+
+這可避免連接處的幾何重疊使碰撞排斥力與 Fixed Joint 約束互相對抗。
+
+#### `create_fixed_joint()`
+
 ```python
-def create_fixed_joint(self, joint_path: str, body0_path: str, body1_path: str) -> None:
+def create_fixed_joint(
+    self,
+    joint_path: str,
+    body0_path: str,
+    body1_path: str,
+) -> None:
     joint = UsdPhysics.FixedJoint.Define(self.get_stage(), joint_path)
     joint.CreateBody0Rel().SetTargets([body0_path])
     joint.CreateBody1Rel().SetTargets([body1_path])
 ```
 
-**依賴：**
-- 輸入來源：`TableRobotManager`（呼叫端提供三個路徑參數）
-- 輸出去向：`pxr.UsdPhysics.FixedJoint`（外部 PhysX API）
+第一版在建立 Joint 前已讓球桿與 `wrist_3_link` 的世界 Transform 重合，因此兩端 local position 使用 `(0, 0, 0)`，local rotation 使用 identity。無需增加 offset 或 local frame 參數。
 
-**設計理由：** Fixed Joint 本質是「在 Stage 建立一個新 Prim」，與既有的 `create_reference_prim` 同類職責，放進 `StageAPI` 比新開一個獨立 Port（如 `JointAPI`）更符合現有分層慣例；`RigidBodyAPI` 是純查詢職責（`get_position`/`get_linear_velocity`/`get_angular_velocity`），不適合放這裡。
+### 4.4 TableRobotManager
 
-**實作風險提醒（待驗證，見第 8 節）：** 兩端 Prim 通常需要 `PhysicsRigidBodyAPI` 才能正確參與物理模擬；球桿資產（`ball_stick.usd`）是否已有 `RigidBodyAPI`/`CollisionAPI` 尚未查證；UR5 末端執行器屬於 Articulation 的一部分，Fixed Joint 銜接一般 RigidBody 與 Articulation Link 在 PhysX 是支援的，但需注意 `excludeFromArticulation` 等設定，建議建好後在 Isaac Sim Play 模式下實際驗證球桿是否確實跟隨、無漂移。
+**職責：** 建立場景物件並協調正確的物理初始化順序。
 
----
-
-### TableRobotManager（修改部分）
-
-**職責（修改）：** 建構子內以 Fixed Joint 將球桿連結至 UR5 末端執行器，取代原本的球桿暫定定位（`set_prim_translate`）。
-
-**介面：**
 ```python
 class TableRobotManager:
-    _ROBOT_OFFSET_FROM_TABLE_CENTER = (1.5, 0.0, 0.0)
-    _CUE_JOINT_OFFSET = (0.0, 0.0, 0.0)  # 佔位常數，待球桿 Pivot 點位置查證後填值
-
     def __init__(
         self,
         table_center: tuple[float, float, float],
         base_path: str,
         stage_api: StageAPI,
     ) -> None:
-        """建立 UR5Robot、引用球桿資產（既有，#88），
-        並以 Fixed Joint 將球桿固定連結至 UR5 末端執行器
-        （新增，#89）。不再對球桿呼叫 set_prim_translate。
-        """
-        ...
-
-    def get_robot_prim_path(self) -> str:
-        """回傳 Robot Prim 的完整路徑。（既有，不變）"""
-        ...
-
-    def get_cue_stick_prim_path(self) -> str:
-        """回傳球桿 Prim 的完整路徑。（既有，不變）"""
-        ...
-
-    def destroy(self) -> None:
-        """既有，不變。"""
+        """建立 UR5 與球桿，先對齊並過濾碰撞，再建立 Fixed Joint。"""
         ...
 ```
 
-**依賴：**
-- 輸入來源：`UR5Robot.get_end_effector_prim_path()`（新增）、`self._cue_stick_prim_path`（既有）
-- 輸出去向：`StageAPI.create_fixed_joint()`（新增用法）
+第一版不需要 `_CUE_JOINT_OFFSET`。若既有程式仍保留未使用的 offset 常數，實作階段應移除，避免暗示目前已支援抓持偏移。
 
 ---
 
-## 4. 資料流
+## 5. 資料流與呼叫順序
 
-```
+```text
 BilliardExtension._billiard_init()
   → TableRobotManager.__init__(table_center, base_path, stage_api)
-    → world_position = table_center + _ROBOT_OFFSET_FROM_TABLE_CENTER   （既有邏輯，不變）
-    → UR5Robot(base_path, stage_api, world_position)                    （既有，不變）
-    → stage_api.create_reference_prim(base_path + "/CueStick", CUE_STICK_PATH)   （既有，#88）
-    → end_effector_path = self._robot.get_end_effector_prim_path()      （新增）
-    → joint_path = self._cue_stick_prim_path + "/FixedJointToRobot"     （新增）
-    → stage_api.create_fixed_joint(joint_path, self._cue_stick_prim_path, end_effector_path)   （新增）
-    ✗ stage_api.set_prim_translate(cue_stick_path, *world_position)     （移除，#89 起由物理引擎接管球桿位置）
-  → 回傳 TableRobotManager 實例
-  → 之後（Isaac Sim Play 模式）：PhysX 依 Fixed Joint 約束，
-    球桿隨 UR5 末端執行器物理模擬移動
+    → 建立 UR5Robot 並設定既有世界位置
+    → stage_api.create_reference_prim(cue_stick_path, CUE_STICK_PATH)
+    → end_effector_path = robot.get_end_effector_prim_path()
+       # {robot_prim_path}/wrist_3_link
+    → stage_api.align_prim_to_target(cue_stick_path, end_effector_path)
+    → stage_api.filter_collision_pair(cue_stick_path, end_effector_path)
+    → stage_api.create_fixed_joint(
+          joint_path,
+          cue_stick_path,
+          end_effector_path,
+      )
 ```
+
+以下順序是功能正確性的必要條件：
+
+```text
+create cue → align → filter cue/wrist collision → create fixed joint
+```
+
+不能先建立 Fixed Joint 再對齊，也不能依賴 Disabled Joint 或 solver projection 取代初始 Transform 對齊。
 
 ---
 
-## 5. 依賴關係圖
+## 6. 依賴關係
 
-```
+```text
 TableRobotManager
-  ├── 依賴 UR5Robot（既有 + 新增 get_end_effector_prim_path()）
-  └── 依賴 StageAPI（新增用法：create_fixed_joint）
-
-UR5Robot
-  └── 無新依賴（固定路徑組合，不呼叫 ArticulationAPI）
+  ├── UR5Robot.get_end_effector_prim_path()
+  └── StageAPI
+      ├── create_reference_prim()
+      ├── align_prim_to_target()
+      ├── filter_collision_pair()
+      └── create_fixed_joint()
 
 StageAPIImpl
-  └── 依賴 pxr.UsdPhysics（PhysX Fixed Joint API）
+  ├── USD Transform API
+  └── pxr.UsdPhysics
+      ├── FilteredPairsAPI
+      └── FixedJoint
 ```
+
+Core 層不直接依賴 `pxr`、`omni.usd` 或其他 Isaac Sim API。
 
 ---
 
-## 6. 邊緣案例與錯誤處理
+## 7. USD 資產設定
+
+球桿質量不由程式碼設定。使用者需在 Isaac Sim 中開啟 `assets/ball_stick.usd`，選取套用 `PhysicsRigidBodyAPI` 的球桿根 Prim，於 Physics Mass 設定：
+
+```text
+Mass = 0.5 kg
+```
+
+儲存資產後，重新載入引用球桿的主場景，確認 Mass 仍為 `0.5 kg`。此設定屬於資產本身的物理屬性，`StageAPI` 不新增 `set_rigid_body_mass()`，`TableRobotManager` 也不在執行階段覆寫 Mass。
+
+---
+
+## 8. 邊緣案例與錯誤處理
 
 | 情境 | 處理方式 |
 |---|---|
-| `create_fixed_joint` 或末端執行器路徑取得失敗 | 不做防呆檢查，沿用專案既有模式（比照 #88 的 `create_reference_prim`）：直接讓底層例外拋出，由呼叫端（Extension 初始化）自然中斷 |
-| 球桿與機器人初始位置重疊/偏移問題 | 由 Fixed Joint 建立後接管，不再需要 `TableRobotManager` 手動定位 |
-| 球桿或末端執行器缺少 `PhysicsRigidBodyAPI` 導致 Joint 不生效 | 本次不寫防呆邏輯；列入待驗證事項，需在 Isaac Sim Play 模式下手動確認球桿是否確實跟隨、無漂移 |
+| `prim_path`、`target_path` 或 Joint body 路徑不存在 | 沿用專案既有模式，讓底層 USD／PhysX 例外自然拋出，不在 core 重複防呆 |
+| 球桿與 `wrist_3_link` 的 parent 不同 | 以世界 Transform 對齊後，換算回球桿 parent 空間的 local Transform，不能複製 local translate |
+| 球桿 root 有既有 scale／pivot／transform op | 實作前檢查並保留必要變換，避免清除資產原有設定 |
+| 連接處碰撞幾何重疊 | 只排除 CueStick 與 `wrist_3_link` 的碰撞 pair |
+| 球桿需要正式抓持位置或方向 | 列為後續功能；屆時需同時設計 offset 與 Joint local attachment frames，不在第一版先猜測數值 |
+| Joint 建立後仍有劇烈抖動 | 依序檢查對齊誤差、filtered pair 是否生效、球桿 Mass、碰撞形狀及 UR5 self-collision 設定；不以 `excludeFromArticulation` 作為本案例的預設解法 |
 
 ---
 
-## 7. 測試涵蓋（對應 Unit Test）
+## 9. 測試涵蓋
 
-| 測試案例 | 測試檔案 | 說明 |
+### Core Unit Test
+
+| 測試案例 | 測試檔案 | 驗證內容 |
 |---|---|---|
-| `test_table_robot_manager_creates_fixed_joint` | `core/tests/test_table_robot_manager.py` | 驗證 `stage_api.create_fixed_joint` 被呼叫，`body0_path` 為球桿路徑、`body1_path` 為 `get_end_effector_prim_path()` 回傳值 |
-| `test_table_robot_manager_no_longer_sets_cue_stick_translate` | `core/tests/test_table_robot_manager.py` | 確認暫定定位邏輯（`set_prim_translate` for cue stick）已移除，或既有測試已刪除/調整 |
-| `test_ur5_robot_get_end_effector_prim_path` | `core/tests/test_ur5_robot.py`（若不存在則新建） | 驗證回傳值為 `{prim_path}/<連桿名稱>` |
+| `test_table_robot_manager_aligns_cue_stick_to_end_effector` | `core/tests/test_table_robot_manager.py` | 驗證 `align_prim_to_target(cue_stick_path, wrist_3_link_path)` 的參數 |
+| `test_table_robot_manager_filters_cue_stick_end_effector_collision` | `core/tests/test_table_robot_manager.py` | 驗證 `filter_collision_pair(cue_stick_path, wrist_3_link_path)` 的參數，且不過濾球桿與撞球或桌面 |
+| `test_table_robot_manager_creates_fixed_joint` | `core/tests/test_table_robot_manager.py` | 驗證 Joint path、`body0_path = cue_stick_path`、`body1_path = wrist_3_link_path` |
+| `test_table_robot_manager_initializes_cue_stick_joint_in_order` | `core/tests/test_table_robot_manager.py` | 使用 Mock 呼叫紀錄驗證 `create_reference_prim → align_prim_to_target → filter_collision_pair → create_fixed_joint` 的相對順序 |
+| `test_ur5_robot_get_end_effector_prim_path` | `core/tests/test_ur5_robot.py` | 驗證回傳 `{robot_prim_path}/wrist_3_link`，不得使用 `tool0` |
 
-備註：`StageAPIImpl` 與 `UR5Robot` 內實際呼叫 Isaac Sim/PhysX API 的部分不寫 Unit Test（沿用專案慣例，實作層用 Debug Menu 或手動場景驗證，Unit Test 只測 core 層邏輯與 Mock 呼叫參數）。
+測試需同時驗證參數與順序；只驗證 `create_fixed_joint()` 曾被呼叫，無法防止本次「未先對齊」的 Bug 再次發生。
+
+### Isaac Sim 手動驗證
+
+- Stop 狀態下，建立 Joint 前球桿已出現在 `wrist_3_link`。
+- 球桿與 `wrist_3_link` 的世界位置每軸誤差小於 `0.001 m`。
+- 球桿與 `wrist_3_link` 的世界旋轉一致。
+- Play 第一幀球桿沒有明顯 snap 或高速掃過場景。
+- UR5 不再持續抖動或亂動。
+- 撞球不會在 Play 第一幀被球桿意外撞擊。
+- UR5 移動時，球桿穩定跟隨且無可見漂移。
+- 球桿仍能與撞球及桌面發生預期碰撞。
+- 引用後的球桿 Mass 為 `0.5 kg`。
+
+`StageAPIImpl` 的 USD 矩陣運算與 PhysX 行為不寫 core Unit Test，依專案慣例以 Isaac Sim 場景手動驗證。
 
 ---
 
-## 8. 待決定事項
+## 10. 已確認決策與後續範圍
 
-- [ ] UR5 末端執行器在 USD 內的實際連桿名稱（需在 Isaac Sim Stage 樹展開 UR5 Prim 確認，例如 tool0 / ee_link / wrist_3_link 等）
-- [ ] `ball_stick.usd` 資產是否已套用 `PhysicsRigidBodyAPI` / `CollisionAPI`（需開啟資產確認）
-- [ ] `_CUE_JOINT_OFFSET` 實際數值（待球桿 Pivot 點位置查證後填入）
-- 後續依賴：本 Issue 完成後，球桿即可隨 UR5 末端執行器物理模擬移動，供後續 Block 5（擊球動作狀態機）使用
+- [x] `wrist_3_link` 是 Fixed Joint 連接的物理 body。
+- [x] 場景不存在 `tool0`；`wrist_3_link` 同時作為定位 target。
+- [x] 第一版使用零位置 offset 與零旋轉 offset。
+- [x] 第一版 Joint local frames 使用零位置與 identity rotation。
+- [x] Collision filtering 納入 Issue #89，只排除 CueStick 與 `wrist_3_link`。
+- [x] Mass 不由程式設定，改存入 `assets/ball_stick.usd`，目標值為 `0.5 kg`。
+- [x] 沿用既有檔案與 class，不新增檔案或 class。
+- [ ] 後續若需調整正式握持點，再另行量測球桿 Pivot，並同步設計 offset 與 Joint local attachment frames。
+
+Issue #89 完成後，球桿即可穩定跟隨 UR5 末端，供後續 Block 5 擊球動作狀態機使用。
