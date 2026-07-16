@@ -52,3 +52,15 @@ class TestUR5Robot:
         )
 
         assert robot.get_prim_path() == "/World/BilliardTable/Robot"
+
+    def test_get_end_effector_prim_path_returns_link_path(self):
+        ur5_robot_class = _ur5_robot_class()
+        robot = ur5_robot_class(
+            base_path="/World/BilliardTable",
+            stage_api=MagicMock(),
+            position=(1.5, 0.0, 0.0),
+        )
+
+        assert robot.get_end_effector_prim_path() == (
+            "/World/BilliardTable/Robot/" + ur5_robot_class._END_EFFECTOR_LINK_NAME
+        )

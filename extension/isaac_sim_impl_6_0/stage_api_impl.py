@@ -1,7 +1,7 @@
 import os
 
 import omni.usd
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 import isaacsim.core.utils.bounds as bounds_util
 from isaacsim.storage.native import get_assets_root_path
 
@@ -60,3 +60,33 @@ class StageAPIImpl(StageAPI):
         z_size = aabb[5] - aabb[2]
 
         return (x_size, y_size, z_size)
+
+    def create_fixed_joint(
+        self, joint_path: str, body0_path: str, body1_path: str
+    ) -> None:
+        joint = UsdPhysics.FixedJoint.Define(self.get_stage(), joint_path)
+        joint.CreateBody0Rel().SetTargets([body0_path])
+        joint.CreateBody1Rel().SetTargets([body1_path])
+
+        
+    def align_prim_to_target(self, prim_path: str, target_path: str) -> None:
+        prim = self._get_prim(prim_path)
+        target_prim = self._get_prim(target_path)
+        
+        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+
+        target_world = xform_cache.GetLocalToWorldTransform(target_prim)
+        prim_parent_world = xform_cache.GetParentToWorldTransform(prim)
+        
+        prim_local = target_world * prim_parent_world.GetInverse()
+        
+        xformable = UsdGeom.Xformable(prim)
+        xformable.ClearXformOpOrder()
+        xformable.AddTransformOp().Set(prim_local)
+
+
+    def filter_collision_pair(self, prim0_path: str, prim1_path: str) -> None:
+        prim0 = self._get_prim(prim0_path)
+        
+        filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(prim0)
+        filtered_pairs.CreateFilteredPairsRel().AddTarget(Sdf.Path(prim1_path))

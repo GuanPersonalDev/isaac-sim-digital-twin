@@ -66,3 +66,27 @@ class StageAPI(ABC):
         取得三邊長
         """
         ...
+
+    @abstractmethod
+    def create_fixed_joint(
+        self, joint_path: str, body0_path: str, body1_path: str
+    ) -> None:
+        """
+        在 joint_path 建立 Fixed Joint Prim, 將 body0_path 與 body1_path 兩端固定連接
+        """
+        ...
+
+        
+    @abstractmethod
+    def align_prim_to_target(self, prim_path: str, target_path: str) -> None:
+        """
+        將 prim_path 的 World Transform 對齊 target_path
+        """
+        ...
+        
+    @abstractmethod
+    def filter_collision_pair(self, prim0_path: str, prim1_path: str) -> None:
+        """
+        停用兩個 rigidbody 間的碰撞
+        """
+        ...

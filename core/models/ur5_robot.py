@@ -3,6 +3,7 @@ from ..services.asset_utility import UR5_PATH
 
 
 class UR5Robot:
+    _END_EFFECTOR_LINK_NAME = "wrist_3_link"
 
     def __init__(
         self,
@@ -17,3 +18,6 @@ class UR5Robot:
 
     def get_prim_path(self) -> str:
         return self._prim_path
+
+    def get_end_effector_prim_path(self) -> str:
+        return self._prim_path + "/" + self._END_EFFECTOR_LINK_NAME
