@@ -58,11 +58,11 @@
 | 4-4 | Block 4 | 設計球桿幾何體（USD Prim）確認尺寸比例合理 | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-15 | 2026-07-18 | #88 |
 | 4-5 | Block 4 | 設計球桿與 UR5 末端的固定連結（Fixed Joint） | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-16 | 2026-07-18 | #89 |
 | 4-8 | Block 4 | 空揮測速：單獨場景量測 TCP 峰值速度（含 asset velocity/effort limit 檢查）→ 定 A 動作空間速度上限 | 3h | M2: 場景與機器人 | TRUE | 2026-07-17 | 2026-07-19 | #176 |
-| 9-0 | Block 9 | Early termination 設計確認（球靜止偵測 → 立即計算 reward 並 reset） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-07-19 | #178 |
+| 9-0 | Block 9 | Early termination 設計確認（球靜止偵測 → 立即計算 reward 並 reset） | 0.5h | M5: RL 訓練與多環境 | TRUE | 2026-07-17 | 2026-07-19 | #178 |
 | 3-6 | Block 3 | 確認球的碰撞與滾動物理行為正常（PhysX 參數調校） | 1h | M2: 場景與機器人 | FALSE |  | 2026-07-19 | #81 |
 | 3-9b | Block 3 | 場景整體穩定性確認，物理仿真無異常 | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-19 | #153 |
-| 5-1 | Block 5 | 設計擊球參數資料格式（放置XY 方向角 速度 偏移2）+ Unit Test | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-19 | #92 |
-| 5-2 | Block 5 | 設計 ScriptController 狀態機（A 版 STRIKING = set_velocities） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-19 | #93 |
+| 5-1 | Block 5 | 設計擊球參數資料格式（放置XY 方向角 速度 偏移2）+ Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-17 | 2026-07-19 | #92 |
+| 5-2 | Block 5 | 設計 ScriptController 狀態機（A 版 STRIKING = set_velocities） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-17 | 2026-07-19 | #93 |
 | 5-3 | Block 5 | 撰寫狀態機 Unit Test（Mock ArticulationAPI） | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-20 | #94 |
 | 5-4 | Block 5 | 實作 ArticulationAPIImpl（isaac_sim_impl_6_0/） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-20 | #95 |
 | 5-11 | Block 5 | 實作 impulse-based 擊球（set_velocities + spin_efficiency 轉換）+ Unit Test | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-21 | #177 |
