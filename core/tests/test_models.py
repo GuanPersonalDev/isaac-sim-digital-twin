@@ -23,8 +23,10 @@ class TestBilliardState:
     def test_billiard_status_enum_values_are_correct(self):
         assert BilliardStatus.IDLE.value == "idle"
         assert BilliardStatus.AIMING.value == "aiming"
-        assert BilliardStatus.SHOOTING.value == "shooting"
-        assert BilliardStatus.RESETTING.value == "resetting"
+        assert BilliardStatus.STRIKING.value == "striking"
+        assert BilliardStatus.WAITING.value == "waiting"
+        assert BilliardStatus.RESET.value == "reset"
+        assert BilliardStatus.ERROR.value == "error"
 
     def test_create_with_empty_ball_positions_preserves_empty_list(self):
         billiard_state = BilliardState(

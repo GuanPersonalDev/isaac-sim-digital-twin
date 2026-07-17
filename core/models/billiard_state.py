@@ -5,8 +5,10 @@ from enum import Enum
 class BilliardStatus(Enum):
     IDLE = "idle"
     AIMING = "aiming"
-    SHOOTING = "shooting"
-    RESETTING = "resetting"
+    STRIKING = "striking"
+    WAITING = "waiting"
+    RESET = "reset"
+    ERROR = "error"
 
 
 @dataclass
