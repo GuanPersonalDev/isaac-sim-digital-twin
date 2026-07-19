@@ -32,7 +32,8 @@ class ConcreteController(ControllerBase):
         return Action(
             cue_speed=observation.shot_params[0],
             shot_angle=observation.shot_params[1],
-            position_offset=[observation.shot_params[2], 0.0, 0.0],
+            position_offset=[observation.shot_params[2], 0.0],
+            cue_ball_placement=[0.0, 0.0],
             should_control_articulation=False,
         )
 
@@ -84,7 +85,7 @@ class TestControllerBase:
         assert isinstance(action, Action)
         assert action.cue_speed == observation.shot_params[0]
         assert action.shot_angle == observation.shot_params[1]
-        assert action.position_offset == [observation.shot_params[2], 0.0, 0.0]
+        assert action.position_offset == [observation.shot_params[2], 0.0]
 
     def test_reset_can_be_called(self):
         # Arrange

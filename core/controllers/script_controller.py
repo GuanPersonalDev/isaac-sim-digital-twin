@@ -76,7 +76,7 @@ class ScriptController(ControllerBase):
         return result
         
     def _generate_action_result(self) -> Action:
-        return Action(cue_speed=0, position_offset=[0, 0, 0], shot_angle=0, should_control_articulation=False)
+        return Action(cue_speed=0, position_offset=[0, 0], shot_angle=0, cue_ball_placement=[0, 0], should_control_articulation=False)
 
     def reset(self):
         self._change_state(BilliardStatus.RESET)

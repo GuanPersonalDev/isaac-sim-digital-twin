@@ -26,3 +26,12 @@ class RigidBodyAPI(ABC):
         回傳角速度 (wx, wy, wz) (rad/s)
         """
         ...
+
+    @abstractmethod
+    def set_velocities(self, prim_path: str, linear_velocity: list[float], angular_velocity: list[float]) -> None:
+        """
+        設定 Rigidbody 速度
+        (vx, vy, vz) (m/s)
+        (wx, wy, wz) (rad/s)
+        """
+        ...

@@ -110,29 +110,32 @@ class TestAction:
         action = Action(
             cue_speed=2.5,
             shot_angle=42.0,
-            position_offset=[0.01, -0.02, 0.0],
+            position_offset=[0.01, -0.02],
+            cue_ball_placement=[0.1, -0.2],
             should_control_articulation=False,
         )
 
         assert action.cue_speed == 2.5
         assert action.shot_angle == 42.0
-        assert len(action.position_offset) == 3
+        assert len(action.position_offset) == 2
 
-    def test_create_with_position_offset_preserves_three_values(self):
+    def test_create_with_position_offset_preserves_two_values(self):
         action = Action(
             cue_speed=2.5,
             shot_angle=42.0,
-            position_offset=[0.01, -0.02, 0.0],
+            position_offset=[0.01, -0.02],
+            cue_ball_placement=[0.1, -0.2],
             should_control_articulation=False,
         )
 
-        assert action.position_offset == [0.01, -0.02, 0.0]
+        assert action.position_offset == [0.01, -0.02]
 
     def test_create_with_zero_cue_speed_preserves_boundary_value(self):
         action = Action(
             cue_speed=0.0,
             shot_angle=42.0,
-            position_offset=[0.0, 0.0, 0.0],
+            position_offset=[0.0, 0.0],
+            cue_ball_placement=[0.0, 0.0],
             should_control_articulation=False,
         )
 

@@ -84,8 +84,24 @@ WAITING   → RESET    : observation.is_ball_moving == False
 | `is_motion_complete` | `bool` | 手臂／場景是否已到達下游執行的目標（取代原本 `ArticulationAPI.is_motion_complete()` 直接呼叫） |
 | `has_error` | `bool` | 下游執行層偵測到異常（API 失敗、非預期物理狀態）時回寫，觸發 `ScriptController` 進入 `ERROR` |
 
-`Action` 新增一個 `bool` 欄位，表示「此 tick 是否需要下游對 robot 下達操作」（欄位名稱、各狀態下的期望值待實作時定案）。
+`Action` 新增一個 `bool` 欄位 `should_control_articulation`，表示「此 tick 是否需要下游對 robot 下達操作」。
 
-`STRIKING` 狀態固定輸出 `cue_speed = ScriptController.MAX_ARM_SPEED`、`shot_angle = 0`、`position_offset = [0.0, 0.0, 0.0]`；非零的角度/位移偏移量欄位保留給未來 `ModelController`（RL 模型）輸出使用，`ScriptController` 本身不做動態計算。
+`STRIKING` 狀態固定輸出 `cue_speed = ScriptController.MAX_ARM_SPEED`（`1.313`，Issue #176 空揮測速實測值）、`shot_angle = 0`、`position_offset = [0.0, 0.0]`；非零的角度/位移偏移量欄位保留給未來 `ModelController`（RL 模型）輸出使用，`ScriptController` 本身不做動態計算。
 
 `ArticulationAPI` **不需要**新增 `stop()`（曾於討論中提出，後定案改由下游在偵測到異常時直接回寫 `Observation.has_error`，不需要 `ScriptController` 呼叫任何停止方法）。
+
+### 5.4 Action 欄位改為對齊 RL 6 維規格（2026-07-19 修訂，Issue #177 前置）
+
+`Action` 原先的 `position_offset` 是 3 維，語意未定案。依 `phase3-task-breakdown.md`「RL 設計定案 → Action（6 個數字）」表格重新對齊：
+
+| 欄位 | 型別 | 用途 |
+|---|---|---|
+| `cue_speed` | `float` | 出桿速度 |
+| `shot_angle` | `float` | 出桿方向角度（相對桌面水平角） |
+| `position_offset` | `list[float]`（2 維） | 擊球位置偏移——打在白球表面的上下／左右偏移量（撞球「加塞」），與世界座標無關 |
+| `cue_ball_placement` | `list[float]`（2 維，新增） | 白球擺放位置 XY（Kitchen 區內） |
+| `should_control_articulation` | `bool` | 見 5.3 節 |
+
+`cue_speed` + `shot_angle` + `position_offset`（2）+ `cue_ball_placement`（2）＝ 6 維，對應 RL Action 空間；`should_control_articulation` 是 `ScriptController`/Demo 桌執行層額外需要的欄位，不計入 RL 的 6 維。
+
+`RigidBodyAPI`（`core/ports/rigid_body_api.py`）新增 `set_velocities(prim_path, linear_velocity, angular_velocity)`，供 Issue #177（impulse-based 擊球）直接對母球賦速使用。

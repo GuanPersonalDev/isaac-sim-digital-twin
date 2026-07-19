@@ -159,7 +159,7 @@ class TestStrikingToWaiting:
         assert controller._current_state == BilliardStatus.STRIKING
         assert action.cue_speed == ScriptController.MAX_ARM_SPEED
         assert action.shot_angle == 0
-        assert action.position_offset == [0.0, 0.0, 0.0]
+        assert action.position_offset == [0.0, 0.0]
 
 
 class TestWaitingToReset:
