@@ -10,3 +10,4 @@ class Action:
     cue_speed: float
     shot_angle: float
     position_offset: list[float]
+    should_control_articulation: bool

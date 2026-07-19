@@ -33,6 +33,7 @@ class ConcreteController(ControllerBase):
             cue_speed=observation.shot_params[0],
             shot_angle=observation.shot_params[1],
             position_offset=[observation.shot_params[2], 0.0, 0.0],
+            should_control_articulation=False,
         )
 
     def reset(self) -> None:
@@ -49,6 +50,10 @@ def observation() -> Observation:
         cue_ball_position=[-0.3, 0.0, 0.0],
         joint_angles=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
         shot_params=[2.5, 42.0, 0.01],
+        is_init_state=False,
+        is_ball_moving=False,
+        is_motion_complete=False,
+        has_error=False,
     )
 
 

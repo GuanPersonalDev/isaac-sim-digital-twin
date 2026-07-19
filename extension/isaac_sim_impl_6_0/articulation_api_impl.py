@@ -85,9 +85,11 @@ class ArticulationAPIImpl(ArticulationAPI):
 
     def _start_motion(self) -> None:
         if not self._motion_active:
-            self._world.add_physics_callback(self._MOTION_CALLBACK_NAME, self._step_motion)
+            self._world.add_physics_callback(
+                self._MOTION_CALLBACK_NAME, self._step_motion
+            )
             self._motion_active = True
-    
+
     def _step_motion(self, step_size: float) -> None:
         self._rmpflow.update_world()
         action = self._articulation_rmpflow.get_next_articulation_action(step_size)
@@ -103,21 +105,21 @@ class ArticulationAPIImpl(ArticulationAPI):
     def execute_strike(
         self, direction: list[float], distance: float, speed: float
     ) -> None:
-        #TODO: 若要精準控制速度，需要調整為使用差動 IK (Articulation.get_jacobian_matrices())
+        # TODO: 若要精準控制速度，需要調整為使用差動 IK (Articulation.get_jacobian_matrices())
         current_position = np.array(self.get_end_effector_position())
         direction_vector = np.array(direction)
         end_position = current_position + direction_vector * distance
-        
+
         current_orientation = self._get_end_effector_world_orientation()
         self.move_to_pose(end_position.tolist(), current_orientation.tolist())
-    
+
     def _get_end_effector_world_orientation(self) -> np.ndarray:
         world_matrix = self._get_world_matrix()
         quat = world_matrix.GetOrthonormalized().ExtractRotationQuat()
         real = quat.GetReal()
         imaginary = quat.GetImaginary()
         return np.array([real, imaginary[0], imaginary[1], imaginary[2]])
-    
+
     def _get_world_matrix(self) -> Gf.Matrix4d:
         stage = omni.usd.get_context().get_stage()
         prim = stage.GetPrimAtPath(self._end_effector_prim_path)
@@ -133,7 +135,7 @@ class ArticulationAPIImpl(ArticulationAPI):
     def get_end_effector_position(self) -> list[float]:
         if self._tip_local_offset is None:
             self._tip_local_offset = self._compute_tip_local_offset()
-            
+
         world_matrix = self._get_world_matrix()
         tip_local_point = Gf.Vec3d(*self._tip_local_offset.tolist())
         tip_world_point = world_matrix.Transform(tip_local_point)

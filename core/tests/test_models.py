@@ -66,6 +66,10 @@ class TestObservation:
             cue_ball_position=[-0.3, 0.0, 0.0],
             joint_angles=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
             shot_params=[1.5, 35.0, 0.02],
+            is_init_state=False,
+            is_ball_moving=False,
+            is_motion_complete=False,
+            has_error=False,
         )
 
         assert len(observation.ball_positions) == 2
@@ -78,6 +82,10 @@ class TestObservation:
             cue_ball_position=[-0.3, 0.0, 0.0],
             joint_angles=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
             shot_params=[],
+            is_init_state=False,
+            is_ball_moving=False,
+            is_motion_complete=False,
+            has_error=False,
         )
 
         assert observation.shot_params == []
@@ -88,6 +96,10 @@ class TestObservation:
             cue_ball_position=[-0.3, 0.0, 0.0],
             joint_angles=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
             shot_params=[1.5, 35.0, 0.02],
+            is_init_state=False,
+            is_ball_moving=False,
+            is_motion_complete=False,
+            has_error=False,
         )
 
         assert observation.ball_positions == []
@@ -99,6 +111,7 @@ class TestAction:
             cue_speed=2.5,
             shot_angle=42.0,
             position_offset=[0.01, -0.02, 0.0],
+            should_control_articulation=False,
         )
 
         assert action.cue_speed == 2.5
@@ -110,6 +123,7 @@ class TestAction:
             cue_speed=2.5,
             shot_angle=42.0,
             position_offset=[0.01, -0.02, 0.0],
+            should_control_articulation=False,
         )
 
         assert action.position_offset == [0.01, -0.02, 0.0]
@@ -119,6 +133,7 @@ class TestAction:
             cue_speed=0.0,
             shot_angle=42.0,
             position_offset=[0.0, 0.0, 0.0],
+            should_control_articulation=False,
         )
 
         assert action.cue_speed == 0.0
