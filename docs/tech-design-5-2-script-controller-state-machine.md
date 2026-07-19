@@ -32,18 +32,20 @@
 
 ---
 
-## 3. 狀態轉換條件
+## 3. 狀態轉換條件（2026-07-18 修訂，見第 5 節）
 
 ```text
-IDLE      → AIMING   : 收到擊球 Action（cue_speed / shot_angle / position_offset）
-AIMING    → STRIKING : 球桿末端已移動到擊球預備位置（RMPflow 到位確認）
-STRIKING  → WAITING  : 揮桿衝擊動作執行完畢（沿擊球方向加速推進完成）
-WAITING   → RESET    : 所有球速度 < 0.001 m/s（與 #178 定案閾值一致，見 phase3-plan-risks-solutions.md #6）
-RESET     → IDLE     : 場景重置完成（球回到開球位置）
-任何狀態   → ERROR    : API 呼叫失敗或偵測到非預期物理狀態（例如球飛出桌面、Prim 遺失）
+任何狀態  → ERROR    : observation.has_error == True（優先權最高，蓋過其他轉換判斷）
+RESET     → IDLE     : observation.is_motion_complete == True
+IDLE      → AIMING   : observation.is_init_state == True and observation.is_ball_moving == False
+AIMING    → STRIKING : observation.is_motion_complete == True
+STRIKING  → WAITING  : observation.is_motion_complete == True
+WAITING   → RESET    : observation.is_ball_moving == False
 ```
 
 `ERROR` 目前不定義自動恢復路徑；發生後交由呼叫端（`ScriptController` 的使用者或上層流程）決定是否重新初始化，不在本次設計範圍內臆測復原邏輯。
+
+初始狀態為 `RESET`：不論手臂／場景實際處於什麼姿態開機，一律先走 `RESET → IDLE` 的到位確認，確保 `IDLE` 是可信賴的已知起點。
 
 ---
 
@@ -51,5 +53,39 @@ RESET     → IDLE     : 場景重置完成（球回到開球位置）
 
 - [x] 直接擴充 `BilliardStatus`，不建立獨立狀態 enum。
 - [x] `STRIKING` / `RESET` 命名對齊 task-breakdown 5-2 條目。
-- [x] `WAITING` 判定閾值沿用 #178 定案的 0.001 m/s。
-- [ ] `ScriptController` 類別本體（狀態轉換的實際程式邏輯）留待 #94（Unit Test）與後續 impl 任務實作，本項僅完成狀態機設計與資料模型擴充。
+- [x] `WAITING` 判定閾值沿用 #178 定案的 0.001 m/s（由下游偵測後換算為 `Observation.is_ball_moving`，狀態機本身不比較速度數值）。
+- [x] `ScriptController` 類別本體與其 Unit Test 已完成第 5 節的架構修訂，不再依賴 `ArticulationAPI`。
+
+---
+
+## 5. 決策修訂：Controller／執行層職責分離（2026-07-18）
+
+### 5.1 背景
+
+原始設計（第 1～4 節）假設 `ScriptController` 是「Milestone B 手臂執行用」的控制器，狀態轉換直接呼叫 `ArticulationAPI`（`move_to_pose` / `move_to_home` / `is_motion_complete`）判斷是否到位。後續盤點 [phase3-schedule.md](phase3-schedule.md) 發現 Milestone A（訓練桌）已定案採用 `set_velocities` 衝量式擊球（#177），與手臂路徑規劃（#96、#97，已排入 M7 Milestone B）走的是兩條不同機制，若 `ScriptController` 綁死 `ArticulationAPI`，Demo 桌與訓練桌就無法共用同一顆 Controller。
+
+### 5.2 修訂後的職責劃分
+
+- **`ControllerBase` 的實作只分兩種決策風格**：狀態機操作（`ScriptController`，本文件描述的對象）與衝量式操作，這個分類跟「有沒有手臂」無關。
+- **`ScriptController` 是純決策類別**：建構子不收任何參數（不再依賴 `ArticulationAPI`），`get_action(observation) -> Action` 只讀 `Observation`、只回傳 `Action`，內部不呼叫任何執行層 API，因此不會拋出執行層例外。
+- **執行（如何把 Action 變成物理動作）是下游職責，依桌子類型分流**：
+  - Demo 桌：將 `Action` 解算為手臂路徑規劃，再呼叫 `ArticulationAPI` 操作手臂（對應 #95 `ArticulationAPIImpl`、#96/#97 手臂 AIMING/STRIKING，Milestone B）。
+  - 訓練桌：將 `Action` 直接轉換為母球衝量，餵入 RL 訓練迴圈更新 Model（對應 #177）。
+- **Demo 桌與訓練桌共用同一個 `ScriptController` 類別**，差異只在下游怎麼解讀 `Action`；要使用「狀態機」或「衝量式」哪一種 `ControllerBase` 實作，由 DebugMenu 切換，與桌子類型無關。
+
+### 5.3 資料模型異動
+
+`Observation` 新增（下游執行層偵測後回寫，`ScriptController` 只讀）：
+
+| 欄位 | 型別 | 用途 |
+|---|---|---|
+| `is_init_state` | `bool` | 撞球桌是否處於初始擺球位置 |
+| `is_ball_moving` | `bool` | 是否有球仍在移動（沿用 #178 的 0.001 m/s 閾值換算） |
+| `is_motion_complete` | `bool` | 手臂／場景是否已到達下游執行的目標（取代原本 `ArticulationAPI.is_motion_complete()` 直接呼叫） |
+| `has_error` | `bool` | 下游執行層偵測到異常（API 失敗、非預期物理狀態）時回寫，觸發 `ScriptController` 進入 `ERROR` |
+
+`Action` 新增一個 `bool` 欄位，表示「此 tick 是否需要下游對 robot 下達操作」（欄位名稱、各狀態下的期望值待實作時定案）。
+
+`STRIKING` 狀態固定輸出 `cue_speed = ScriptController.MAX_ARM_SPEED`、`shot_angle = 0`、`position_offset = [0.0, 0.0, 0.0]`；非零的角度/位移偏移量欄位保留給未來 `ModelController`（RL 模型）輸出使用，`ScriptController` 本身不做動態計算。
+
+`ArticulationAPI` **不需要**新增 `stop()`（曾於討論中提出，後定案改由下游在偵測到異常時直接回寫 `Observation.has_error`，不需要 `ScriptController` 呼叫任何停止方法）。

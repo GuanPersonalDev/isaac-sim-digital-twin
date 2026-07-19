@@ -63,8 +63,8 @@
 | 3-9b | Block 3 | 場景整體穩定性確認，物理仿真無異常 | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-19 | #153 |
 | 5-1 | Block 5 | 設計擊球參數資料格式（放置XY 方向角 速度 偏移2）+ Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-17 | 2026-07-19 | #92 |
 | 5-2 | Block 5 | 設計 ScriptController 狀態機（A 版 STRIKING = set_velocities） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-17 | 2026-07-19 | #93 |
-| 5-3 | Block 5 | 撰寫狀態機 Unit Test（Mock ArticulationAPI） | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-20 | #94 |
-| 5-4 | Block 5 | 實作 ArticulationAPIImpl（isaac_sim_impl_6_0/） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-20 | #95 |
+| 5-3 | Block 5 | 撰寫狀態機 Unit Test（Mock ArticulationAPI） | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-19 | 2026-07-20 | #94 |
+| 5-4 | Block 5 | 實作 ArticulationAPIImpl（isaac_sim_impl_6_0/） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-19 | 2026-07-20 | #95 |
 | 5-11 | Block 5 | 實作 impulse-based 擊球（set_velocities + spin_efficiency 轉換）+ Unit Test | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-21 | #177 |
 | 5-7 | Block 5 | 實作 WAITING：等待所有球靜止（速度閾值判定）+ Unit Test | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-22 | #98 |
 | 5-8 | Block 5 | 實作 RESET：場景重置 → 回到 IDLE | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-22 | #99 |
