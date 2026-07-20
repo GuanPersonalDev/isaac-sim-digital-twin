@@ -38,6 +38,7 @@ class TableBallSet:
         self._table_z = table_z
         self._ball_radius = ball_radius
         self._built = False
+        self._ball_prim_list: list[str] = []
 
     def build(self, positions: dict[int, tuple[float, float]]) -> None:
         """
@@ -61,11 +62,18 @@ class TableBallSet:
             else:
                 r, g, b = BALL_COLORS[ball_id]
                 self._material_api.apply_preview_surface(prim_path, r, g, b)
+            self._ball_prim_list.append(prim_path)
 
         self._built = True
 
     def _get_ball_prim_path(self, ball_id: int):
         return self._base_path + f"/Balls/Ball_{ball_id}"
+
+    def get_ball_prim_paths(self) -> list[str]:
+        """
+        回傳 10 顆球的 prim path 清單
+        """
+        return self._ball_prim_list
 
     def _apply_ball9_material(self, prim_path: str) -> None:
         if not os.path.exists(STRIPE_MDL_PATH):
@@ -131,3 +139,6 @@ class TableBallSet:
     def _check_ball_id(self, ball_id: int) -> None:
         if ball_id not in range(10):
             raise ValueError(f"ball_id 必須在 0–9 之間，收到：{ball_id}")
+
+    def get_table_z(self) -> float:
+        return self._table_z

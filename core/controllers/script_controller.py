@@ -13,6 +13,9 @@ class ScriptController(ControllerBase):
     def _change_state(self, status: BilliardStatus):
         self._current_state = status
 
+    def get_current_state(self) -> BilliardStatus:
+        return self._current_state
+
 
     def get_action(self, observation: Observation) -> Action:
         if observation.has_error:
