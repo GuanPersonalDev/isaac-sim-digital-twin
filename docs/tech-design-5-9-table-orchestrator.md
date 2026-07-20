@@ -24,6 +24,7 @@
 | `DemoTableOrchestrator` | core/services | Demo 桌差異實作：下游動作透過 `UR5Robot`/`ArticulationAPI` 執行（動畫式、多 tick） | `core/services/table_orchestrator.py`（新檔案，同檔） |
 | `TrainingTableOrchestrator` | core/services | 訓練桌差異實作：手臂相關動作皆為 no-op 或恆真，STRIKING 呼叫 `ImpulseStrikingService`（瞬時、單 tick） | `core/services/table_orchestrator.py`（新檔案，同檔） |
 | `TableBallSet.get_ball_prim_paths()` | core/models | 新增公開方法，回傳 10 顆球的 prim path 清單，供 `TableOrchestrator` 建構 `BallMotionMonitor` 使用 | `core/models/table_ball_set.py`（既有檔案，新增方法） |
+| `ScriptController.get_current_state()` | core/controllers | 新增公開方法，回傳 `self._current_state`（`BilliardStatus`），供 `TableOrchestrator.step()` 查詢目前狀態以分派下游動作（見第 8 節決策） | `core/controllers/script_controller.py`（既有檔案，新增方法） |
 
 以上三個 Orchestrator 類別與 `ImpulseStrikingService`、`BallMotionMonitor` 同層——屬於組合多個 model/port 的協調邏輯，不是純決策（`ScriptController`）也不是單一資源擁有者（`TableBallSet`、`UR5Robot`）。
 
@@ -63,14 +64,15 @@ class TableOrchestrator(ABC):
         """
         每個 tick 呼叫一次的共用骨架：
         1. action = self._script_controller.get_action(observation)
-        2. 依當前狀態（見第 8 節「待決定事項」：狀態來源尚待定案）分派：
+        2. current_state = self._script_controller.get_current_state()（新增公開方法，回傳 BilliardStatus，狀態單一事實來源仍在 ScriptController）
+        3. 依 current_state 分派：
            - RESET    → 若 action.should_execute_action：self._reset_balls() + self._reset_downstream()
            - AIMING   → 若 action.should_execute_action：self._execute_aim(action)
            - STRIKING → 若 action.should_execute_action：self._execute_strike(action)
            - WAITING / IDLE → 無下游動作
-        3. is_ball_moving = self._ball_motion_monitor.is_any_ball_moving()
-        4. is_motion_complete = self._is_downstream_motion_complete()
-        5. 回傳組裝好的下一個 tick Observation
+        4. is_ball_moving = self._ball_motion_monitor.is_any_ball_moving()
+        5. is_motion_complete = self._is_downstream_motion_complete()
+        6. 回傳組裝好的下一個 tick Observation
         """
         ...
 
@@ -315,10 +317,7 @@ ScriptController
 
 ## 8. 待決定事項
 
-- [ ] **狀態分派的資料來源尚未定案**：本次設計敘述「依 observation 目前狀態（對照 BilliardStatus）分派」，但目前 `Observation`（`core/models/observation.py`）並未包含 `status: BilliardStatus` 欄位；`BilliardStatus` 目前是 `ScriptController` 內部私有的 `_current_state`，沒有對外公開的 getter。`TableOrchestrator.step()` 若要依狀態分派，必須先解決以下其中一種方案，本次設計不代為決定：
-  - (a) `Observation` 新增 `status: BilliardStatus` 欄位，由 `ScriptController` 或上游回寫；
-  - (b) `ScriptController` 新增公開方法（如 `get_current_state() -> BilliardStatus`）供 `TableOrchestrator` 查詢；
-  - (c) 改由 `Action` 本身攜帶足夠資訊讓 `TableOrchestrator` 判斷該做什麼（例如新增一個「動作種類」欄位），不必反查狀態。
+- [x] **狀態分派的資料來源（已定案 2026-07-21）**：採方案 (b)——`ScriptController` 新增公開方法 `get_current_state() -> BilliardStatus`，回傳 `self._current_state`，供 `TableOrchestrator.step()` 查詢後分派下游動作。理由：狀態單一事實來源維持在 `ScriptController` 內部，不需要在 `Observation`/`Action` 額外複製一份狀態、不用擔心同步問題，改動範圍最小。此方法尚未實作，屬於 `TableOrchestrator` 實作前置工作的一部分。
 - [ ] `TableBallSet.reset(positions)` 需要傳入 `positions: dict[int, tuple[float, float]]`；`TableOrchestrator` 呼叫 `_reset_balls()` 時這組座標從何取得（`BallPositionProvider` 是否已有對應方法回傳「初始擺球座標」）尚待確認介面是否吻合，本次僅假設 `BallPositionProvider` 能提供，未逐一核對既有方法簽章。
 - [ ] `DemoTableOrchestrator` 建構子是否需要同時注入 `UR5Robot` 與 `ArticulationAPI`，或只需注入 `UR5Robot`（`ArticulationAPI` 透過 `UR5Robot` 內部間接使用）——AIMING/STRIKING 的 `move_to_pose`/`execute_strike` 目前只存在於 `ArticulationAPI`，`UR5Robot` 本身未包裝這两个方法，待 #96/#97 实作時一併確認是否要在 `UR5Robot` 新增對應包裝方法。
 - [ ] Extension tick／physics callback 尚未存在，`TableOrchestrator.step()` 目前沒有任何生產程式碼呼叫入口，串接時機留待後續任務。
