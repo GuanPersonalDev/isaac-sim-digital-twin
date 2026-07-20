@@ -21,7 +21,7 @@ def _action(
         shot_angle=shot_angle,
         position_offset=list(position_offset),
         cue_ball_placement=list(cue_ball_placement),
-        should_control_articulation=False,
+        should_execute_action=False,
     )
 
 

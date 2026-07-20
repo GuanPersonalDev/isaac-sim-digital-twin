@@ -20,6 +20,7 @@ class TestUR5Robot:
         _ur5_robot_class()(
             base_path="/World/BilliardTable",
             stage_api=stage_api,
+            articulation_api=MagicMock(),
             position=(1.5, 0.0, 0.0),
         )
 
@@ -34,6 +35,7 @@ class TestUR5Robot:
         _ur5_robot_class()(
             base_path="/World/BilliardTable",
             stage_api=stage_api,
+            articulation_api=MagicMock(),
             position=(1.5, 0.0, 0.0),
         )
 
@@ -45,22 +47,42 @@ class TestUR5Robot:
         )
 
     def test_get_prim_path_returns_robot_prim_path(self):
-        robot = _ur5_robot_class()(
-            base_path="/World/BilliardTable",
-            stage_api=MagicMock(),
-            position=(1.5, 0.0, 0.0),
-        )
+        ur5_robot_class = _ur5_robot_class()
 
-        assert robot.get_prim_path() == "/World/BilliardTable/Robot"
+        assert (
+            ur5_robot_class.get_prim_path("/World/BilliardTable")
+            == "/World/BilliardTable/Robot"
+        )
 
     def test_get_end_effector_prim_path_returns_link_path(self):
         ur5_robot_class = _ur5_robot_class()
-        robot = ur5_robot_class(
+
+        assert ur5_robot_class.get_end_effector_prim_path("/World/BilliardTable") == (
+            "/World/BilliardTable/Robot/" + ur5_robot_class._END_EFFECTOR_LINK_NAME
+        )
+
+    def test_reset_calls_move_to_home(self):
+        articulation_api = MagicMock()
+        robot = _ur5_robot_class()(
             base_path="/World/BilliardTable",
             stage_api=MagicMock(),
+            articulation_api=articulation_api,
             position=(1.5, 0.0, 0.0),
         )
 
-        assert robot.get_end_effector_prim_path() == (
-            "/World/BilliardTable/Robot/" + ur5_robot_class._END_EFFECTOR_LINK_NAME
+        robot.reset()
+
+        articulation_api.move_to_home.assert_called_once_with()
+
+    def test_is_reset_complete_returns_articulation_is_motion_complete(self):
+        articulation_api = MagicMock()
+        articulation_api.is_motion_complete.return_value = True
+        robot = _ur5_robot_class()(
+            base_path="/World/BilliardTable",
+            stage_api=MagicMock(),
+            articulation_api=articulation_api,
+            position=(1.5, 0.0, 0.0),
         )
+
+        assert robot.is_reset_complete() is True
+        articulation_api.is_motion_complete.assert_called_once_with()

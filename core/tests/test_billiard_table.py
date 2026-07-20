@@ -21,13 +21,18 @@ def material_api():
 
 
 @pytest.fixture
+def rigid_body_api():
+    return MagicMock()
+
+
+@pytest.fixture
 def billiard_table_position():
     return (2.0, 3.0)
 
 
 @pytest.fixture
 def billiard_table(
-    stage_api, material_api, billiard_table_base_path, billiard_table_position
+    stage_api, material_api, rigid_body_api, billiard_table_base_path, billiard_table_position
 ):
     with (
         patch("core.models.billiard_table.TableBallSet"),
@@ -41,6 +46,7 @@ def billiard_table(
             base_path=billiard_table_base_path,
             stage_api=stage_api,
             material_api=material_api,
+            rigid_body_api=rigid_body_api,
             position=billiard_table_position,
         )
 

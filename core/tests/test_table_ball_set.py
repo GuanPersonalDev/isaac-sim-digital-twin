@@ -27,6 +27,7 @@ def _load_ports_module(module_name: str, filename: str) -> None:
 def _table_ball_set_class():
     _load_ports_module("core.ports.stage_api", "stage_api.py")
     _load_ports_module("core.ports.material_api", "material_api.py")
+    _load_ports_module("core.ports.rigid_body_api", "rigid_body_api.py")
     from core.models.table_ball_set import TableBallSet
     return TableBallSet
 
@@ -42,15 +43,21 @@ def material_api() -> MagicMock:
 
 
 @pytest.fixture
+def rigid_body_api() -> MagicMock:
+    return MagicMock()
+
+
+@pytest.fixture
 def positions() -> dict[int, tuple[float, float]]:
     return {ball_id: (ball_id * 0.1, ball_id * -0.1) for ball_id in range(10)}
 
 
 @pytest.fixture
-def table_ball_set(stage_api: MagicMock, material_api: MagicMock):
+def table_ball_set(stage_api: MagicMock, material_api: MagicMock, rigid_body_api: MagicMock):
     return _table_ball_set_class()(
         stage_api=stage_api,
         material_api=material_api,
+        rigid_body_api=rigid_body_api,
         table_z=0.75,
         base_path="/World/BilliardTable_0",
         ball_radius=0.028575,
@@ -159,6 +166,26 @@ class TestTableBallSet:
 
         z_values = [c.args[3] for c in stage_api.set_prim_translate.call_args_list]
         assert all(z == pytest.approx(0.75 + 0.028575) for z in z_values)
+
+    def test_reset_zeroes_ball_velocities(
+        self,
+        table_ball_set,
+        rigid_body_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        rigid_body_api.set_velocities.reset_mock()
+
+        table_ball_set.reset(positions)
+
+        rigid_body_api.set_velocities.assert_has_calls(
+            [
+                call(_prim_path(ball_id), [0, 0, 0], [0, 0, 0])
+                for ball_id in range(10)
+            ],
+            any_order=True,
+        )
+        assert rigid_body_api.set_velocities.call_count == 10
 
     def test_reset_missing_position_raises(
         self,

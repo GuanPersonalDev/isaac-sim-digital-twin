@@ -54,3 +54,10 @@ class ArticulationAPI(ABC):
         是否已經達到目標
         """
         ...
+
+    @abstractmethod
+    def shutdown(self) -> None:
+        """
+        release process
+        """
+        ...

@@ -112,7 +112,7 @@ class TestAction:
             shot_angle=42.0,
             position_offset=[0.01, -0.02],
             cue_ball_placement=[0.1, -0.2],
-            should_control_articulation=False,
+            should_execute_action=False,
         )
 
         assert action.cue_speed == 2.5
@@ -125,7 +125,7 @@ class TestAction:
             shot_angle=42.0,
             position_offset=[0.01, -0.02],
             cue_ball_placement=[0.1, -0.2],
-            should_control_articulation=False,
+            should_execute_action=False,
         )
 
         assert action.position_offset == [0.01, -0.02]
@@ -136,7 +136,7 @@ class TestAction:
             shot_angle=42.0,
             position_offset=[0.0, 0.0],
             cue_ball_placement=[0.0, 0.0],
-            should_control_articulation=False,
+            should_execute_action=False,
         )
 
         assert action.cue_speed == 0.0

@@ -40,7 +40,7 @@ class ScriptController(ControllerBase):
     def _idle_state_action_result(self, observation: Observation) -> Action:
         result = self._generate_action_result()
         if observation.is_init_state and not observation.is_ball_moving:
-            result.should_control_articulation = True
+            result.should_execute_action = True
             self._change_state(BilliardStatus.AIMING)
         
         return result
@@ -49,7 +49,7 @@ class ScriptController(ControllerBase):
         result = self._generate_action_result()
         if observation.is_motion_complete:
             result.cue_speed = self.MAX_ARM_SPEED
-            result.should_control_articulation = True
+            result.should_execute_action = True
             self._change_state(BilliardStatus.STRIKING)
         
         return result
@@ -57,7 +57,7 @@ class ScriptController(ControllerBase):
     def _striking_state_action_result(self, observation: Observation) -> Action:
         result = self._generate_action_result()
         if observation.is_motion_complete:
-            result.should_control_articulation = True
+            result.should_execute_action = True
             self._change_state(BilliardStatus.WAITING)
         
         return result
@@ -65,7 +65,7 @@ class ScriptController(ControllerBase):
     def _waiting_state_action_result(self, observation: Observation) -> Action:
         result = self._generate_action_result()
         if not observation.is_ball_moving:
-            result.should_control_articulation = True
+            result.should_execute_action = True
             self._change_state(BilliardStatus.RESET)
         return result
     
@@ -76,7 +76,7 @@ class ScriptController(ControllerBase):
         return result
         
     def _generate_action_result(self) -> Action:
-        return Action(cue_speed=0, position_offset=[0, 0], shot_angle=0, cue_ball_placement=[0, 0], should_control_articulation=False)
+        return Action(cue_speed=0, position_offset=[0, 0], shot_angle=0, cue_ball_placement=[0, 0], should_execute_action=False)
 
     def reset(self):
         self._change_state(BilliardStatus.RESET)

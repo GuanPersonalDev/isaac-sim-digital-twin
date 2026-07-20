@@ -1,6 +1,8 @@
+
 from .table_ball_set import TableBallSet
 from ..ports.stage_api import StageAPI
 from ..ports.material_api import MaterialAPI
+from ..ports.rigid_body_api import RigidBodyAPI
 from ..services.ball_position_provider import BallPositionProvider
 from ..services.break_shot_position_provider import BreakShotPositionProvider
 from ..services.asset_utility import TABLE_PATH
@@ -16,6 +18,7 @@ class BilliardTable:
         base_path: str,
         stage_api: StageAPI,
         material_api: MaterialAPI,
+        rigid_body_api: RigidBodyAPI,
         position: tuple[float, float],
     ):
         self._base_path = base_path
@@ -29,7 +32,7 @@ class BilliardTable:
         )
 
         self._table_set = TableBallSet(
-            stage_api, material_api, table_z=self._z_pos, base_path=base_path
+            stage_api, material_api, rigid_body_api, table_z=self._z_pos, base_path=base_path
         )
 
         positions = BreakShotPositionProvider().get_positions()

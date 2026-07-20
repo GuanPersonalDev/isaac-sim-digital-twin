@@ -27,16 +27,23 @@ def fixed_joint_stage_api() -> MagicMock:
 
 
 @pytest.fixture
+def articulation_api() -> MagicMock:
+    return MagicMock()
+
+
+@pytest.fixture
 def fixed_joint_ur5_robot(fixed_joint_paths: dict[str, str]):
     with patch("core.models.table_robot_manager.UR5Robot") as mock_ur5_robot:
-        mock_ur5_robot.return_value.get_end_effector_prim_path.return_value = (
+        mock_ur5_robot.get_end_effector_prim_path.return_value = (
             fixed_joint_paths["end_effector"]
         )
         yield mock_ur5_robot
 
 
 class TestTableRobotManager:
-    def test_table_robot_manager_creates_robot_with_offset_position(self):
+    def test_table_robot_manager_creates_robot_with_offset_position(
+        self, articulation_api: MagicMock
+    ):
         stage_api = MagicMock()
 
         with patch("core.models.table_robot_manager.UR5Robot") as mock_ur5_robot:
@@ -44,42 +51,46 @@ class TestTableRobotManager:
                 table_center=(2.0, 3.0, 0.0),
                 base_path="/World/DemoTable",
                 stage_api=stage_api,
+                articulation_api=articulation_api,
             )
 
             mock_ur5_robot.assert_called_once_with(
                 "/World/DemoTable",
                 stage_api,
+                articulation_api,
                 (3.5, 3.0, 0.0),
             )
 
-    def test_table_robot_manager_get_robot_prim_path(self):
+    def test_table_robot_manager_get_robot_prim_path(self, articulation_api: MagicMock):
         with patch("core.models.table_robot_manager.UR5Robot") as mock_ur5_robot:
-            mock_ur5_robot.return_value.get_prim_path.return_value = (
-                "/World/DemoTable/Robot"
-            )
+            mock_ur5_robot.get_prim_path.return_value = "/World/DemoTable/Robot"
 
             manager = _table_robot_manager_class()(
                 table_center=(0.0, 0.0, 0.0),
                 base_path="/World/DemoTable",
                 stage_api=MagicMock(),
+                articulation_api=articulation_api,
             )
 
             assert manager.get_robot_prim_path() == "/World/DemoTable/Robot"
-            mock_ur5_robot.return_value.get_prim_path.assert_called_once_with()
+            mock_ur5_robot.get_prim_path.assert_called_once_with("/World/DemoTable")
 
-    def test_table_robot_manager_destroy(self):
-        with patch("core.models.table_robot_manager.UR5Robot") as mock_ur5_robot:
+    def test_table_robot_manager_destroy(self, articulation_api: MagicMock):
+        with patch("core.models.table_robot_manager.UR5Robot"):
             manager = _table_robot_manager_class()(
                 table_center=(0.0, 0.0, 0.0),
                 base_path="/World/DemoTable",
                 stage_api=MagicMock(),
+                articulation_api=articulation_api,
             )
 
             manager.destroy()
 
             assert manager._robot is None
 
-    def test_table_robot_manager_creates_cue_stick_reference_prim(self):
+    def test_table_robot_manager_creates_cue_stick_reference_prim(
+        self, articulation_api: MagicMock
+    ):
         stage_api = MagicMock()
 
         with patch("core.models.table_robot_manager.UR5Robot"):
@@ -87,13 +98,16 @@ class TestTableRobotManager:
                 table_center=(2.0, 3.0, 0.0),
                 base_path="/World/DemoTable",
                 stage_api=stage_api,
+                articulation_api=articulation_api,
             )
 
             stage_api.create_reference_prim.assert_called_once_with(
                 "/World/DemoTable/CueStick", CUE_STICK_PATH
             )
 
-    def test_table_robot_manager_no_longer_sets_cue_stick_translate(self):
+    def test_table_robot_manager_no_longer_sets_cue_stick_translate(
+        self, articulation_api: MagicMock
+    ):
         stage_api = MagicMock()
 
         with patch("core.models.table_robot_manager.UR5Robot"):
@@ -101,6 +115,7 @@ class TestTableRobotManager:
                 table_center=(2.0, 3.0, 0.0),
                 base_path="/World/DemoTable",
                 stage_api=stage_api,
+                articulation_api=articulation_api,
             )
 
             stage_api.set_prim_translate.assert_not_called()
@@ -110,11 +125,13 @@ class TestTableRobotManager:
         fixed_joint_paths: dict[str, str],
         fixed_joint_stage_api: MagicMock,
         fixed_joint_ur5_robot: MagicMock,
+        articulation_api: MagicMock,
     ):
         _table_robot_manager_class()(
             table_center=(2.0, 3.0, 0.0),
             base_path=fixed_joint_paths["base"],
             stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
         )
 
         fixed_joint_stage_api.align_prim_to_target.assert_called_once_with(
@@ -127,11 +144,13 @@ class TestTableRobotManager:
         fixed_joint_paths: dict[str, str],
         fixed_joint_stage_api: MagicMock,
         fixed_joint_ur5_robot: MagicMock,
+        articulation_api: MagicMock,
     ):
         _table_robot_manager_class()(
             table_center=(2.0, 3.0, 0.0),
             base_path=fixed_joint_paths["base"],
             stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
         )
 
         fixed_joint_stage_api.filter_collision_pair.assert_called_once_with(
@@ -144,11 +163,13 @@ class TestTableRobotManager:
         fixed_joint_paths: dict[str, str],
         fixed_joint_stage_api: MagicMock,
         fixed_joint_ur5_robot: MagicMock,
+        articulation_api: MagicMock,
     ):
         _table_robot_manager_class()(
             table_center=(2.0, 3.0, 0.0),
             base_path=fixed_joint_paths["base"],
             stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
         )
 
         fixed_joint_stage_api.create_fixed_joint.assert_called_once_with(
@@ -162,11 +183,13 @@ class TestTableRobotManager:
         fixed_joint_paths: dict[str, str],
         fixed_joint_stage_api: MagicMock,
         fixed_joint_ur5_robot: MagicMock,
+        articulation_api: MagicMock,
     ):
         _table_robot_manager_class()(
             table_center=(2.0, 3.0, 0.0),
             base_path=fixed_joint_paths["base"],
             stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
         )
 
         fixed_joint_stage_api.assert_has_calls(
@@ -192,12 +215,15 @@ class TestTableRobotManager:
             any_order=False,
         )
 
-    def test_table_robot_manager_get_cue_stick_prim_path(self):
+    def test_table_robot_manager_get_cue_stick_prim_path(
+        self, articulation_api: MagicMock
+    ):
         with patch("core.models.table_robot_manager.UR5Robot"):
             manager = _table_robot_manager_class()(
                 table_center=(0.0, 0.0, 0.0),
                 base_path="/World/DemoTable",
                 stage_api=MagicMock(),
+                articulation_api=articulation_api,
             )
 
             assert manager.get_cue_stick_prim_path() == "/World/DemoTable/CueStick"

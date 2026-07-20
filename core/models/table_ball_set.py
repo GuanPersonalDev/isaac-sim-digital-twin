@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 
+
 from ..services.asset_utility import (
     BALL_TEMPLATE_PATH,
     STRIPE_MDL_PATH,
@@ -11,6 +12,7 @@ from ..services.asset_utility import (
 from .ball_colors import BALL_COLORS
 from ..ports.material_api import MaterialAPI
 from ..ports.stage_api import StageAPI
+from ..ports.rigid_body_api import RigidBodyAPI
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ class TableBallSet:
         self,
         stage_api: StageAPI,
         material_api: MaterialAPI,
+        rigid_body_api: RigidBodyAPI,
         table_z: float,
         base_path: str,
         ball_radius: float = 0.028575,
@@ -31,6 +34,7 @@ class TableBallSet:
         self._base_path = base_path
         self._stage_api = stage_api
         self._material_api = material_api
+        self._rigid_body_api = rigid_body_api
         self._table_z = table_z
         self._ball_radius = ball_radius
         self._built = False
@@ -118,6 +122,7 @@ class TableBallSet:
             self._stage_api.set_visibility(prim_path, visible=True)
             x, y = positions[ball_id]
             self._stage_api.set_prim_translate(prim_path, x, y, z)
+            self._rigid_body_api.set_velocities(prim_path, [0, 0, 0], [0, 0, 0])
 
     def _check_built(self) -> None:
         if not self._built:

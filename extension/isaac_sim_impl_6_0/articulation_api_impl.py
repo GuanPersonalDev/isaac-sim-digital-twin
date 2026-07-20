@@ -147,3 +147,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         current_position = np.array(self.get_end_effector_position())
         error = np.linalg.norm(current_position - self._target_position)
         return bool(error < self.POSITION_TOLERANCE)
+
+    def shutdown(self) -> None:
+        #TODO: remove physics callback
+        pass

@@ -11,4 +11,4 @@ class Action:
     shot_angle: float
     position_offset: list[float] # 2維, 對應白球表面的加塞位置
     cue_ball_placement: list[float] # 2 維, 白球的 X, Y 位置
-    should_control_articulation: bool
+    should_execute_action: bool
