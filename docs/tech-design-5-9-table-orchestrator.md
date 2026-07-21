@@ -1,6 +1,6 @@
 # TableOrchestrator — 技術設計文件
 
-> 生成時間：2026-07-20
+> 生成時間：2026-07-20（第 1-7 節於 2026-07-22 依第 8 節決策全面整理為最終版）
 >
 > 所屬專案：isaac-sim-digital-twin
 >
@@ -12,181 +12,218 @@
 
 ## 1. 功能概述
 
-`TableOrchestrator` 是 Demo 桌／訓練桌各自獨立擁有的執行迴圈，負責在每個 tick 呼叫 `ScriptController.get_action()` 取得純決策結果 `Action`，再依 `BilliardStatus` 對應的狀態把 `Action` 轉譯成真正的下游副作用（球位置重置、手臂歸位、瞄準、擊球），最後把下游偵測到的結果回寫進下一個 tick 要用的 `Observation`。它填補了 Issue #99 遺留的缺口——`TableBallSet.reset()` 與 `UR5Robot.reset()`/`is_reset_complete()` 目前都只是「有能力被呼叫」，完全沒有生產程式碼真的呼叫它們。本次設計把「全狀態」（IDLE/AIMING/STRIKING/WAITING/RESET/ERROR）的呼叫流程都定義出來，但只有 RESET 是本次要接通的實作範圍，其餘狀態（AIMING/STRIKING）只定義介面留給 #96/#97（Demo 桌手臂路徑規劃）與 #177（訓練桌衝量式擊球）。
+單一撞球桌（Demo 桌／訓練桌）的每 tick 執行迴圈由三個角色分工組成：
+
+1. **`ObservationBuilder`**：每個 tick 開始時，即時查詢所有下游狀態（球位置、是否還在移動、下游動作是否完成、是否為初始擺球狀態、是否有錯誤），完整生成一份 `Observation`（不接受任何既有值，永遠從頭組裝）。
+2. **`TableOrchestrator`**：拿到 `Observation` 後，呼叫 `ScriptController.get_action()` 取得純決策結果 `Action`，再依 `ScriptController.get_current_state()` 回傳的 `BilliardStatus` 把 `Action` 轉譯成真正的下游副作用（球位置重置、手臂歸位、瞄準、擊球）。`step()` 只負責「決策 + 執行動作」，不組裝／回傳 `Observation`。
+3. **`TableRuntime`**：不持有任何狀態，單純把上述兩者串起來——`tick()` 呼叫 `ObservationBuilder.build()` 取得本次 `Observation`，再傳給 `TableOrchestrator.step()` 執行。
+
+這個設計填補了 Issue #99 遺留的缺口——`TableBallSet.reset()` 與 `UR5Robot.reset()`/`is_reset_complete()` 目前都只是「有能力被呼叫」，先前沒有生產程式碼真的呼叫它們——並補上執行期間的錯誤處理（`ErrorState`：下游動作拋例外時記錄但不中斷其他桌子）與外部重新初始化入口（`TableOrchestrator.reset()`）。
+
+本次（Block 5 任務 5-9）的**實作範圍**：
+- 已完成：RESET 狀態的完整資料流（`ScriptController.get_current_state()`、`TableOrchestrator`/`DemoTableOrchestrator`/`TrainingTableOrchestrator` 骨架、`Observation` 死欄位清理、`TableBallSet` 世界偏移量修正）。
+- 本次待實作：`ErrorState`、`ObservationBuilder`（含 Demo/Training 兩種子類別）、`TableOrchestrator`/`TrainingTableOrchestrator` 的錯誤處理與 `reset()` 支援、`TableRuntime`、兩個缺口 getter、Extension 端訓練桌的 timeline play/stop 生命週期串接。
+- 明確排除在本次範圍外：Demo 桌的完整 `TableRuntime` 組裝與 `ArticulationAPI` 注入方式（留待 #96/#97 手臂操作實作時處理）、AIMING/STRIKING 的實際手臂動作內容。
 
 ---
 
 ## 2. 模組清單與職責
 
-| 模組 | 所在層級 | 職責 | 檔案路徑 |
-|---|---|---|---|
-| `TableOrchestrator` | core/services（抽象基底） | 共用執行迴圈骨架：呼叫 `ScriptController.get_action()`、依狀態分派下游動作、組裝下一個 `Observation` | `core/services/table_orchestrator.py`（新檔案，待建立） |
-| `DemoTableOrchestrator` | core/services | Demo 桌差異實作：下游動作透過 `UR5Robot`/`ArticulationAPI` 執行（動畫式、多 tick） | `core/services/table_orchestrator.py`（新檔案，同檔） |
-| `TrainingTableOrchestrator` | core/services | 訓練桌差異實作：手臂相關動作皆為 no-op 或恆真，STRIKING 呼叫 `ImpulseStrikingService`（瞬時、單 tick） | `core/services/table_orchestrator.py`（新檔案，同檔） |
-| `TableBallSet.get_ball_prim_paths()` | core/models | 新增公開方法，回傳 10 顆球的 prim path 清單，供 `TableOrchestrator` 建構 `BallMotionMonitor` 使用 | `core/models/table_ball_set.py`（既有檔案，新增方法） |
-| `ScriptController.get_current_state()` | core/controllers | 新增公開方法，回傳 `self._current_state`（`BilliardStatus`），供 `TableOrchestrator.step()` 查詢目前狀態以分派下游動作（見第 8 節決策） | `core/controllers/script_controller.py`（既有檔案，新增方法） |
+| 模組 | 所在層級 | 職責 | 檔案路徑 | 狀態 |
+|---|---|---|---|---|
+| `ScriptController.get_current_state()` | core/controllers | 回傳 `self._current_state`（`BilliardStatus`），供 `TableOrchestrator.step()` 查詢後分派下游動作 | `core/controllers/script_controller.py` | 已完成 |
+| `TableOrchestrator`（抽象基底） | core/services | 共用執行迴圈：呼叫 `ScriptController.get_action()`、依狀態分派下游動作、`try/except` 包住下游動作並回報 `ErrorState`、提供統一 `reset()` 入口 | `core/services/table_orchestrator.py` | 骨架已完成／`ErrorState` 與 `reset()` 支援待實作 |
+| `DemoTableOrchestrator` | core/services | Demo 桌差異實作：RESET 呼叫 `UR5Robot.reset()`；AIMING/STRIKING 僅定義介面（留給 #96/#97） | `core/services/table_orchestrator.py` | 骨架已完成／`ErrorState` 支援待實作 |
+| `TrainingTableOrchestrator` | core/services | 訓練桌差異實作：RESET/AIMING no-op 或恆真，STRIKING 呼叫 `ImpulseStrikingService.strike()` | `core/services/table_orchestrator.py` | 骨架已完成／`ErrorState` 支援待實作 |
+| `ErrorState`（新元件） | core/services | 集中記錄下游執行例外：`mark_error()`（log + 記錄，不重拋）、`has_error()`、`get_last_exception()`、`clear()` | `core/services/error_state.py` | 待實作 |
+| `ObservationBuilder`（抽象基底，新元件） | core/services | 每個 tick 完整組裝一份 `Observation`（不吃 `previous_observation`）：球位置、母球位置、是否移動中、是否為初始狀態、是否有錯誤；下游動作完成度交由子類別 | `core/services/observation_builder.py` | 待實作 |
+| `DemoObservationBuilder` | core/services | 額外注入 `UR5Robot`，`_is_downstream_motion_complete()` 回傳 `ur5_robot.is_reset_complete()` | `core/services/observation_builder.py` | 待實作 |
+| `TrainingObservationBuilder` | core/services | `_is_downstream_motion_complete()` 恆回傳 `True`（沒有手臂） | `core/services/observation_builder.py` | 待實作 |
+| `TableRuntime`（新元件） | core/services | 無狀態容器：`tick()` = `observation_builder.build()` → `orchestrator.step(observation)` | `core/services/table_runtime.py` | 待實作 |
+| `TableBallSet.get_ball_prim_paths()` | core/models | 回傳 10 顆球的 prim path 清單（依 ball_id 升冪排序），供 `BallMotionMonitor`/`ObservationBuilder` 使用 | `core/models/table_ball_set.py` | 已完成 |
+| `TableBallSet.get_ball_radius()`（缺口） | core/models | 回傳 `self._ball_radius`，供 `ImpulseStrikingService` 建構子取得球半徑 | `core/models/table_ball_set.py` | 待實作 |
+| `BilliardTable.get_table_ball_set()`（缺口） | core/models | 對外暴露內部的 `TableBallSet`，供 Extension 端組裝 `TableRuntime` 時取得 | `core/models/billiard_table.py` | 待實作 |
+| `TableBallSet` 世界偏移量 | core/models | 建構子新增 `table_position: tuple[float, float] = (0.0, 0.0)`，`build()`/`reset()` 內部統一套用偏移量，語意一致（皆吃「相對桌台座標」） | `core/models/table_ball_set.py` | 已完成 |
+| `Observation` 死欄位移除 | core/models | 移除 `joint_angles`、`shot_params`（設計演進留下的死欄位，從未被消費，真正承載擊球參數的是 `Action` 的 RL 規格欄位） | `core/models/observation.py` | 已完成 |
+| Extension timeline 生命週期（訓練桌） | extension | `on_startup` 訂閱 `omni.timeline` PLAY/STOP 事件；PLAY 時呼叫 `articulation_api.initialize()` + 建立訓練桌 `TableRuntime` 清單 + 註冊 `world.add_physics_callback` tick；STOP 時重置 guard flag | `extension/billiard_digital_twin/billiard_digital_twin.py` | 待實作（僅訓練桌，Demo 桌延後） |
 
-以上三個 Orchestrator 類別與 `ImpulseStrikingService`、`BallMotionMonitor` 同層——屬於組合多個 model/port 的協調邏輯，不是純決策（`ScriptController`）也不是單一資源擁有者（`TableBallSet`、`UR5Robot`）。
+三個 Orchestrator 類別與 `ImpulseStrikingService`、`BallMotionMonitor`、`ObservationBuilder` 同層——屬於組合多個 model/port 的協調邏輯，不是純決策（`ScriptController`）也不是單一資源擁有者（`TableBallSet`、`UR5Robot`）。`ErrorState` 是跨 `TableOrchestrator`/`ObservationBuilder` 共享的輕量狀態物件，兩者建構時注入同一個 instance。`TableRuntime` 則是更上一層的組裝容器，不持有狀態，只負責把每個 tick 的兩個步驟串起來。
 
 ---
 
 ## 3. 類別設計
 
+### ScriptController.get_current_state()（已完成）
+
+**職責：** 回傳目前狀態機所在的 `BilliardStatus`，狀態單一事實來源維持在 `ScriptController` 內部。
+
+**介面（現況程式碼）：**
+```python
+class ScriptController(ControllerBase):
+    def __init__(self) -> None:
+        self._current_state = BilliardStatus.RESET
+
+    def _change_state(self, status: BilliardStatus):
+        self._current_state = status
+
+    def get_current_state(self) -> BilliardStatus:
+        return self._current_state
+
+    def reset(self):
+        self._change_state(BilliardStatus.RESET)
+```
+
+**依賴：**
+- 輸入來源：無（純讀內部欄位）
+- 輸出去向：`TableOrchestrator.step()` 用於分派下游動作；`TableOrchestrator.reset()` 呼叫 `script_controller.reset()`
+
+---
+
 ### TableOrchestrator（抽象基底）
 
-**職責：** 定義共用執行骨架：取得 `Action` → 依 `should_execute_action` 決定是否分派下游動作 → 查詢球是否還在移動 → 查詢下游動作是否完成 → 組裝並回傳下一個 tick 的 `Observation`。差異部分（RESET 的手臂處理、AIMING/STRIKING 的實際動作、動作完成判定）交由子類別實作。
+**職責：** 定義共用執行骨架：取得 `Action` → 依 `get_current_state()` 分派下游動作 → 若下游動作拋出例外則交給 `ErrorState` 記錄，不重新拋出。另提供 `reset()` 統一入口，同時清除 `ErrorState` 並讓狀態機回到 `RESET`。
 
-**介面：**
+**現況程式碼（骨架已完成，尚未含 `ErrorState`/`reset()`）：**
 ```python
-from abc import ABC, abstractmethod
-
-from ..controllers.script_controller import ScriptController
-from ..models.action import Action
-from ..models.billiard_state import BilliardStatus
-from ..models.observation import Observation
-from ..models.table_ball_set import TableBallSet
-from .ball_motion_monitor import BallMotionMonitor
-from .ball_position_provider import BallPositionProvider
-
-
 class TableOrchestrator(ABC):
     def __init__(
         self,
         script_controller: ScriptController,
         table_ball_set: TableBallSet,
-        ball_motion_monitor: BallMotionMonitor,
         ball_position_provider: BallPositionProvider,
     ) -> None:
-        """組合建構：所有依賴皆由外部注入，不在內部 new 任何 model/port"""
-        ...
+        self._script_controller = script_controller
+        self._table_ball_set = table_ball_set
+        self._ball_position_provider = ball_position_provider
 
-    def step(self, observation: Observation) -> Observation:
-        """
-        每個 tick 呼叫一次的共用骨架：
-        1. action = self._script_controller.get_action(observation)
-        2. current_state = self._script_controller.get_current_state()（新增公開方法，回傳 BilliardStatus，狀態單一事實來源仍在 ScriptController）
-        3. 依 current_state 分派：
-           - RESET    → 若 action.should_execute_action：self._reset_balls() + self._reset_downstream()
-           - AIMING   → 若 action.should_execute_action：self._execute_aim(action)
-           - STRIKING → 若 action.should_execute_action：self._execute_strike(action)
-           - WAITING / IDLE → 無下游動作
-        4. is_ball_moving = self._ball_motion_monitor.is_any_ball_moving()
-        5. is_motion_complete = self._is_downstream_motion_complete()
-        6. 回傳組裝好的下一個 tick Observation
-        """
-        ...
+    def step(self, observation: Observation) -> None:
+        action = self._script_controller.get_action(observation)
+        current_state = self._script_controller.get_current_state()
+        if action.should_execute_action:
+            match current_state:
+                case BilliardStatus.RESET:
+                    self._reset_balls()
+                    self._reset_downstream()
+                case BilliardStatus.AIMING:
+                    self._execute_aim(action)
+                case BilliardStatus.STRIKING:
+                    self._execute_strike(action)
 
     def _reset_balls(self) -> None:
-        """共用：呼叫 table_ball_set.reset(positions)，Teleport 語意，呼叫完當下即完成"""
-        ...
+        positions = self._ball_position_provider.get_positions()
+        self._table_ball_set.reset(positions)
 
     @abstractmethod
-    def _reset_downstream(self) -> bool:
-        """回傳下游（手臂等）reset 是否完成。Demo：等待手臂到位；Training：永遠 True"""
-        ...
+    def _reset_downstream(self) -> None: ...
 
     @abstractmethod
-    def _execute_aim(self, action: Action) -> None:
-        """AIMING 狀態下游動作，本次僅定義介面，內容留給 #96"""
-        ...
+    def _execute_aim(self, action: Action) -> None: ...
 
     @abstractmethod
-    def _execute_strike(self, action: Action) -> None:
-        """STRIKING 狀態下游動作，本次僅定義介面，內容留給 #97（Demo）／#177（Training，本次尚未落地）"""
-        ...
+    def _execute_strike(self, action: Action) -> None: ...
+```
 
-    @abstractmethod
-    def _is_downstream_motion_complete(self) -> bool:
-        """Demo：球 reset 完成 且 手臂 is_reset_complete()；Training：僅需球 reset 完成"""
-        ...
+**待實作修改（本次範圍）：**
+1. 建構子新增 `error_state: ErrorState` 參數。
+2. `step()` 內把「分派下游動作」這段包進 `try/except Exception as e: self._error_state.mark_error(e)`（不重新拋出），確保單一桌子的下游錯誤不會中斷共用的 tick loop：
+```python
+def step(self, observation: Observation) -> None:
+    action = self._script_controller.get_action(observation)
+    current_state = self._script_controller.get_current_state()
+    if action.should_execute_action:
+        try:
+            match current_state:
+                case BilliardStatus.RESET:
+                    self._reset_balls()
+                    self._reset_downstream()
+                case BilliardStatus.AIMING:
+                    self._execute_aim(action)
+                case BilliardStatus.STRIKING:
+                    self._execute_strike(action)
+        except Exception as e:
+            self._error_state.mark_error(e)
+```
+3. 新增 `reset()` 方法，`clear()` 與 `script_controller.reset()` 必須同時發生（`ScriptController.get_action()` 判斷順序是 `observation.has_error` 優先於 `current_state`，若只清一邊會導致狀態機瞬間又跳回 `ERROR`）：
+```python
+def reset(self) -> None:
+    """外部重新初始化用：清除錯誤旗標並讓狀態機回到 RESET，兩者必須同時發生。"""
+    self._error_state.clear()
+    self._script_controller.reset()
 ```
 
 **依賴：**
-- 輸入來源：呼叫端每 tick 傳入的 `Observation`（來源為未來 Extension tick / physics callback，本次不實作）
-- 輸出去向：回傳的 `Observation` 供下一個 tick 使用；內部透過 `ScriptController.get_action()` 取得決策，透過 `TableBallSet`/`BallMotionMonitor`/`BallPositionProvider` 讀寫模型層狀態
+- 輸入來源：`TableRuntime.tick()` 每次呼叫時傳入的 `Observation`（由 `ObservationBuilder` 組裝）
+- 輸出去向：內部透過 `ScriptController.get_action()` 取得決策，透過 `TableBallSet`/`UR5Robot`/`ImpulseStrikingService` 產生下游副作用；例外經 `ErrorState.mark_error()` 記錄
 
 ---
 
 ### DemoTableOrchestrator
 
-**職責：** Demo 桌差異實作，下游動作透過真實手臂（`UR5Robot` + `ArticulationAPI`）執行，屬於動畫式、多 tick 才完成的動作。
+**職責：** Demo 桌差異實作，RESET 呼叫 `UR5Robot.reset()`；AIMING/STRIKING 目前僅為 TODO 佔位，內容留給 #96/#97。
 
-**介面：**
+**現況程式碼：**
 ```python
 class DemoTableOrchestrator(TableOrchestrator):
     def __init__(
         self,
         script_controller: ScriptController,
         table_ball_set: TableBallSet,
-        ball_motion_monitor: BallMotionMonitor,
         ball_position_provider: BallPositionProvider,
         ur5_robot: UR5Robot,
         articulation_api: ArticulationAPI,
     ) -> None:
-        """新增 ur5_robot、articulation_api 兩個 Demo 桌專屬依賴"""
-        ...
+        super().__init__(script_controller, table_ball_set, ball_position_provider)
+        self._ur5_robot = ur5_robot
+        self._articulation_api = articulation_api
 
-    def _reset_downstream(self) -> bool:
-        """呼叫 ur5_robot.reset()（僅在狀態剛轉換的 tick 呼叫一次，由 should_execute_action 控制）
-        回傳 ur5_robot.is_reset_complete()（每 tick 檢查，內部誤差 < 0.001m 判定到位）"""
-        ...
+    def _reset_downstream(self) -> None:
+        self._ur5_robot.reset()
 
     def _execute_aim(self, action: Action) -> None:
-        """預期呼叫 articulation_api.move_to_pose(position, orientation)，本次僅定義介面
-        對應未來 Issue #96，本次不實作內容"""
+        # TODO: 把 action 轉譯成 ur5_robot 需要的操作（#96）
         ...
 
     def _execute_strike(self, action: Action) -> None:
-        """預期呼叫 articulation_api.execute_strike(direction, distance, speed)，本次僅定義介面
-        對應未來 Issue #97，本次不實作內容"""
-        ...
-
-    def _is_downstream_motion_complete(self) -> bool:
-        """球（同 tick 完成）且手臂 ur5_robot.is_reset_complete() 皆為 True"""
+        # TODO: 把 action 轉譯成 ur5_robot 需要的操作（#97）
         ...
 ```
 
+**待實作修改：** 建構子新增 `error_state: ErrorState`，傳給 `super().__init__(...)`。
+
 **依賴：**
-- 輸入來源：`TableOrchestrator` 共用骨架、`UR5Robot`/`ArticulationAPI`（皆已存在，Issue #99 完成的模型層能力）
-- 輸出去向：`ArticulationAPI` 實作層（`isaac_sim_impl_6_0/`，透過 RmpFlow 執行實際路徑規劃）
+- 輸入來源：`TableOrchestrator` 共用骨架、`UR5Robot`（`reset()`/`is_reset_complete()` 皆已存在）
+- 輸出去向：`ArticulationAPI` 實作層（`isaac_sim_impl_6_0/`，透過 RmpFlow 執行實際路徑規劃）；本次 Demo 桌的 `TableRuntime` 組裝與 `ArticulationAPI.initialize()` 串接不在範圍內
 
 ---
 
 ### TrainingTableOrchestrator
 
-**職責：** 訓練桌差異實作，沒有手臂，RESET/AIMING 皆為 no-op 或恆真，STRIKING 呼叫既有 `ImpulseStrikingService.strike()` 直接對母球賦予衝量速度，屬於單一 tick 內完成的瞬時物理事件。
+**職責：** 訓練桌差異實作，沒有手臂，RESET/AIMING 皆為 no-op 或恆真，STRIKING 呼叫既有 `ImpulseStrikingService.strike()` 直接對母球賦予衝量速度。
 
-**介面：**
+**現況程式碼：**
 ```python
 class TrainingTableOrchestrator(TableOrchestrator):
     def __init__(
         self,
         script_controller: ScriptController,
         table_ball_set: TableBallSet,
-        ball_motion_monitor: BallMotionMonitor,
         ball_position_provider: BallPositionProvider,
         impulse_striking_service: ImpulseStrikingService,
-        table_z: float,
     ) -> None:
-        """新增 impulse_striking_service、table_z 兩個 Training 桌專屬依賴"""
-        ...
+        super().__init__(script_controller, table_ball_set, ball_position_provider)
+        self._impulse_striking_service = impulse_striking_service
 
-    def _reset_downstream(self) -> bool:
-        """沒有手臂，永遠回傳 True"""
-        ...
+    def _reset_downstream(self) -> None:
+        pass  # 沒有手臂，沒有其他需要處理的 reset 元件
 
     def _execute_aim(self, action: Action) -> None:
-        """no-op：訓練桌沒有瞄準動作"""
-        ...
+        pass  # 訓練桌沒有瞄準動作，隨時可以準備好擊球
 
     def _execute_strike(self, action: Action) -> None:
-        """呼叫 impulse_striking_service.strike(action, table_z)，單一 tick 內完成"""
-        ...
-
-    def _is_downstream_motion_complete(self) -> bool:
-        """只要球 reset 完成（同 tick）即為 True，不需等待手臂"""
-        ...
+        self._impulse_striking_service.strike(action, table_z=self._table_ball_set.get_table_z())
 ```
+
+**待實作修改：** 建構子新增 `error_state: ErrorState`，傳給 `super().__init__(...)`。
 
 **依賴：**
 - 輸入來源：`TableOrchestrator` 共用骨架、`ImpulseStrikingService`（已存在，對應 Issue #177）
@@ -194,64 +231,293 @@ class TrainingTableOrchestrator(TableOrchestrator):
 
 ---
 
-### TableBallSet.get_ball_prim_paths()（既有類別新增方法）
+### ErrorState（新元件，待實作）
 
-**職責：** 回傳 10 顆球（Ball_0 ~ Ball_9）的完整 prim path 清單，供 `TableOrchestrator` 建構子取得後傳給 `BallMotionMonitor`。
+**職責：** 集中記錄下游動作執行時發生的例外，讓 `TableOrchestrator` 可以「不重新拋出」（避免一張桌子的錯誤讓共用 tick loop 的其他桌子跟著中斷），同時保留可見性（完整 log + `get_last_exception()` 事後查詢）。
 
-**介面：**
+**介面（設計定案）：**
 ```python
-class TableBallSet:
-    def get_ball_prim_paths(self) -> list[str]:
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class ErrorState:
+    def __init__(self) -> None:
+        self._has_error = False
+        self._last_exception: Exception | None = None
+
+    def mark_error(self, exception: Exception) -> None:
+        logger.exception("下游執行發生例外", exc_info=exception)
+        self._has_error = True
+        self._last_exception = exception
+
+    def has_error(self) -> bool:
+        return self._has_error
+
+    def get_last_exception(self) -> Exception | None:
+        return self._last_exception
+
+    def clear(self) -> None:
+        self._has_error = False
+        self._last_exception = None
+```
+
+**依賴：**
+- 輸入來源：`TableOrchestrator.step()` 的 `except Exception as e:` 分支呼叫 `mark_error(e)`
+- 輸出去向：`ObservationBuilder.build()` 讀 `has_error()` 寫入 `Observation.has_error`；`TableOrchestrator.reset()` 呼叫 `clear()`（必須與 `ScriptController.reset()` 同時發生，見第 8 節理由）
+
+**注意：** 每張桌子（Demo/Training）各自持有一個獨立的 `ErrorState` instance，`TableOrchestrator` 與對應的 `ObservationBuilder` 建構時注入同一個 instance，不與其他桌子共用。
+
+---
+
+### ObservationBuilder（抽象基底，待實作）
+
+**職責：** 每個 tick 完整組裝一份 `Observation`。**不接受 `previous_observation` 參數**——Builder 的職責就是完整生成，接受既有值再局部修改不符合這個職責定位，因此 `Observation` 每個欄位都要有獨立的即時查詢來源。
+
+**介面（設計定案）：**
+```python
+from abc import ABC, abstractmethod
+
+from ..models.observation import Observation
+from ..models.table_ball_set import TableBallSet
+from ..ports.rigid_body_api import RigidBodyAPI
+from .ball_motion_monitor import BallMotionMonitor
+from .ball_position_provider import BallPositionProvider
+from .error_state import ErrorState
+
+_INIT_STATE_TOLERANCE_M = 0.005  # 5mm
+
+
+class ObservationBuilder(ABC):
+    def __init__(
+        self,
+        table_ball_set: TableBallSet,
+        rigid_body_api: RigidBodyAPI,
+        ball_motion_monitor: BallMotionMonitor,
+        ball_position_provider: BallPositionProvider,
+        table_position: tuple[float, float],
+        error_state: ErrorState,
+    ) -> None:
+        """組合建構：所有依賴皆由外部注入"""
+        ...
+
+    def build(self) -> Observation:
         """
-        回傳 10 顆球（ball_id 0-9）的 prim path 清單，依 ball_id 升冪排序。
-        沿用既有 self._get_ball_prim_path(ball_id) 的路徑組成規則（self._base_path + f"/Balls/Ball_{ball_id}"）。
+        每個 tick 組裝一份完整的 Observation：
+        1. ball_positions：迴圈 table_ball_set.get_ball_prim_paths()，逐一呼叫 rigid_body_api.get_position()
+        2. cue_ball_position = ball_positions[0]（白球固定 ball_id=0，見 ball_colors.py 白色定義）
+        3. is_init_state：ball_position_provider.get_positions()（相對座標）逐球加上 table_position
+           換算世界座標，跟 ball_positions 逐球比對歐氏距離，容許誤差 5mm（0.005m），
+           任一顆球超出誤差即為 False
+        4. is_ball_moving = ball_motion_monitor.is_any_ball_moving()
+        5. is_motion_complete = self._is_downstream_motion_complete()（抽象方法，交由子類別）
+        6. has_error = error_state.has_error()
         """
+        ...
+
+    @abstractmethod
+    def _is_downstream_motion_complete(self) -> bool:
+        """Demo：ur5_robot.is_reset_complete()；Training：恆 True"""
         ...
 ```
 
 **依賴：**
-- 輸入來源：`TableBallSet` 內部 `self._base_path`（建構時已注入）
-- 輸出去向：`TableOrchestrator` 建構子 → `BallMotionMonitor(rigid_body_api, ball_prim_paths)`
+- 輸入來源：`TableBallSet`（取得球 prim path 清單）、`RigidBodyAPI`（即時位置查詢）、`BallMotionMonitor`（是否還在移動）、`BallPositionProvider`（初始擺球座標，判斷 `is_init_state`）、`ErrorState`（是否有下游錯誤）
+- 輸出去向：`TableRuntime.tick()` 拿到組裝好的 `Observation`，傳給 `TableOrchestrator.step()`
+
+---
+
+### DemoObservationBuilder（待實作）
+
+**職責：** Demo 桌差異實作，額外注入 `UR5Robot`，動作完成度需同時考慮手臂是否歸位。
+
+**介面（設計定案）：**
+```python
+class DemoObservationBuilder(ObservationBuilder):
+    def __init__(
+        self,
+        table_ball_set: TableBallSet,
+        rigid_body_api: RigidBodyAPI,
+        ball_motion_monitor: BallMotionMonitor,
+        ball_position_provider: BallPositionProvider,
+        table_position: tuple[float, float],
+        error_state: ErrorState,
+        ur5_robot: UR5Robot,
+    ) -> None:
+        super().__init__(table_ball_set, rigid_body_api, ball_motion_monitor, ball_position_provider, table_position, error_state)
+        self._ur5_robot = ur5_robot
+
+    def _is_downstream_motion_complete(self) -> bool:
+        return self._ur5_robot.is_reset_complete()
+```
+
+**依賴：**
+- 輸入來源：`ObservationBuilder` 共用骨架、`UR5Robot.is_reset_complete()`
+- 輸出去向：同 `ObservationBuilder`
+
+---
+
+### TrainingObservationBuilder（待實作）
+
+**職責：** 訓練桌差異實作，沒有手臂，動作完成度只需球 reset 完成即可。
+
+**介面（設計定案）：**
+```python
+class TrainingObservationBuilder(ObservationBuilder):
+    def _is_downstream_motion_complete(self) -> bool:
+        return True
+```
+
+**依賴：**
+- 輸入來源：`ObservationBuilder` 共用骨架
+- 輸出去向：同 `ObservationBuilder`
+
+---
+
+### TableRuntime（新元件，待實作）
+
+**職責：** 無狀態容器，把一組 `(TableOrchestrator, ObservationBuilder)` 包在一起，`tick()` 依序呼叫兩者。不持有任何狀態（因為 `ObservationBuilder.build()` 不吃 `previous_observation`）。
+
+**介面（設計定案）：**
+```python
+class TableRuntime:
+    def __init__(self, orchestrator: TableOrchestrator, observation_builder: ObservationBuilder) -> None:
+        self._orchestrator = orchestrator
+        self._observation_builder = observation_builder
+
+    def tick(self) -> None:
+        observation = self._observation_builder.build()
+        self._orchestrator.step(observation)
+```
+
+**依賴：**
+- 輸入來源：建構期注入的 `TableOrchestrator`、`ObservationBuilder`（每張桌子各一組，`ScriptController`、`BreakShotPositionProvider`、`BallMotionMonitor`、`ImpulseStrikingService`、`ErrorState` 皆各桌一份不共用；`RigidBodyAPI`/`StageAPI` 沿用既有共用單例）
+- 輸出去向：Extension 端的 `_on_tick` physics callback，逐一呼叫每張桌子的 `runtime.tick()`
+
+---
+
+### TableBallSet.get_ball_prim_paths()（已完成）
+
+**職責：** 回傳 10 顆球（Ball_0 ~ Ball_9）的完整 prim path 清單，依 ball_id 升冪排序。
+
+**現況程式碼：**
+```python
+def get_ball_prim_paths(self) -> list[str]:
+    """回傳 10 顆球的 prim path 清單"""
+    return self._ball_prim_list
+```
+
+**依賴：**
+- 輸入來源：`build()`/`reset()` 過程中累積的 `self._ball_prim_list`
+- 輸出去向：`BallMotionMonitor` 建構子、`ObservationBuilder.build()` 組 `ball_positions`
+
+---
+
+### TableBallSet.get_ball_radius()（缺口，待實作）
+
+**職責：** 回傳建構時注入的球半徑，供 `ImpulseStrikingService` 建構子使用（目前該建構子的 `ball_radius` 參數只能由呼叫端另外硬編碼取得，缺乏單一事實來源）。
+
+**介面（設計定案）：**
+```python
+def get_ball_radius(self) -> float:
+    return self._ball_radius
+```
+
+**依賴：**
+- 輸入來源：`self._ball_radius`（建構時已注入，預設 `0.028575`）
+- 輸出去向：Extension 端組裝 `ImpulseStrikingService` 時呼叫
+
+---
+
+### BilliardTable.get_table_ball_set()（缺口，待實作）
+
+**職責：** 對外暴露內部持有的 `TableBallSet` instance，供 Extension 端組裝 `TableRuntime`（`TableOrchestrator`/`ObservationBuilder` 皆需要 `TableBallSet`）時取得，目前 `BilliardTable` 完全沒有對外暴露這個內部物件。
+
+**介面（設計定案）：**
+```python
+def get_table_ball_set(self) -> TableBallSet:
+    return self._table_set
+```
+
+**依賴：**
+- 輸入來源：建構子已建立的 `self._table_set`
+- 輸出去向：Extension 端組裝 `TrainingTableOrchestrator`/`TrainingObservationBuilder`/`ImpulseStrikingService` 時取得
 
 ---
 
 ## 4. 資料流
 
-**RESET 狀態（本次唯一要接通的實際流程）：**
+**RESET 狀態（已完成，本次落地的核心流程）：**
 ```
-呼叫端（未來 Extension tick，本次不實作）
-  → DemoTableOrchestrator.step(observation)
-    → action = script_controller.get_action(observation)   # ScriptController 純決策，不接觸執行層
-    → 若 action.should_execute_action == True 且目前狀態為 RESET：
-        → self._reset_balls()
-          → table_ball_set.reset(positions)
-            → StageAPI.set_prim_translate(...) ×10（Teleport，同 tick 完成）
-            → RigidBodyAPI.set_velocities(..., [0,0,0], [0,0,0]) ×10
-        → self._reset_downstream()
-          → ur5_robot.reset() → articulation_api.move_to_home()（RmpFlow 路徑規劃，動畫式，多 tick）
-          → 回傳 ur5_robot.is_reset_complete() → articulation_api.is_motion_complete()（誤差 < 0.001m）
-    → is_ball_moving = ball_motion_monitor.is_any_ball_moving()
-    → is_motion_complete = self._is_downstream_motion_complete()
-        = True（球，同 tick）且 ur5_robot.is_reset_complete()（手臂，可能仍為 False，需等待後續 tick）
-  → 組裝下一個 tick 的 Observation（is_ball_moving、is_motion_complete 皆已更新）
-  → 回傳給呼叫端，供下一個 tick 的 script_controller.get_action() 判斷是否轉換至 IDLE
+TableRuntime.tick()
+  → observation = observation_builder.build()
+      → ball_positions：迴圈 get_ball_prim_paths() × rigid_body_api.get_position()
+      → is_init_state：比對 ball_position_provider.get_positions() + table_position 換算世界座標（容許誤差 5mm）
+      → is_ball_moving = ball_motion_monitor.is_any_ball_moving()
+      → is_motion_complete = _is_downstream_motion_complete()（Demo：ur5_robot.is_reset_complete()；Training：True）
+      → has_error = error_state.has_error()
+  → orchestrator.step(observation)
+    → action = script_controller.get_action(observation)   # 純決策，不接觸執行層
+    → current_state = script_controller.get_current_state()
+    → 若 action.should_execute_action == True 且 current_state == RESET：
+        → try:
+            → self._reset_balls()
+              → ball_position_provider.get_positions() → table_ball_set.reset(positions)
+                → StageAPI.set_prim_translate(...) ×10（Teleport，同 tick 完成，含 table_position 世界偏移量）
+                → RigidBodyAPI.set_velocities(..., [0,0,0], [0,0,0]) ×10
+            → self._reset_downstream()
+              → Demo：ur5_robot.reset() → articulation_api.move_to_home()（RmpFlow，動畫式，多 tick）
+              → Training：no-op（沒有手臂）
+          except Exception as e:
+            → error_state.mark_error(e)（log + 記錄，不重新拋出）
+  → 下一個 tick：observation_builder 重新查詢一次，is_motion_complete 更新後
+    script_controller.get_action() 才會判斷是否轉換至 IDLE
 ```
 
-**STRIKING 狀態（Training 桌，本次僅定義介面，內容待 #177 落地）：**
+**STRIKING 狀態（Training 桌，本次僅定義介面）：**
 ```
-呼叫端
-  → TrainingTableOrchestrator.step(observation)
+TableRuntime.tick()
+  → observation = training_observation_builder.build()
+  → orchestrator.step(observation)
     → action = script_controller.get_action(observation)
-    → 若 action.should_execute_action == True 且目前狀態為 STRIKING：
-        → self._execute_strike(action)
-          → impulse_striking_service.strike(action, table_z)
-            → StageAPI.set_prim_translate(cue_ball_prim, x, y, table_z)
-            → compute_cue_ball_velocities(action, ball_radius, spin_efficiency)
-            → RigidBodyAPI.set_velocities(cue_ball_prim, linear_velocity, angular_velocity)
-    → is_ball_moving = ball_motion_monitor.is_any_ball_moving()   # 衝量賦速後下個 tick 應為 True
-    → is_motion_complete = self._is_downstream_motion_complete()  # Training：球 reset 完成即 True，與擊球動作本身無關
-  → 組裝下一個 tick 的 Observation
-  → 回傳給呼叫端
+    → 若 action.should_execute_action == True 且 current_state == STRIKING：
+        → try: self._execute_strike(action)
+            → impulse_striking_service.strike(action, table_z)
+              → StageAPI.set_prim_translate(cue_ball_prim, x, y, table_z)
+              → compute_cue_ball_velocities(action, ball_radius, spin_efficiency)
+              → RigidBodyAPI.set_velocities(cue_ball_prim, linear_velocity, angular_velocity)
+          except Exception as e: error_state.mark_error(e)
+  → 下一個 tick 的 observation_builder.build()：is_ball_moving 應變為 True
+```
+
+**外部重新初始化流程（`TableOrchestrator.reset()`，待實作）：**
+```
+呼叫端（例如 DebugMenu 的重新初始化操作）
+  → table_runtime.orchestrator.reset()
+    → error_state.clear()          # 兩者必須同時發生
+    → script_controller.reset()    # 否則下一個 tick 仍讀到 has_error=True，狀態機瞬間又跳回 ERROR
+```
+
+**Extension 端訓練桌 timeline 生命週期（待實作）：**
+```
+on_startup
+  → 訂閱 omni.timeline 的 PLAY/STOP 事件（stage-open 時機仍先建場景/prim/ArticulationAPIImpl 實例，不呼叫 initialize()）
+
+PLAY 事件觸發（_on_timeline_event）
+  → 若 self._runtime_initialized: return（防止 Stop→Play 重複觸發）
+  → articulation_api.initialize()（Demo 桌手臂，本次先確保不再是永遠 None）
+  → 為每張訓練桌組出 TableRuntime（各自獨立的 ScriptController/BreakShotPositionProvider/
+    BallMotionMonitor/ImpulseStrikingService/ErrorState，RigidBodyAPI/StageAPI 沿用共用單例）
+  → world.add_physics_callback("billiard_table_tick", self._on_tick)
+  → self._runtime_initialized = True
+
+_on_tick（physics callback，每步呼叫）
+  → 若 not self._training_enabled: return（閘門，沒開 training 完全不 tick，狀態機暫停在原地）
+  → 逐一呼叫 runtime.tick()（每張訓練桌各一次）
+
+STOP 事件觸發
+  → self._runtime_initialized = False（下次 PLAY 才會重新初始化）
 ```
 
 ---
@@ -259,59 +525,102 @@ class TableBallSet:
 ## 5. 依賴關係圖
 
 ```
+TableRuntime（每張桌子一組，無狀態）
+  ├── 依賴 TableOrchestrator（DemoTableOrchestrator / TrainingTableOrchestrator）
+  └── 依賴 ObservationBuilder（DemoObservationBuilder / TrainingObservationBuilder）
+
 DemoTableOrchestrator
   ├── 依賴 ScriptController（取得純決策 Action，共用）
   ├── 依賴 TableBallSet（RESET 球重置，共用；get_ball_prim_paths() 供建構期使用）
-  ├── 依賴 BallMotionMonitor（查詢是否還有球在動，共用）
   ├── 依賴 BallPositionProvider（RESET 重置座標的來源，共用）
   ├── 依賴 UR5Robot（RESET 手臂歸位，Demo 專屬）
-  └── 依賴 ArticulationAPI（AIMING/STRIKING 手臂路徑規劃，Demo 專屬，經 UR5Robot 或直接注入）
+  ├── 依賴 ArticulationAPI（AIMING/STRIKING 手臂路徑規劃，Demo 專屬，經 UR5Robot 或直接注入）
+  └── 依賴 ErrorState（下游動作例外記錄，與同桌的 DemoObservationBuilder 共用同一個 instance）
 
 TrainingTableOrchestrator
   ├── 依賴 ScriptController（共用，與 Demo 同一個類別）
   ├── 依賴 TableBallSet（共用）
-  ├── 依賴 BallMotionMonitor（共用）
   ├── 依賴 BallPositionProvider（共用）
-  └── 依賴 ImpulseStrikingService（STRIKING 衝量式擊球，Training 專屬）
-        └── 依賴 RigidBodyAPI.set_velocities（外部物理引擎 API）
+  ├── 依賴 ImpulseStrikingService（STRIKING 衝量式擊球，Training 專屬）
+  │     └── 依賴 RigidBodyAPI.set_velocities（外部物理引擎 API）
+  └── 依賴 ErrorState（與同桌的 TrainingObservationBuilder 共用同一個 instance）
+
+DemoObservationBuilder / TrainingObservationBuilder
+  ├── 依賴 TableBallSet（get_ball_prim_paths()）
+  ├── 依賴 RigidBodyAPI（get_position() 逐球查詢）
+  ├── 依賴 BallMotionMonitor（is_any_ball_moving()）
+  ├── 依賴 BallPositionProvider（is_init_state 比對基準）
+  ├── 依賴 ErrorState（has_error()）
+  └── DemoObservationBuilder 額外依賴 UR5Robot（is_reset_complete()）
+
+ErrorState
+  └── 無外部依賴，純記憶體狀態，跨 TableOrchestrator/ObservationBuilder 共享
 
 TableBallSet
   └── 依賴 StageAPI / RigidBodyAPI / MaterialAPI（既有，Port 抽象層）
 
 ScriptController
   └── 不依賴任何執行層 API（純讀 Observation、純回傳 Action，見 5-2 文件第 5.2 節）
+
+BilliardTable
+  └── 依賴 TableBallSet（持有並透過 get_table_ball_set() 對外暴露，供 Extension 端組裝 TableRuntime 使用）
+
+Extension（billiard_digital_twin.py）
+  ├── 依賴 omni.timeline（PLAY/STOP 事件，決定何時呼叫 ArticulationAPIImpl.initialize() 與建立 TableRuntime）
+  └── 依賴 world.add_physics_callback（訓練桌 tick loop 的掛載點，經 training_enabled 旗標閘門）
 ```
 
 ---
 
 ## 6. 邊緣案例與錯誤處理
 
-| 情境 | 處理方式 |
-|---|---|
-| `action.should_execute_action == False`（同一狀態持續中的非觸發 tick） | 跳過 `_reset_downstream()`/`_execute_aim()`/`_execute_strike()`，但仍繼續執行 `is_ball_moving` 查詢與組裝下一個 `Observation`，避免中斷共用流程 |
-| Demo 桌 RESET：球已 reset 完成但手臂尚未到位（`is_reset_complete() == False`） | `_is_downstream_motion_complete()` 回傳 `False`，`Observation.is_motion_complete` 維持 `False`，`ScriptController` 停留在 `RESET` 狀態，下個 tick 繼續檢查，直到手臂到位誤差 < 0.001m |
-| Training 桌 RESET | 沒有手臂，`_reset_downstream()` 永遠 `True`，`is_motion_complete` 只反映球的狀態，理論上同一 tick 即可轉換至 `IDLE` |
-| `observation.has_error == True` | 由 `ScriptController` 內部優先判斷轉入 `ERROR`（見 5-2 文件第 3 節），`TableOrchestrator.step()` 本身不做額外錯誤攔截，僅依 `ScriptController` 回傳的 `Action`/狀態走既定分派邏輯；`Action` 內容在 `ERROR` 狀態下 `should_execute_action` 恆為 `False`（見 `ScriptController._error_state_action_result` 呼叫 `_generate_action_result()` 未覆寫此欄位） |
-| `BallMotionMonitor.is_any_ball_moving()` 內部呼叫 `get_linear_velocity()` 拋出例外 | 沿用既有實作：`BallMotionMonitor` 內部已 `try/except` 並 log 後 re-raise，`TableOrchestrator.step()` 不吞例外，交由上層呼叫端（未來 Extension tick）決定是否轉為 `has_error` |
-| 呼叫 `_reset_downstream()`/`_execute_aim()`/`_execute_strike()` 時下游 API（`ArticulationAPI`）拋出例外 | 本次設計不在 `TableOrchestrator` 內攔截，例外直接往上拋；是否要在此層新增 try/except 並回寫 `has_error`，留待實作 `_execute_aim`/`_execute_strike` 真正內容時（對應 #96/#97/#177）一併決定 |
+| 情境 | 處理方式 | 狀態 |
+|---|---|---|
+| `action.should_execute_action == False`（同一狀態持續中的非觸發 tick） | 跳過 `_reset_downstream()`/`_execute_aim()`/`_execute_strike()`，`ObservationBuilder` 仍照常每 tick 完整組裝下一份 `Observation` | 已完成 |
+| Demo 桌 RESET：球已 reset 完成但手臂尚未到位 | `DemoObservationBuilder._is_downstream_motion_complete()` 回傳 `False`，`Observation.is_motion_complete` 為 `False`，`ScriptController` 停留在 `RESET`，下個 tick 繼續檢查直到手臂到位 | 待實作（`ObservationBuilder`） |
+| Training 桌 RESET | 沒有手臂，`_is_downstream_motion_complete()` 恆 `True`，`is_motion_complete` 只反映球的狀態，理論上同一 tick 即可轉換至 `IDLE` | 待實作（`ObservationBuilder`） |
+| `observation.has_error == True` | 由 `ScriptController.get_action()` 內部優先判斷轉入 `ERROR`（優先序高於 `current_state`）；`TableOrchestrator.step()` 本身不做額外錯誤攔截，僅依回傳的 `Action`/狀態走既定分派邏輯，`ERROR` 狀態下 `should_execute_action` 恆為 `False` | 已完成（`ScriptController` 判斷邏輯） |
+| `TableOrchestrator.step()` 內下游動作（`_reset_downstream`/`_execute_aim`/`_execute_strike`）拋出任何例外 | 包在 `try/except Exception as e: self._error_state.mark_error(e)`，**不重新拋出**：避免單一桌子的下游錯誤讓共用 tick loop 的其他桌子跟著中斷；`mark_error()` 內部用 `logger.exception()` 完整記錄含 traceback，並保留 `get_last_exception()` 供事後查詢 | 待實作（`ErrorState` + `TableOrchestrator` 修改） |
+| `BallMotionMonitor.is_any_ball_moving()` 內部呼叫 `get_linear_velocity()` 拋出例外 | `BallMotionMonitor` 內部已 `try/except` 並 log 後 re-raise；此呼叫位於 `ObservationBuilder.build()` 內，屬於「查詢」而非「下游動作」，不經 `ErrorState` 攔截，例外會直接往上拋給 `TableRuntime.tick()` 的呼叫端（未來 Extension physics callback） | 已完成（`BallMotionMonitor`）／`ObservationBuilder` 呼叫點待實作 |
+| `is_init_state` 判定容許誤差 | 逐球比對 `ball_position_provider.get_positions()`（換算世界座標後）與 `ball_positions` 的歐氏距離，容許誤差 `5mm`（`0.005`），任一顆球超出誤差即視為 `False` | 待實作 |
+| `ArticulationAPIImpl.initialize()` 從未被呼叫（Demo 桌 RESET 每次都失敗） | Extension `_billiard_init()`（stage-open）只建構 `ArticulationAPIImpl` 實例，不呼叫 `initialize()`；改為訂閱 `omni.timeline` PLAY 事件，在 timeline 真正播放後才呼叫 `initialize()`（docstring 本來就要求「在 timeline play 之後呼叫」） | 待實作 |
+| Stop→Play 會重複觸發 PLAY 事件，且 Stop 會銷毀 physics view 讓 `initialize()` 內部 handle 失效 | 用 `self._runtime_initialized` guard flag：PLAY 時若已初始化則直接 `return`；STOP 時重置為 `False`，下次 PLAY 才會重新初始化 | 待實作 |
+| 沒開啟 `training_enabled` 時的 tick loop | 閘門邏輯放在 Extension 層的 `_on_tick`：`if not self._training_enabled: return`，完全不呼叫任何 `runtime.tick()`，狀態機整個暫停在原地，而不是持續 tick 但下游動作被其他機制擋住 | 待實作 |
+| 一次性 physics callback（Demo 桌 `_capture_home_position_once`）在 Stop 發生但尚未觸發 | 待實測項目（記錄於 `skills/isaac_sim_6_api_cache.md`），非本次阻塞；若實測發現有殘留 callback，可能需額外呼叫 `world.remove_physics_callback(...)` 清理 | 待確認（不阻塞本次範圍） |
 
 ---
 
 ## 7. 測試涵蓋（對應 Unit Test）
 
-> 本次僅記錄設計對應的測試涵蓋範圍，實作與撰寫留待後續任務。
-
-| 測試案例 | 測試檔案 | 說明 |
-|---|---|---|
-| test_step_dispatches_reset_when_should_execute_action_true | core/tests/test_table_orchestrator.py | `should_execute_action=True` 且狀態為 RESET 時，正確呼叫 `table_ball_set.reset()` 與 `_reset_downstream()` |
-| test_step_skips_downstream_when_should_execute_action_false | core/tests/test_table_orchestrator.py | `should_execute_action=False` 時不觸發任何下游動作方法，但仍完成 `is_ball_moving` 查詢與 `Observation` 組裝 |
-| test_step_queries_ball_motion_every_tick | core/tests/test_table_orchestrator.py | 驗證 `ball_motion_monitor.is_any_ball_moving()` 每個 `step()` 呼叫皆會執行一次，且時機在下游動作分派之後 |
-| test_demo_reset_downstream_calls_ur5_reset | core/tests/test_table_orchestrator.py | `DemoTableOrchestrator._reset_downstream()` 呼叫 `ur5_robot.reset()` 並回傳 `ur5_robot.is_reset_complete()` |
-| test_demo_motion_complete_requires_ball_and_arm | core/tests/test_table_orchestrator.py | `DemoTableOrchestrator._is_downstream_motion_complete()` 僅在球與手臂皆完成時回傳 `True`（分別測手臂未到位、球未完成兩種 False 情境） |
-| test_training_reset_downstream_always_true | core/tests/test_table_orchestrator.py | `TrainingTableOrchestrator._reset_downstream()` 恆回傳 `True` |
-| test_training_execute_strike_calls_impulse_service | core/tests/test_table_orchestrator.py | `TrainingTableOrchestrator._execute_strike()` 正確呼叫 `impulse_striking_service.strike(action, table_z)` |
-| test_training_motion_complete_ignores_arm | core/tests/test_table_orchestrator.py | `TrainingTableOrchestrator._is_downstream_motion_complete()` 僅需球 reset 完成即為 `True` |
-| test_get_ball_prim_paths_returns_ten_paths_in_order | core/tests/test_models.py | `TableBallSet.get_ball_prim_paths()` 回傳 10 筆、依 ball_id 0-9 升冪排序、路徑格式與 `_get_ball_prim_path()` 一致 |
+| 測試案例 | 測試檔案 | 說明 | 狀態 |
+|---|---|---|---|
+| test_step_dispatches_reset_when_should_execute_action_true | core/tests/test_table_orchestrator.py | `should_execute_action=True` 且狀態為 RESET 時，正確呼叫 `table_ball_set.reset()` 與 `_reset_downstream()` | 已完成 |
+| test_step_skips_downstream_when_should_execute_action_false | core/tests/test_table_orchestrator.py | `should_execute_action=False` 時不觸發任何下游動作方法 | 已完成 |
+| test_demo_reset_downstream_calls_ur5_reset | core/tests/test_table_orchestrator.py | `DemoTableOrchestrator._reset_downstream()` 呼叫 `ur5_robot.reset()` | 已完成 |
+| test_training_reset_downstream_noop | core/tests/test_table_orchestrator.py | `TrainingTableOrchestrator._reset_downstream()` 為 no-op，不拋例外 | 已完成 |
+| test_training_execute_strike_calls_impulse_service | core/tests/test_table_orchestrator.py | `TrainingTableOrchestrator._execute_strike()` 正確呼叫 `impulse_striking_service.strike(action, table_z)` | 已完成 |
+| test_get_ball_prim_paths_returns_ten_paths_in_order | core/tests/test_models.py | `TableBallSet.get_ball_prim_paths()` 回傳 10 筆、依 ball_id 0-9 升冪排序 | 已完成 |
+| test_table_ball_set_applies_table_position_offset | core/tests/test_models.py | `TableBallSet.build()`/`reset()` 皆正確套用 `table_position` 世界偏移量 | 已完成 |
+| test_error_state_mark_error_records_and_does_not_raise | core/tests/test_error_state.py | `mark_error()` 記錄例外、`has_error()` 變為 `True`，且不重新拋出 | 待實作 |
+| test_error_state_get_last_exception_returns_recorded_exception | core/tests/test_error_state.py | `get_last_exception()` 回傳 `mark_error()` 記錄的同一個例外物件 | 待實作 |
+| test_error_state_clear_resets_flag_and_exception | core/tests/test_error_state.py | `clear()` 後 `has_error()` 為 `False`、`get_last_exception()` 為 `None` | 待實作 |
+| test_step_catches_downstream_exception_and_marks_error | core/tests/test_table_orchestrator.py | 下游動作（`_reset_downstream`/`_execute_aim`/`_execute_strike`）拋出例外時，`step()` 不往外拋，且呼叫 `error_state.mark_error(e)` | 待實作 |
+| test_orchestrator_reset_clears_error_state_and_script_controller | core/tests/test_table_orchestrator.py | `TableOrchestrator.reset()` 同時呼叫 `error_state.clear()` 與 `script_controller.reset()` | 待實作 |
+| test_observation_builder_builds_ball_positions_from_rigid_body_api | core/tests/test_observation_builder.py | `build()` 迴圈 `get_ball_prim_paths()` 逐一呼叫 `rigid_body_api.get_position()` 組出 `ball_positions` | 待實作 |
+| test_observation_builder_cue_ball_position_is_ball_zero | core/tests/test_observation_builder.py | `cue_ball_position` 等於 `ball_positions[0]` | 待實作 |
+| test_observation_builder_is_init_state_true_within_tolerance | core/tests/test_observation_builder.py | 球位置與 `ball_position_provider` 換算世界座標誤差在 5mm 內時 `is_init_state=True` | 待實作 |
+| test_observation_builder_is_init_state_false_outside_tolerance | core/tests/test_observation_builder.py | 任一顆球誤差超出 5mm 時 `is_init_state=False` | 待實作 |
+| test_observation_builder_has_error_reflects_error_state | core/tests/test_observation_builder.py | `error_state.has_error()==True` 時 `Observation.has_error` 為 `True` | 待實作 |
+| test_observation_builder_does_not_accept_previous_observation | core/tests/test_observation_builder.py | `build()` 簽名不接受任何既有 `Observation` 參數（介面層級的設計驗證） | 待實作 |
+| test_demo_observation_builder_motion_complete_uses_ur5_reset_complete | core/tests/test_observation_builder.py | `DemoObservationBuilder._is_downstream_motion_complete()` 回傳 `ur5_robot.is_reset_complete()` | 待實作 |
+| test_training_observation_builder_motion_complete_always_true | core/tests/test_observation_builder.py | `TrainingObservationBuilder._is_downstream_motion_complete()` 恆回傳 `True` | 待實作 |
+| test_table_runtime_tick_builds_observation_then_steps_orchestrator | core/tests/test_table_runtime.py | `tick()` 依序呼叫 `observation_builder.build()` 再把結果傳給 `orchestrator.step()`，且順序正確 | 待實作 |
+| test_table_runtime_holds_no_internal_state | core/tests/test_table_runtime.py | 連續呼叫多次 `tick()`，`TableRuntime` 本身不緩存任何跨 tick 資料（僅委派） | 待實作 |
+| test_get_ball_radius_returns_constructed_value | core/tests/test_models.py | `TableBallSet.get_ball_radius()` 回傳建構時注入的 `ball_radius` | 待實作 |
+| test_billiard_table_get_table_ball_set_returns_internal_instance | core/tests/test_models.py | `BilliardTable.get_table_ball_set()` 回傳與內部 `self._table_set` 相同的 instance | 待實作 |
+| test_timeline_play_calls_articulation_initialize_once | extension 手動驗證 或 core/tests（依實際可測試邊界拆分） | PLAY 事件觸發時呼叫 `articulation_api.initialize()`；重複 PLAY（`_runtime_initialized=True`）不重複呼叫 | 待實作 |
+| test_timeline_stop_resets_runtime_initialized_guard | 同上 | STOP 事件觸發後 `_runtime_initialized` 變為 `False` | 待實作 |
+| test_on_tick_skips_when_training_disabled | 同上 | `training_enabled=False` 時 `_on_tick` 不呼叫任何 `runtime.tick()` | 待實作 |
 
 ---
 
