@@ -332,4 +332,13 @@ ScriptController
 - [x] **`is_init_state` 判定方式與 `has_error` 來源（已定案 2026-07-22）**：
   - `is_init_state`：`ObservationBuilder` 注入 `ball_position_provider` + 該桌 `table_position: tuple[float, float]`，將 `ball_position_provider.get_positions()`（相對座標）逐一加上 `table_position` 換算成世界座標，跟實際 `ball_positions` 逐球比對歐氏距離，容許誤差 `5mm`（`0.005`），任一顆球超出誤差即視為 `False`。
   - `has_error`：新增共享物件 `ErrorState`（`mark_error()` / `has_error() -> bool`），`TableOrchestrator` 與 `ObservationBuilder` 建構時注入同一個 instance。`TableOrchestrator.step()` 把下游動作分派包進 try/except，捕捉到例外時呼叫 `error_state.mark_error()`，**不重新拋出**（靜默吞掉，讓下一個 tick `ObservationBuilder` 讀到 `has_error=True`，`ScriptController` 自然轉進 `ERROR` 狀態），理由是避免單一桌子的下游執行錯誤讓共用的 Extension tick loop（若多桌共用同一個 physics callback）整個中斷。`ObservationBuilder.build()` 直接讀 `error_state.has_error()` 寫入 `Observation.has_error`。
-  - 待後續回合確認：`ErrorState` 目前沒有清除（`clear()`）機制，`ERROR` 狀態目前也沒有定義自動恢復路徑（見第 3 節），這兩者要如何配合重新初始化尚未設計。
+- [x] **`ErrorState.clear()` 機制（已定案 2026-07-22）**：`ErrorState` 新增 `clear() -> None`。`clear()` 必須跟 `ScriptController.reset()` 同時發生，不能分開呼叫——因為 `ScriptController.get_action()` 判斷順序是 `observation.has_error` 優先於 `current_state`，若只呼叫 `script_controller.reset()` 而沒清除 `ErrorState`，下一個 tick 仍會讀到 `has_error=True`，狀態機會瞬間又跳回 `ERROR`，讓 `reset()` 白做。因此不讓外部個別呼叫 `error_state.clear()`/`script_controller.reset()`，改由 `TableOrchestrator` 開一個統一入口：
+
+  ```python
+  def reset(self) -> None:
+      """外部重新初始化用：清除錯誤旗標並讓狀態機回到 RESET，兩者必須同時發生。"""
+      self._error_state.clear()
+      self._script_controller.reset()
+  ```
+
+  未來 Extension 端（例如 `DebugMenu` 的重新初始化操作）只需呼叫 `table_runtime.orchestrator.reset()`，不需要知道背後牽動 `ErrorState` 與 `ScriptController` 兩個物件。
