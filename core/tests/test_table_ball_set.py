@@ -269,3 +269,14 @@ class TestTableBallSet:
             stage_api.set_prim_translate.assert_any_call(
                 _prim_path(ball_id), 2.0 + x, 3.0 + y, pytest.approx(0.75 + 0.028575)
             )
+
+    def test_get_ball_prim_paths_returns_ten_paths_in_order(
+        self,
+        table_ball_set,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+
+        prim_paths = table_ball_set.get_ball_prim_paths()
+
+        assert prim_paths == [_prim_path(ball_id) for ball_id in range(10)]

@@ -51,6 +51,19 @@ class TestInitialState:
         assert controller._current_state == BilliardStatus.RESET
 
 
+class TestGetCurrentState:
+    def test_get_current_state_returns_reset_initially(self, controller: ScriptController):
+        # Assert
+        assert controller.get_current_state() == BilliardStatus.RESET
+
+    def test_get_current_state_reflects_transitions(self, controller: ScriptController):
+        # Act
+        _advance_to_idle(controller)
+
+        # Assert
+        assert controller.get_current_state() == BilliardStatus.IDLE
+
+
 class TestResetToIdle:
     def test_stays_in_reset_when_motion_not_complete(self, controller: ScriptController):
         # Act
