@@ -64,6 +64,19 @@ def table_ball_set(stage_api: MagicMock, material_api: MagicMock, rigid_body_api
     )
 
 
+@pytest.fixture
+def offset_table_ball_set(stage_api: MagicMock, material_api: MagicMock, rigid_body_api: MagicMock):
+    return _table_ball_set_class()(
+        stage_api=stage_api,
+        material_api=material_api,
+        rigid_body_api=rigid_body_api,
+        table_z=0.75,
+        base_path="/World/BilliardTable_0",
+        table_position=(2.0, 3.0),
+        ball_radius=0.028575,
+    )
+
+
 def _prim_path(ball_id: int) -> str:
     return f"/World/BilliardTable_0/Balls/Ball_{ball_id}"
 
@@ -225,3 +238,34 @@ class TestTableBallSet:
     def test_build_before_hide_raises(self, table_ball_set):
         with pytest.raises(RuntimeError):
             table_ball_set.hide_ball(0)
+
+    def test_build_adds_table_position_offset(
+        self,
+        offset_table_ball_set,
+        stage_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        offset_table_ball_set.build(positions)
+
+        for ball_id in range(10):
+            x, y = positions[ball_id]
+            stage_api.set_prim_translate.assert_any_call(
+                _prim_path(ball_id), 2.0 + x, 3.0 + y, pytest.approx(0.75 + 0.028575)
+            )
+
+    def test_reset_adds_table_position_offset(
+        self,
+        offset_table_ball_set,
+        stage_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        offset_table_ball_set.build(positions)
+        stage_api.set_prim_translate.reset_mock()
+
+        offset_table_ball_set.reset(positions)
+
+        for ball_id in range(10):
+            x, y = positions[ball_id]
+            stage_api.set_prim_translate.assert_any_call(
+                _prim_path(ball_id), 2.0 + x, 3.0 + y, pytest.approx(0.75 + 0.028575)
+            )

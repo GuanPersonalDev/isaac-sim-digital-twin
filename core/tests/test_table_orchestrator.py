@@ -15,8 +15,6 @@ def _observation() -> Observation:
     return Observation(
         ball_positions=[],
         cue_ball_position=[0.0, 0.0, 0.0],
-        joint_angles=[],
-        shot_params=[],
         is_init_state=False,
         is_ball_moving=False,
         is_motion_complete=False,

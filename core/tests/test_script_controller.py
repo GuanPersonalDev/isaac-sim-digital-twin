@@ -14,8 +14,6 @@ def _observation(
     return Observation(
         ball_positions=[[0.0, 0.0, 0.0]],
         cue_ball_position=[-0.3, 0.0, 0.0],
-        joint_angles=[0.0] * 6,
-        shot_params=[0.0, 0.0, 0.0],
         is_init_state=is_init_state,
         is_ball_moving=is_ball_moving,
         is_motion_complete=is_motion_complete,

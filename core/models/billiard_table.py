@@ -3,7 +3,6 @@ from .table_ball_set import TableBallSet
 from ..ports.stage_api import StageAPI
 from ..ports.material_api import MaterialAPI
 from ..ports.rigid_body_api import RigidBodyAPI
-from ..services.ball_position_provider import BallPositionProvider
 from ..services.break_shot_position_provider import BreakShotPositionProvider
 from ..services.asset_utility import TABLE_PATH
 
@@ -32,15 +31,16 @@ class BilliardTable:
         )
 
         self._table_set = TableBallSet(
-            stage_api, material_api, rigid_body_api, table_z=self._z_pos, base_path=base_path
+            stage_api,
+            material_api,
+            rigid_body_api,
+            table_z=self._z_pos,
+            base_path=base_path,
+            table_position=(self._x_pos, self._y_pos),
         )
 
         positions = BreakShotPositionProvider().get_positions()
-        world_positions = {
-            ball_id: (x + self._x_pos, y + self._y_pos)
-            for ball_id, (x, y) in positions.items()
-        }
-        self._table_set.build(world_positions)
+        self._table_set.build(positions)
 
     def get_table_prim_path(self):
         return self._table_prim_path

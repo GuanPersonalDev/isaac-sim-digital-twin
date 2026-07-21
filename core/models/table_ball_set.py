@@ -29,6 +29,7 @@ class TableBallSet:
         rigid_body_api: RigidBodyAPI,
         table_z: float,
         base_path: str,
+        table_position: tuple[float, float] = (0.0, 0.0),
         ball_radius: float = 0.028575,
     ) -> None:
         self._base_path = base_path
@@ -36,6 +37,7 @@ class TableBallSet:
         self._material_api = material_api
         self._rigid_body_api = rigid_body_api
         self._table_z = table_z
+        self._table_x, self._table_y = table_position
         self._ball_radius = ball_radius
         self._built = False
         self._ball_prim_list: list[str] = []
@@ -55,7 +57,7 @@ class TableBallSet:
             prim_path = self._get_ball_prim_path(ball_id)
             self._stage_api.create_reference_prim(prim_path, BALL_TEMPLATE_PATH)
             x, y = positions[ball_id]
-            self._stage_api.set_prim_translate(prim_path, x, y, z)
+            self._stage_api.set_prim_translate(prim_path, self._table_x + x, self._table_y + y, z)
 
             if ball_id == 9:
                 self._apply_ball9_material(prim_path)
@@ -129,7 +131,7 @@ class TableBallSet:
             prim_path = self._get_ball_prim_path(ball_id)
             self._stage_api.set_visibility(prim_path, visible=True)
             x, y = positions[ball_id]
-            self._stage_api.set_prim_translate(prim_path, x, y, z)
+            self._stage_api.set_prim_translate(prim_path, self._table_x + x, self._table_y + y, z)
             self._rigid_body_api.set_velocities(prim_path, [0, 0, 0], [0, 0, 0])
 
     def _check_built(self) -> None:
