@@ -329,3 +329,7 @@ ScriptController
   - `ball_positions`／`cue_ball_position`：迴圈 `table_ball_set.get_ball_prim_paths()` 逐一呼叫 `rigid_body_api.get_position()`；白球固定是 `ball_id=0`（依 `ball_colors.py` 白色 `[1.0, 1.0, 1.0]` 確認），對應 `get_ball_prim_paths()[0]`。
   - `joint_angles`、`shot_params`：追查後確認是設計演進留下的死欄位（`shot_params` 前身是最早期泛用機械手臂模板的 `target_position`，改名後從未被賦予撞球語意也從未被消費；`Action` 的 6 維 RL 規格才是真正承載擊球參數的地方），**兩者已從 `Observation` 移除**（`core/models/observation.py`），不需要 `ObservationBuilder` 生成。
   - `is_init_state`：判斷邏輯（比對目前 `ball_positions` 與初始擺球位置，需考慮誤差範圍）本次尚未設計，留待 `ObservationBuilder` 實作回合處理。
+- [x] **`is_init_state` 判定方式與 `has_error` 來源（已定案 2026-07-22）**：
+  - `is_init_state`：`ObservationBuilder` 注入 `ball_position_provider` + 該桌 `table_position: tuple[float, float]`，將 `ball_position_provider.get_positions()`（相對座標）逐一加上 `table_position` 換算成世界座標，跟實際 `ball_positions` 逐球比對歐氏距離，容許誤差 `5mm`（`0.005`），任一顆球超出誤差即視為 `False`。
+  - `has_error`：新增共享物件 `ErrorState`（`mark_error()` / `has_error() -> bool`），`TableOrchestrator` 與 `ObservationBuilder` 建構時注入同一個 instance。`TableOrchestrator.step()` 把下游動作分派包進 try/except，捕捉到例外時呼叫 `error_state.mark_error()`，**不重新拋出**（靜默吞掉，讓下一個 tick `ObservationBuilder` 讀到 `has_error=True`，`ScriptController` 自然轉進 `ERROR` 狀態），理由是避免單一桌子的下游執行錯誤讓共用的 Extension tick loop（若多桌共用同一個 physics callback）整個中斷。`ObservationBuilder.build()` 直接讀 `error_state.has_error()` 寫入 `Observation.has_error`。
+  - 待後續回合確認：`ErrorState` 目前沒有清除（`clear()`）機制，`ERROR` 狀態目前也沒有定義自動恢復路徑（見第 3 節），這兩者要如何配合重新初始化尚未設計。
