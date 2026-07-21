@@ -342,3 +342,29 @@ ScriptController
   ```
 
   未來 Extension 端（例如 `DebugMenu` 的重新初始化操作）只需呼叫 `table_runtime.orchestrator.reset()`，不需要知道背後牽動 `ErrorState` 與 `ScriptController` 兩個物件。
+
+- [x] **Extension tick loop（訓練桌，已定案 2026-07-22）**：`ArticulationAPI` 的注入方式（第 322 行待決定事項）延後到實作手臂操作時再處理；本次先讓訓練桌（衝量式擊球）的 tick loop 跑通。
+  - **`TableRuntime` 不需要持有任何狀態**（因為 `ObservationBuilder.build()` 不吃 `previous_observation`），只是把 `ObservationBuilder`/`TableOrchestrator` 包在一起：
+    ```python
+    class TableRuntime:
+        def __init__(self, orchestrator: TableOrchestrator, observation_builder: ObservationBuilder) -> None:
+            self._orchestrator = orchestrator
+            self._observation_builder = observation_builder
+
+        def tick(self) -> None:
+            observation = self._observation_builder.build()
+            self._orchestrator.step(observation)
+    ```
+  - **新增缺口 getter**：`BilliardTable.get_table_ball_set() -> TableBallSet`（組裝 `TableRuntime` 需要拿到內部的 `TableBallSet`，目前沒有對外暴露）、`TableBallSet.get_ball_radius() -> float`（`ImpulseStrikingService` 建構子需要）。
+  - `TrainingTableOrchestrator`/`TrainingObservationBuilder` 建構子皆新增 `error_state: ErrorState` 參數。
+  - Extension 端每張訓練桌組出一組 `TableRuntime`（`ScriptController`、`BreakShotPositionProvider`、`BallMotionMonitor`、`ImpulseStrikingService`、`ErrorState` 皆各桌一份，不共用；`RigidBodyAPI`/`StageAPI` 沿用既有的共用單例）。
+  - **`training_enabled` 作為 tick loop 的閘門**：`self._training_enabled`（現有旗標，目前無人消費）改為決定要不要呼叫 `runtime.tick()`——沒開 training 時完全不 tick，狀態機整個暫停在原地，而不是持續 tick 但下游動作被其他機制擋住。閘門邏輯放在 Extension 層，`TableRuntime`/`TableOrchestrator` 不需要知道這個開關存在：
+    ```python
+    def _on_tick(self, step_size: float) -> None:
+        if not self._training_enabled:
+            return
+        for runtime in self._table_runtimes:
+            runtime.tick()
+    ```
+    掛在 `world.add_physics_callback(...)`。
+  - Demo 桌的 `TableRuntime` 組裝本次不處理，待 `ArticulationAPI` 注入方式定案後再補。
