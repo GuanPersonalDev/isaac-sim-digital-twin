@@ -368,3 +368,59 @@ ScriptController
     ```
     掛在 `world.add_physics_callback(...)`。
   - Demo 桌的 `TableRuntime` 組裝本次不處理，待 `ArticulationAPI` 注入方式定案後再補。
+
+- [x] **`ErrorState` 錯誤可見性（已定案 2026-07-22）**：討論 Demo 桌串接時發現 `ArticulationAPIImpl.initialize()` 目前完全沒有被呼叫（見下一項），若照原設計靜默吞例外，這類錯誤會完全無法被發現。修正：保留「不重新拋出」（避免一張桌子的錯誤讓共用 tick loop 的其他桌子跟著中斷），但 `mark_error()` 強制留下痕跡：
+
+  ```python
+  import logging
+
+  logger = logging.getLogger(__name__)
+
+  class ErrorState:
+      def __init__(self) -> None:
+          self._has_error = False
+          self._last_exception: Exception | None = None
+
+      def mark_error(self, exception: Exception) -> None:
+          logger.exception("下游執行發生例外", exc_info=exception)
+          self._has_error = True
+          self._last_exception = exception
+
+      def has_error(self) -> bool:
+          return self._has_error
+
+      def get_last_exception(self) -> Exception | None:
+          return self._last_exception
+
+      def clear(self) -> None:
+          self._has_error = False
+          self._last_exception = None
+  ```
+
+  `TableOrchestrator.step()` 對應改成 `except Exception as e: self._error_state.mark_error(e)`。錯誤會完整記錄在 log（含 traceback），也能透過 `get_last_exception()` 事後查詢，但不會讓其他桌子的 tick 被中斷。
+
+- [x] **`ArticulationAPIImpl.initialize()` 生命週期缺口與修法（已定案 2026-07-22）**：追查 Demo 桌串接可行性時發現，`extension/billiard_digital_twin/billiard_digital_twin.py` 建構了 `ArticulationAPIImpl` 但從未呼叫其 `initialize()`，導致 `self._articulation` 永遠是 `None`，任何 `move_to_home()`/`move_to_pose()` 呼叫都會拋 `AttributeError`（會被上面的 `ErrorState` 吞掉，但 Demo 桌會每次 RESET 都卡進 `ERROR`）。修法：把 Extension 的初始化拆成兩個時機：
+  - **stage-open 時機**（現有 `_billiard_init()`）：建場景、建 prim、建 `ArticulationAPIImpl` 實例，但不呼叫 `initialize()`。
+  - **timeline play 時機**（新增）：呼叫 `articulation_api.initialize()`，再建立 `TableRuntime` 清單並註冊 tick callback。理由：`initialize()` 內部會註冊一次性 physics callback 捕捉手臂 home 姿態，必須等 timeline 真的在播放才會被觸發（docstring 本來就寫「在 timeline play 之後呼叫」，但先前沒有對應的呼叫時機）。
+
+  API 確認（Isaac Sim 6.0.0，見 `skills/isaac_sim_6_api_cache.md`）：訂閱寫法跟現有 stage-event 訂閱同一套模式（`omni.timeline.get_timeline_interface().get_timeline_event_stream()` + `int(omni.timeline.TimelineEventType.PLAY)`），可以在 `on_startup` 就建立訂閱，不需要等 stage 開啟。
+
+  **邊界情況：Stop→Play 會重複觸發 PLAY 事件**，且 Stop 會銷毀 physics view，讓先前 `initialize()` 的內部 handle 失效。呼叫端需要自己防護，用一個旗標避免重複初始化、並在 Stop 時重置：
+
+  ```python
+  def _on_timeline_event(self, event: carb.events.IEvent) -> None:
+      if event.type == int(omni.timeline.TimelineEventType.PLAY):
+          if self._runtime_initialized:
+              return
+          self._articulation_api.initialize()
+          self._table_runtimes = [
+              self._build_training_runtime(table, self._stage_api, rigid_body_api)
+              for table in self._tables
+          ]
+          self._world.add_physics_callback("billiard_table_tick", self._on_tick)
+          self._runtime_initialized = True
+      elif event.type == int(omni.timeline.TimelineEventType.STOP):
+          self._runtime_initialized = False
+  ```
+
+  待實測項目（記錄在快取，非本次阻塞）：一次性 physics callback（`_capture_home_position_once`）在 Stop 發生但尚未觸發時，Kit/PhysX 是否會自動清除，若實測發現有殘留 callback，可能需要額外呼叫 `world.remove_physics_callback(...)` 清理。
