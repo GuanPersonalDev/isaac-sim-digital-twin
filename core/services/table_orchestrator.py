@@ -10,6 +10,7 @@ from ..models.ur5_robot import UR5Robot
 from .ball_motion_monitor import BallMotionMonitor
 from .ball_position_provider import BallPositionProvider
 from .impulse_striking_service import ImpulseStrikingService
+from .error_state import ErrorState
 
 
 class TableOrchestrator(ABC):
@@ -24,10 +25,12 @@ class TableOrchestrator(ABC):
         script_controller: ScriptController,
         table_ball_set: TableBallSet,
         ball_position_provider: BallPositionProvider,
+        error_state: ErrorState
     ) -> None:
         self._script_controller = script_controller
         self._table_ball_set = table_ball_set
         self._ball_position_provider = ball_position_provider
+        self._error_state = error_state
 
     def step(self, observation: Observation) -> None:
         """
@@ -35,16 +38,20 @@ class TableOrchestrator(ABC):
         """
         action = self._script_controller.get_action(observation)
         current_state = self._script_controller.get_current_state()
-        if action.should_execute_action:
-            match current_state:
-                case BilliardStatus.RESET:
-                    self._reset_balls()
-                    self._reset_downstream()
-                case BilliardStatus.AIMING:
-                    self._execute_aim(action)
-                case BilliardStatus.STRIKING:
-                    self._execute_strike(action)
         
+        if action.should_execute_action:
+            try:
+                match current_state:
+                    case BilliardStatus.RESET:
+                        self._reset_balls()
+                        self._reset_downstream()
+                    case BilliardStatus.AIMING:
+                        self._execute_aim(action)
+                    case BilliardStatus.STRIKING:
+                        self._execute_strike(action)
+            except Exception as e:
+                self._error_state.mark_error(e)
+
 
     def _reset_balls(self) -> None:
         """
@@ -53,6 +60,15 @@ class TableOrchestrator(ABC):
         """
         positions = self._ball_position_provider.get_positions()
         self._table_ball_set.reset(positions)
+        
+    def reset(self) -> None:
+        """
+        外部重新初始化入口，必須同時清除 error_state 與重置狀態機：
+        ScriptController.get_action() 判斷 has_error 優先於 current_state，
+        只清一邊會讓狀態機瞬間又跳回 ERROR。
+        """
+        self._error_state.clear()
+        self._script_controller.reset()
 
     @abstractmethod
     def _reset_downstream(self) -> None:
@@ -77,8 +93,9 @@ class DemoTableOrchestrator(TableOrchestrator):
         ball_position_provider: BallPositionProvider,
         ur5_robot: UR5Robot,
         articulation_api: ArticulationAPI,
+        error_state: ErrorState
     ) -> None:
-        super().__init__(script_controller, table_ball_set, ball_position_provider)
+        super().__init__(script_controller, table_ball_set, ball_position_provider, error_state)
         self._ur5_robot = ur5_robot
         self._articulation_api = articulation_api
 
@@ -100,8 +117,9 @@ class TrainingTableOrchestrator(TableOrchestrator):
         table_ball_set: TableBallSet,
         ball_position_provider: BallPositionProvider,
         impulse_striking_service: ImpulseStrikingService,
+        error_state: ErrorState
     ) -> None:
-        super().__init__(script_controller, table_ball_set, ball_position_provider)
+        super().__init__(script_controller, table_ball_set, ball_position_provider, error_state)
         self._impulse_striking_service = impulse_striking_service
 
     def _reset_downstream(self) -> None:

@@ -5,6 +5,7 @@ import pytest
 from core.models.action import Action
 from core.models.billiard_state import BilliardStatus
 from core.models.observation import Observation
+from core.services.error_state import ErrorState
 from core.services.table_orchestrator import (
     DemoTableOrchestrator,
     TrainingTableOrchestrator,
@@ -63,12 +64,19 @@ def impulse_striking_service() -> MagicMock:
 
 
 @pytest.fixture
+def error_state() -> MagicMock:
+    # wraps 真正的 ErrorState：既能斷言呼叫參數，has_error()/get_last_exception() 也反映真實狀態
+    return MagicMock(wraps=ErrorState())
+
+
+@pytest.fixture
 def demo_orchestrator(
     script_controller: MagicMock,
     table_ball_set: MagicMock,
     ball_position_provider: MagicMock,
     ur5_robot: MagicMock,
     articulation_api: MagicMock,
+    error_state: MagicMock,
 ) -> DemoTableOrchestrator:
     return DemoTableOrchestrator(
         script_controller=script_controller,
@@ -76,6 +84,7 @@ def demo_orchestrator(
         ball_position_provider=ball_position_provider,
         ur5_robot=ur5_robot,
         articulation_api=articulation_api,
+        error_state=error_state,
     )
 
 
@@ -85,12 +94,14 @@ def training_orchestrator(
     table_ball_set: MagicMock,
     ball_position_provider: MagicMock,
     impulse_striking_service: MagicMock,
+    error_state: MagicMock,
 ) -> TrainingTableOrchestrator:
     return TrainingTableOrchestrator(
         script_controller=script_controller,
         table_ball_set=table_ball_set,
         ball_position_provider=ball_position_provider,
         impulse_striking_service=impulse_striking_service,
+        error_state=error_state,
     )
 
 
@@ -174,6 +185,67 @@ class TestStepDispatch:
 
         table_ball_set.reset.assert_not_called()
         ur5_robot.reset.assert_not_called()
+
+
+class TestStepErrorHandling:
+    def test_downstream_exception_is_recorded_and_not_reraised(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        error_state: MagicMock,
+    ):
+        script_controller.get_action.return_value = _action(should_execute_action=True)
+        script_controller.get_current_state.return_value = BilliardStatus.AIMING
+        boom = RuntimeError("boom")
+        demo_orchestrator._execute_aim = MagicMock(side_effect=boom)
+
+        demo_orchestrator.step(_observation())  # 不應往外拋
+
+        error_state.mark_error.assert_called_once_with(boom)
+        assert error_state.has_error() is True
+        assert error_state.get_last_exception() is boom
+
+    def test_no_exception_leaves_error_state_untouched(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        ball_position_provider: MagicMock,
+        error_state: MagicMock,
+    ):
+        script_controller.get_action.return_value = _action(should_execute_action=True)
+        script_controller.get_current_state.return_value = BilliardStatus.RESET
+        ball_position_provider.get_positions.return_value = {0: (0.0, 0.0)}
+
+        demo_orchestrator.step(_observation())
+
+        error_state.mark_error.assert_not_called()
+        assert error_state.has_error() is False
+
+
+class TestReset:
+    def test_reset_clears_error_state_and_resets_script_controller(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        error_state: MagicMock,
+    ):
+        demo_orchestrator.reset()
+
+        error_state.clear.assert_called_once_with()
+        script_controller.reset.assert_called_once_with()
+
+    def test_reset_clears_a_previously_recorded_error(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        error_state: MagicMock,
+    ):
+        error_state.mark_error(RuntimeError("boom"))
+        assert error_state.has_error() is True
+
+        demo_orchestrator.reset()
+
+        assert error_state.has_error() is False
+        assert error_state.get_last_exception() is None
 
 
 class TestResetBalls:
