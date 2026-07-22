@@ -50,3 +50,6 @@ class BilliardTable:
 
     def destroy(self):
         self._table_set = None
+
+    def get_table_ball_set(self) -> TableBallSet | None:
+        return self._table_set

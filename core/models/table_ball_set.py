@@ -144,3 +144,9 @@ class TableBallSet:
 
     def get_table_z(self) -> float:
         return self._table_z
+
+    def get_table_x_y(self) -> tuple[float, float]:
+        return self._table_x, self._table_y
+
+    def get_ball_radius(self) -> float:
+        return self._ball_radius

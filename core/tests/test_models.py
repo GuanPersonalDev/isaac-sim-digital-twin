@@ -1,7 +1,11 @@
+from unittest.mock import MagicMock, patch
+
 from core.models.action import Action
 from core.models.billiard_state import BilliardState, BilliardStatus
+from core.models.billiard_table import BilliardTable
 from core.models.observation import Observation
 from core.models.shot_result import ShotResult
+from core.models.table_ball_set import TableBallSet
 
 
 class TestBilliardState:
@@ -168,3 +172,40 @@ class TestShotResult:
         )
 
         assert shot_result.final_ball_positions == []
+
+
+class TestTableBallSetBallRadius:
+    def test_get_ball_radius_returns_constructed_value(self):
+        table_ball_set = TableBallSet(
+            stage_api=MagicMock(),
+            material_api=MagicMock(),
+            rigid_body_api=MagicMock(),
+            table_z=0.75,
+            base_path="/World/BilliardTable_0",
+            ball_radius=0.03,
+        )
+
+        assert table_ball_set.get_ball_radius() == 0.03
+
+
+class TestBilliardTableGetTableBallSet:
+    def test_billiard_table_get_table_ball_set_returns_internal_instance(self):
+        with (
+            patch("core.models.billiard_table.TableBallSet") as table_ball_set_class,
+            patch(
+                "core.models.billiard_table.BreakShotPositionProvider"
+            ) as position_provider_class,
+        ):
+            position_provider_class.return_value.get_positions.return_value = {
+                ball_id: (0.0, 0.0) for ball_id in range(10)
+            }
+
+            billiard_table = BilliardTable(
+                base_path="/World/BilliardTable",
+                stage_api=MagicMock(),
+                material_api=MagicMock(),
+                rigid_body_api=MagicMock(),
+                position=(0.0, 0.0),
+            )
+
+            assert billiard_table.get_table_ball_set() is table_ball_set_class.return_value
