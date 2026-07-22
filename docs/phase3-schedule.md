@@ -71,12 +71,12 @@
 | 5-8 | Block 5 | 實作 RESET：場景重置 → 回到 IDLE | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-22 | #99 |
 | 5-9-impl | Block 5 | TableOrchestrator：串接 RESET 全流程（實作） | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-21 | 2026-07-23 | #194 |
 | 5-9-test | Block 5 | TableOrchestrator Unit Test | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-21 | 2026-07-24 | #195 |
-| 5-9b-impl | Block 5 | ErrorState + TableOrchestrator：錯誤處理與 reset() 支援 | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-25 | #196 |
-| 5-9b-test | Block 5 | ErrorState + TableOrchestrator Unit Test | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-25 | #197 |
-| 5-9c-impl | Block 5 | ObservationBuilder（Demo/Training）+ 兩個缺口 getter | 1.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-25 | #198 |
-| 5-9c-test | Block 5 | ObservationBuilder Unit Test | 1.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-26 | #199 |
-| 5-9d-impl | Block 5 | TableRuntime：組裝 ObservationBuilder + TableOrchestrator | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-26 | #200 |
-| 5-9d-test | Block 5 | TableRuntime Unit Test | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-26 | #201 |
+| 5-9b-impl | Block 5 | ErrorState + TableOrchestrator：錯誤處理與 reset() 支援 | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-21 | 2026-07-25 | #196 |
+| 5-9b-test | Block 5 | ErrorState + TableOrchestrator Unit Test | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-21 | 2026-07-25 | #197 |
+| 5-9c-impl | Block 5 | ObservationBuilder（Demo/Training）+ 兩個缺口 getter | 1.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-25 | #198 |
+| 5-9c-test | Block 5 | ObservationBuilder Unit Test | 1.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-26 | #199 |
+| 5-9d-impl | Block 5 | TableRuntime：組裝 ObservationBuilder + TableOrchestrator | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-26 | #200 |
+| 5-9d-test | Block 5 | TableRuntime Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-26 | #201 |
 | 5-9e | Block 5 | Extension 訓練桌 timeline play/stop 生命週期串接 | 1.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-26 | #202 |
 | 5-9 | Block 5 | 單次擊球循環跑通確認（set_velocities 版） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-26 | #100 |
 | 5-10 | Block 5 | 物理參數調校：確認賦速後球散開效果合理 | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-27 | #101 |
