@@ -77,7 +77,7 @@
 | 5-9c-test | Block 5 | ObservationBuilder Unit Test | 1.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-26 | #199 |
 | 5-9d-impl | Block 5 | TableRuntime：組裝 ObservationBuilder + TableOrchestrator | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-26 | #200 |
 | 5-9d-test | Block 5 | TableRuntime Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-26 | #201 |
-| 5-9e | Block 5 | Extension 訓練桌 timeline play/stop 生命週期串接 | 1.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-26 | #202 |
+| 5-9e | Block 5 | Extension 訓練桌 timeline play/stop 生命週期串接 | 1.5h | M3: 擊球動作與評估 | TRUE | 2026-07-24 | 2026-07-26 | #202 |
 | 5-9 | Block 5 | 單次擊球循環跑通確認（set_velocities 版） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-26 | #100 |
 | 5-10 | Block 5 | 物理參數調校：確認賦速後球散開效果合理 | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-27 | #101 |
 | 6-1 | Block 6 | 設計 ShotResult 資料格式（各球最終位置 進袋狀態 散開分數） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-28 | #102 |
