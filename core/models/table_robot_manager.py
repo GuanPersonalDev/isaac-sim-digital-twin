@@ -38,6 +38,9 @@ class TableRobotManager:
 
     def get_robot_prim_path(self) -> str:
         return UR5Robot.get_prim_path(self._robot_base_path)
+    
+    def get_robot(self) -> UR5Robot | None:
+        return self._robot
 
     def destroy(self) -> None:
         self._robot = None

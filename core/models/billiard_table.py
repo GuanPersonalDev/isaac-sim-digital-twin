@@ -39,7 +39,8 @@ class BilliardTable:
             table_position=(self._x_pos, self._y_pos),
         )
 
-        positions = BreakShotPositionProvider().get_positions()
+        self.position_provider = BreakShotPositionProvider()
+        positions = self.position_provider.get_positions()
         self._table_set.build(positions)
 
     def get_table_prim_path(self):

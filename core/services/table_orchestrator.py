@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from ..controllers.script_controller import ScriptController
+from ..controllers.controller_base import ControllerBase
 from ..models.action import Action
 from ..models.billiard_state import BilliardStatus
 from ..models.observation import Observation
@@ -22,7 +22,7 @@ class TableOrchestrator(ABC):
 
     def __init__(
         self,
-        script_controller: ScriptController,
+        script_controller: ControllerBase,
         table_ball_set: TableBallSet,
         ball_position_provider: BallPositionProvider,
         error_state: ErrorState
@@ -88,7 +88,7 @@ class TableOrchestrator(ABC):
 class DemoTableOrchestrator(TableOrchestrator):
     def __init__(
         self,
-        script_controller: ScriptController,
+        script_controller: ControllerBase,
         table_ball_set: TableBallSet,
         ball_position_provider: BallPositionProvider,
         ur5_robot: UR5Robot,
@@ -113,7 +113,7 @@ class DemoTableOrchestrator(TableOrchestrator):
 class TrainingTableOrchestrator(TableOrchestrator):
     def __init__(
         self,
-        script_controller: ScriptController,
+        script_controller: ControllerBase,
         table_ball_set: TableBallSet,
         ball_position_provider: BallPositionProvider,
         impulse_striking_service: ImpulseStrikingService,

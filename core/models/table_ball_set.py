@@ -13,6 +13,7 @@ from .ball_colors import BALL_COLORS
 from ..ports.material_api import MaterialAPI
 from ..ports.stage_api import StageAPI
 from ..ports.rigid_body_api import RigidBodyAPI
+from ..services.ball_motion_monitor import BallMotionMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class TableBallSet:
         self._ball_radius = ball_radius
         self._built = False
         self._ball_prim_list: list[str] = []
+        self.ball_motion_monitor: BallMotionMonitor = None
 
     def build(self, positions: dict[int, tuple[float, float]]) -> None:
         """
@@ -66,6 +68,7 @@ class TableBallSet:
                 self._material_api.apply_preview_surface(prim_path, r, g, b)
             self._ball_prim_list.append(prim_path)
 
+        self.ball_motion_monitor = BallMotionMonitor(self._rigid_body_api, self._ball_prim_list)
         self._built = True
 
     def _get_ball_prim_path(self, ball_id: int):
