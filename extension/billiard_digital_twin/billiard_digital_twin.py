@@ -1,13 +1,6 @@
 from enum import Enum
 import sys
 import os
-from core.controllers.script_controller import ScriptController
-from core.models.table_ball_set import TableBallSet
-from core.models.ur5_robot import UR5Robot
-from core.ports import RigidBodyAPI
-from core.services.observation_builder import DemoTableObservationBuilder, TrainingTableObservationBuilder
-from core.services.table_orchestrator import DemoTableOrchestrator, TrainingTableOrchestrator
-from core.services.table_runtime import TableRuntime
 import omni.ext
 import omni.usd
 import omni.timeline
@@ -21,6 +14,13 @@ for p in [_EXT_DIR, _PROJECT_ROOT]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from core.controllers.script_controller import ScriptController
+from core.models.table_ball_set import TableBallSet
+from core.models.ur5_robot import UR5Robot
+from core.ports import RigidBodyAPI
+from core.services.observation_builder import DemoTableObservationBuilder, TrainingTableObservationBuilder
+from core.services.table_orchestrator import DemoTableOrchestrator, TrainingTableOrchestrator
+from core.services.table_runtime import TableRuntime
 from core.ports.material_api import MaterialAPI
 from core.ports.stage_api import StageAPI
 from isaac_sim_impl_6_0.stage_api_impl import StageAPIImpl
@@ -70,7 +70,7 @@ class BilliardExtension(omni.ext.IExt):
 
     def _billiard_init(self):
         if World.instance() is None:
-            world = World(physics_dt = 1/60, rendering_dt = 1/60, stage_units_in_meter = 1.0)
+            world = World(physics_dt = 1/60, rendering_dt = 1/60, stage_units_in_meters = 1.0)
         else:
             world = World.instance()
         world.reset()
