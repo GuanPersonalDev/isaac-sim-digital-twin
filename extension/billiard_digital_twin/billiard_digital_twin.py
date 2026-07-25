@@ -5,7 +5,7 @@ import omni.ext
 import omni.usd
 import omni.timeline
 import carb.events
-from isaacsim.core.api.world import World
+from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _EXT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -69,13 +69,9 @@ class BilliardExtension(omni.ext.IExt):
             self._sub = None
 
     def _billiard_init(self):
-        if World.instance() is None:
-            world = World(physics_dt = 1/60, rendering_dt = 1/60, stage_units_in_meters = 1.0)
-        else:
-            world = World.instance()
-        world.reset()
+        SimulationManager.setup_simulation(dt=1/60)
         
-        self._asset_env_init(world)
+        self._asset_env_init()
         
         self._training_enabled = False
         self._demo_enabled = False
@@ -83,7 +79,7 @@ class BilliardExtension(omni.ext.IExt):
         
         self._event_init()
         
-    def _asset_env_init(self, world: World):
+    def _asset_env_init(self):
         self._stage_api = StageAPIImpl()
         material_api = MaterialAPIImpl()
         self._rigid_body_api = RigidBodyAPIImpl()
@@ -96,7 +92,7 @@ class BilliardExtension(omni.ext.IExt):
         )
         robot_prim_path = UR5Robot.get_prim_path(demo_table_path)
         robot_end_effector_prim_path = UR5Robot.get_end_effector_prim_path(demo_table_path)
-        self._articulation_api = ArticulationAPIImpl(world, robot_prim_path, robot_end_effector_prim_path)
+        self._articulation_api = ArticulationAPIImpl(robot_prim_path, robot_end_effector_prim_path)
        
         self._table_unit_side_length = self._get_table_side_length(
             self._demo_table.get_table_prim_path()
@@ -171,8 +167,10 @@ class BilliardExtension(omni.ext.IExt):
             for training_table in self._training_tables:
                 self._register_training_table_runtime(training_table)
            
-            world = World.instance()
-            world.add_physics_callback(self._PHYSIC_CALL_BACK, self._on_tick)
+            self._tick_callback_id = SimulationManager.register_callback(
+                self._on_tick, event=SimulationEvent.PHYSICS_POST_STEP
+               )
+
             self._runtime_state = RuntimeState.RUNNING
         elif self._runtime_state == RuntimeState.READY:
             self._articulation_api.initialize()
@@ -201,7 +199,7 @@ class BilliardExtension(omni.ext.IExt):
                 TrainingTableOrchestrator(controller, table_ball_set, table.position_provider, impulse_striking_service, error_state))
             self._table_runtimes.append(training_table_runtime)
     
-    def _on_tick(self, step_size: float) -> None:
+    def _on_tick(self, step_dt, context) -> None:
         if self._runtime_state != RuntimeState.RUNNING:
             return
         for runtime in self._table_runtimes:
@@ -213,11 +211,8 @@ class BilliardExtension(omni.ext.IExt):
     def on_shutdown(self):
         if self._articulation_api is not None:
             self._articulation_api.shutdown()
-        world = World.instance()
-        if world is not None:
-            if self._runtime_state != RuntimeState.NOT_READY:
-                world.remove_physics_callback(self._PHYSIC_CALL_BACK)
-            world.clear_instance()
+        if self._runtime_state != RuntimeState.NOT_READY:
+            SimulationManager.deregister_callback(self._tick_callback_id)
         if self._tool_menu_items:
             unregister(self._tool_menu_items, _TOOL_MENU_NAME)
             self._tool_menu_items = None

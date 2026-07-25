@@ -8,6 +8,7 @@ description = "9-ball billiard robot simulation extension"
 "isaacsim.core.prims" = {}
 "isaacsim.core.utils" = {}
 "isaacsim.core.simulation_manager" = {}
+"isaacsim.core.experimental.prims" = {}
 "isaacsim.storage.native" = {}
 "isaacsim.robot_motion.motion_generation" = {}
 "isaacsim.robot_motion.lula" = {}

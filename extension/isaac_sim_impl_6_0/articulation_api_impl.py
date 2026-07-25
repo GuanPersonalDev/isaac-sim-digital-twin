@@ -2,13 +2,13 @@ import numpy as np
 import omni.usd
 from pxr import Gf, Usd, UsdGeom
 
-from isaacsim.core.api import World
 from isaacsim.core.prims import SingleArticulation
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot_motion.motion_generation import ArticulationMotionPolicy, RmpFlow
 from isaacsim.robot_motion.motion_generation.interface_config_loader import (
     load_supported_motion_policy_config,
 )
+from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
 from core.ports.articulation_api import ArticulationAPI
 
@@ -19,9 +19,8 @@ class ArticulationAPIImpl(ArticulationAPI):
     _HOME_CAPTURE_CALLBACK_NAME = "articulation_api_impl_capture_home"
 
     def __init__(
-        self, world: World, robot_prim_path: str, end_effector_prim_path: str
+        self, robot_prim_path: str, end_effector_prim_path: str
     ) -> None:
-        self._world = world
         self._robot_prim_path = robot_prim_path
         self._end_effector_prim_path = end_effector_prim_path
 
@@ -48,8 +47,9 @@ class ArticulationAPIImpl(ArticulationAPI):
         )
 
         self._tip_local_offset = self._compute_tip_local_offset()
-        self._world.add_physics_callback(
-            self._HOME_CAPTURE_CALLBACK_NAME, self._capture_home_position_once
+
+        self._capture_callback_id = SimulationManager.register_callback(
+            self._capture_home_position_once, event=SimulationEvent.PHYSICS_POST_STEP
         )
 
     def _compute_tip_local_offset(self) -> np.ndarray:
@@ -71,9 +71,9 @@ class ArticulationAPIImpl(ArticulationAPI):
         )
         return tip_local
 
-    def _capture_home_position_once(self, step_size: float) -> None:
+    def _capture_home_position_once(self, step_dt, context) -> None:
         self._home_position = np.array(self.get_end_effector_position())
-        self._world.remove_physics_callback(self._HOME_CAPTURE_CALLBACK_NAME)
+        SimulationManager.deregister_callback(self._capture_callback_id)
 
     def move_to_pose(self, position: list[float], orientation: list[float]) -> None:
         target_position = np.array(position)
@@ -85,21 +85,22 @@ class ArticulationAPIImpl(ArticulationAPI):
 
     def _start_motion(self) -> None:
         if not self._motion_active:
-            self._world.add_physics_callback(
-                self._MOTION_CALLBACK_NAME, self._step_motion
+            self._step_motion_id = SimulationManager.register_callback(
+                self._step_motion, event=SimulationEvent.PHYSICS_POST_STEP
             )
             self._motion_active = True
 
-    def _step_motion(self, step_size: float) -> None:
+    def _step_motion(self, step_dt, context) -> None:
         self._rmpflow.update_world()
-        action = self._articulation_rmpflow.get_next_articulation_action(step_size)
+        action = self._articulation_rmpflow.get_next_articulation_action(step_dt)
         self._articulation.apply_action(action)
         if self.is_motion_complete():
             self._stop_motion()
 
     def _stop_motion(self) -> None:
         if self._motion_active:
-            self._world.remove_physics_callback(self._MOTION_CALLBACK_NAME)
+
+            SimulationManager.deregister_callback(self._step_motion_id)
             self._motion_active = False
 
     def execute_strike(
@@ -149,5 +150,4 @@ class ArticulationAPIImpl(ArticulationAPI):
         return bool(error < self.POSITION_TOLERANCE)
 
     def shutdown(self) -> None:
-        #TODO: remove physics callback
         pass
