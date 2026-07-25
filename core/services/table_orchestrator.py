@@ -135,4 +135,5 @@ class TrainingTableOrchestrator(TableOrchestrator):
         pass
 
     def _execute_strike(self, action: Action) -> None:
-        self._impulse_striking_service.strike(action, table_z=self._table_ball_set.get_table_z())
+        table_x, table_y = self._table_ball_set.get_table_x_y()
+        self._impulse_striking_service.strike(action, table_x, table_y, table_z=self._table_ball_set.get_table_z())

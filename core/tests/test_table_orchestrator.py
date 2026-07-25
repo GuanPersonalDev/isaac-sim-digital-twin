@@ -306,8 +306,9 @@ class TestTrainingTableOrchestrator:
         table_ball_set: MagicMock,
     ):
         table_ball_set.get_table_z.return_value = 0.75
+        table_ball_set.get_table_x_y.return_value = (5.0, 3.0)
         action = _action(should_execute_action=True)
 
         training_orchestrator._execute_strike(action)
 
-        impulse_striking_service.strike.assert_called_once_with(action, table_z=0.75)
+        impulse_striking_service.strike.assert_called_once_with(action, 5.0, 3.0, table_z=0.75)

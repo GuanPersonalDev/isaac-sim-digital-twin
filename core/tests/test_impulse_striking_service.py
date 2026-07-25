@@ -144,11 +144,11 @@ class TestImpulseStrikingServiceStrike:
         action = _action(cue_speed=2.0, shot_angle=0.0, cue_ball_placement=(0.1, -0.2))
 
         # Act
-        service.strike(action, table_z=0.75)
+        service.strike(action, table_x=5.0, table_y=3.0, table_z=0.75)
 
         # Assert
         stage_api.set_prim_translate.assert_called_once_with(
-            "/World/CueBall", 0.1, -0.2, 0.75
+            "/World/CueBall", pytest.approx(5.1), pytest.approx(2.8), 0.75
         )
 
     def test_sets_computed_velocities_on_cue_ball(self):
@@ -161,7 +161,7 @@ class TestImpulseStrikingServiceStrike:
         action = _action(cue_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
 
         # Act
-        service.strike(action, table_z=0.75)
+        service.strike(action, table_x=0.0, table_y=0.0, table_z=0.75)
 
         # Assert
         expected_linear, expected_angular = compute_cue_ball_velocities(
@@ -184,7 +184,7 @@ class TestImpulseStrikingServiceStrike:
         action = _action()
 
         # Act
-        service.strike(action, table_z=0.75)
+        service.strike(action, table_x=0.0, table_y=0.0, table_z=0.75)
 
         # Assert
         assert [call[0] for call in manager.mock_calls] == ["translate", "set_velocities"]
@@ -203,7 +203,7 @@ class TestImpulseStrikingServiceStrike:
         action = _action(cue_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
 
         # Act
-        service.strike(action, table_z=0.75)
+        service.strike(action, table_x=0.0, table_y=0.0, table_z=0.75)
 
         # Assert
         expected_linear, expected_angular = compute_cue_ball_velocities(

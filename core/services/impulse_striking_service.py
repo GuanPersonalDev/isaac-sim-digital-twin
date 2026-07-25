@@ -36,9 +36,12 @@ class ImpulseStrikingService:
         self._ball_radius = ball_radius
         self._spin_efficiency = spin_efficiency
     
-    def strike(self, action: Action, table_z: float) -> None:
+    def strike(self, action: Action, table_x: float, table_y: float, table_z: float) -> None:
         x, y = action.cue_ball_placement
-        self._stage_api.set_prim_translate(self._cue_ball_prim, x, y, table_z)
+        x += table_x
+        y += table_y
+        z = table_z + self._ball_radius
+        self._stage_api.set_prim_translate(self._cue_ball_prim, x, y, z)
         
         linear_velocity, angular_velocity = compute_cue_ball_velocities(action, self._ball_radius, self._spin_efficiency)
         
