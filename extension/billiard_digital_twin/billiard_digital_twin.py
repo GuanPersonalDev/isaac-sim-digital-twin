@@ -46,6 +46,12 @@ _TOOL_MENU_NAME = "Tools"
 _ROBOT_ARM_CLASS: type[RobotArm] = BarrettWamRobot
 _TABLE_SIZE_PROBE_PATH = "/World/_TableSizeProbe"
 
+
+def _format_vector(values: list[float]) -> str:
+    # 固定小數點後 3 位，避免 Debug Menu 每幀因為浮點數位數不一而跳動版面。
+    return "(" + ", ".join(f"{v:.3f}" for v in values) + ")"
+
+
 class BilliardExtension(omni.ext.IExt):
     _TIMELINE_EVENT_NAME = "billiard_digital_twin_timeline_wait"
     _PHYSIC_CALL_BACK = "billiard_table_tick"
@@ -273,13 +279,13 @@ class BilliardExtension(omni.ext.IExt):
         state = session.get_current_state()
         observation = session.get_last_observation()
         if observation is None:
-            return f"狀態: {state.name}\n尚未有 Observation"
+            return f"State: {state.name}\nNo observation yet"
         return (
-            f"狀態: {state.name}\n"
+            f"State: {state.name}\n"
             f"is_ball_moving: {observation.is_ball_moving}\n"
             f"is_motion_complete: {observation.is_motion_complete}\n"
             f"has_error: {observation.has_error}\n"
-            f"母球座標: {observation.cue_ball_position}"
+            f"Cue ball: {_format_vector(observation.cue_ball_position)}"
         )
 
     def get_ball_velocities_text(self, table_id: str) -> str:
@@ -288,7 +294,7 @@ class BilliardExtension(omni.ext.IExt):
             return ""
         velocities = session.get_ball_velocities()
         lines = [
-            f"Ball_{ball_id}: v={linear} w={angular}"
+            f"Ball_{ball_id}: v={_format_vector(linear)} w={_format_vector(angular)}"
             for ball_id, (linear, angular) in sorted(velocities.items())
         ]
         return "\n".join(lines)

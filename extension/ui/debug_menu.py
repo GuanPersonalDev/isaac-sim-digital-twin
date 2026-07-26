@@ -131,7 +131,7 @@ class DebugMenu:
                 self._status_label = omni.ui.Label("", word_wrap=True)
 
                 with omni.ui.HStack(height=24):
-                    omni.ui.Label("顯示各球速度")
+                    omni.ui.Label("Show Ball Velocities")
                     velocity_toggle_model = omni.ui.SimpleBoolModel(False)
                     omni.ui.ToolButton(
                         text="",
