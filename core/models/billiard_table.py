@@ -21,6 +21,7 @@ class BilliardTable:
         position: tuple[float, float],
     ):
         self._base_path = base_path
+        self._stage_api = stage_api
 
         self._table_prim_path = self._base_path + "/Table"
         stage_api.create_reference_prim(self._table_prim_path, TABLE_PATH)
@@ -50,6 +51,7 @@ class BilliardTable:
         return (self._x_pos, self._y_pos, self._z_pos)
 
     def destroy(self):
+        self._stage_api.remove_prim(self._base_path)
         self._table_set = None
 
     def get_table_ball_set(self) -> TableBallSet | None:

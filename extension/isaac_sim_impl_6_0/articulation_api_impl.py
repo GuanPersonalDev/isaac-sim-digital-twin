@@ -70,6 +70,10 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._is_joint_space_motion = False
         self._tip_local_offset: np.ndarray | None = None
         self._motion_active = False
+        self._step_motion_id: int | None = None
+        # None 代表「尚未註冊」或「已觸發並清空」，供 cancel_pending_home_capture()
+        # 判斷是否還需要取消
+        self._capture_callback_id: int | None = None
 
     def initialize(self) -> None:
         # 在 timeline play 之後呼叫
@@ -143,6 +147,7 @@ class ArticulationAPIImpl(ArticulationAPI):
     def _capture_home_position_once(self, step_dt, context) -> None:
         self._home_position = np.array(self.get_end_effector_position())
         SimulationManager.deregister_callback(self._capture_callback_id)
+        self._capture_callback_id = None
 
     def move_to_pose(self, position: list[float], orientation: list[float]) -> None:
         self._target_position = np.array(position)
@@ -291,3 +296,8 @@ class ArticulationAPIImpl(ArticulationAPI):
 
     def shutdown(self) -> None:
         pass
+
+    def cancel_pending_home_capture(self) -> None:
+        if self._capture_callback_id is not None:
+            SimulationManager.deregister_callback(self._capture_callback_id)
+            self._capture_callback_id = None

@@ -28,6 +28,7 @@ class TableRobotManager:
         )
         self._robot_base_path = base_path
         self._robot_arm_class = robot_arm_class
+        self._stage_api = stage_api
         self._robot = robot_arm_class(base_path, stage_api, articulation_api, world_position)
         self._cue_stick_prim_path = base_path + "/CueStick"
         stage_api.create_reference_prim(self._cue_stick_prim_path, CUE_STICK_PATH)
@@ -51,4 +52,11 @@ class TableRobotManager:
         return self._robot
 
     def destroy(self) -> None:
+        # 不移除 self._robot_base_path 本身——它跟 BilliardTable 共用同一個
+        # base_path（例如 /World/Table_Demo），只有 BilliardTable.destroy()
+        # 有資格移除整個 base_path，這裡只移除自己掛載的 Robot/CueStick 子路徑。
+        self._stage_api.remove_prim(
+            self._robot_arm_class.get_prim_path(self._robot_base_path)
+        )
+        self._stage_api.remove_prim(self._cue_stick_prim_path)
         self._robot = None

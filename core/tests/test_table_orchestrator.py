@@ -114,6 +114,26 @@ def training_orchestrator(
     )
 
 
+class TestGetCurrentState:
+    def test_demo_orchestrator_get_current_state_delegates_to_script_controller(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+    ):
+        script_controller.get_current_state.return_value = BilliardStatus.STRIKING
+
+        assert demo_orchestrator.get_current_state() == BilliardStatus.STRIKING
+
+    def test_training_orchestrator_get_current_state_delegates_to_script_controller(
+        self,
+        training_orchestrator: TrainingTableOrchestrator,
+        script_controller: MagicMock,
+    ):
+        script_controller.get_current_state.return_value = BilliardStatus.IDLE
+
+        assert training_orchestrator.get_current_state() == BilliardStatus.IDLE
+
+
 class TestStepDispatch:
     def test_step_dispatches_reset_when_should_execute_action_true(
         self,

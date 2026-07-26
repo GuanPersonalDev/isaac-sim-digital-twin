@@ -90,3 +90,10 @@ class StageAPI(ABC):
         停用兩個 rigidbody 間的碰撞
         """
         ...
+
+    @abstractmethod
+    def remove_prim(self, prim_path: str) -> None:
+        """
+        移除指定路徑的 prim 及其所有子節點（含所有 local layer 的 spec）。
+        """
+        ...

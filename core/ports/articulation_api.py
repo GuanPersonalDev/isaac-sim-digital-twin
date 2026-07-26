@@ -61,3 +61,11 @@ class ArticulationAPI(ABC):
         release process
         """
         ...
+
+    @abstractmethod
+    def cancel_pending_home_capture(self) -> None:
+        """
+        取消尚未觸發的一次性 home-capture callback（若存在）。
+        initialize() 從未被呼叫、或 callback 已經觸發過，皆為 no-op。
+        """
+        ...

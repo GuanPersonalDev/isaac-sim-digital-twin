@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
+from core.models.billiard_state import BilliardStatus
 from core.models.observation import Observation
 from core.services.table_runtime import TableRuntime
 
@@ -95,7 +96,7 @@ class TestTableRuntime:
         orchestrator.step.assert_called_once_with(observation)
         assert calls == ["build", "step"]
 
-    def test_table_runtime_holds_no_internal_state(
+    def test_table_runtime_forwards_each_tick_observation_to_orchestrator_step(
         self,
         table_runtime: TableRuntime,
         observation_builder: MagicMock,
@@ -116,3 +117,29 @@ class TestTableRuntime:
 
         for index, step_call in enumerate(orchestrator.step.call_args_list):
             assert step_call.args[0] is observations[index]
+
+    def test_get_last_observation_returns_none_before_first_tick(
+        self, table_runtime: TableRuntime
+    ):
+        assert table_runtime.get_last_observation() is None
+
+    def test_get_last_observation_returns_most_recent_built_observation(
+        self,
+        table_runtime: TableRuntime,
+        observation_builder: MagicMock,
+        observations: list[Observation],
+    ):
+        observation_builder.build.side_effect = observations
+
+        for expected in observations:
+            table_runtime.tick()
+            assert table_runtime.get_last_observation() is expected
+
+    def test_get_current_state_delegates_to_orchestrator(
+        self,
+        table_runtime: TableRuntime,
+        orchestrator: MagicMock,
+    ):
+        orchestrator.get_current_state.return_value = BilliardStatus.AIMING
+
+        assert table_runtime.get_current_state() == BilliardStatus.AIMING

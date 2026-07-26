@@ -91,3 +91,10 @@ class TestBilliardTableLifecycle:
         billiard_table.destroy()
 
         assert billiard_table._table_set is None
+
+    def test_destroy_removes_base_path_prim(
+        self, billiard_table, stage_api, billiard_table_base_path
+    ):
+        billiard_table.destroy()
+
+        stage_api.remove_prim.assert_called_once_with(billiard_table_base_path)

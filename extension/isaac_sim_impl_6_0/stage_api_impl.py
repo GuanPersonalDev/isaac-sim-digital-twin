@@ -1,8 +1,10 @@
 import os
 
+import omni.kit.undo
 import omni.usd
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 import isaacsim.core.utils.bounds as bounds_util
+import isaacsim.core.utils.prims as prims_util
 from isaacsim.storage.native import get_assets_root_path
 
 from core.ports.stage_api import StageAPI
@@ -87,6 +89,17 @@ class StageAPIImpl(StageAPI):
 
     def filter_collision_pair(self, prim0_path: str, prim1_path: str) -> None:
         prim0 = self._get_prim(prim0_path)
-        
+
         filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(prim0)
         filtered_pairs.CreateFilteredPairsRel().AddTarget(Sdf.Path(prim1_path))
+
+    def remove_prim(self, prim_path: str) -> None:
+        # DeletePrimsCommand（而非 stage.RemovePrim）：destructive=True 預設值
+        # 確保所有 local layer 的 prim spec 都被清除，同路徑才能立即重建；
+        # 社群回報 stage.RemovePrim 有時候刪不乾淨、留下 over spec 殘影。
+        # 包在 omni.kit.undo.disabled() 內：這類刪除通常伴隨對應 core 物件
+        # 的 destroy()，若使用者事後 Ctrl+Z 復原 USD 場景，物件已經沒了會
+        # 造成狀態不一致；用 disabled() 只讓這次刪除不進 undo stack，不影響
+        # 使用者在別處操作的歷史（相對於整個清空 undo stack 更精準）。
+        with omni.kit.undo.disabled():
+            prims_util.delete_prim(prim_path)

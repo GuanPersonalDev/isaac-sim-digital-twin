@@ -23,6 +23,8 @@ class TableBallSet:
     撞球桌與球的設定類別
     """
 
+    DEFAULT_BALL_RADIUS = 0.028575  # m，標準撞球半徑
+
     def __init__(
         self,
         stage_api: StageAPI,
@@ -31,7 +33,7 @@ class TableBallSet:
         table_z: float,
         base_path: str,
         table_position: tuple[float, float] = (0.0, 0.0),
-        ball_radius: float = 0.028575,
+        ball_radius: float = DEFAULT_BALL_RADIUS,
     ) -> None:
         self._base_path = base_path
         self._stage_api = stage_api

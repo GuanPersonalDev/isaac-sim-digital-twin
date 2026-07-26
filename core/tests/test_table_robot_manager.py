@@ -94,6 +94,51 @@ class TestTableRobotManager:
 
         assert manager._robot is None
 
+    def test_table_robot_manager_destroy_removes_robot_and_cue_stick_prims(
+        self, articulation_api: MagicMock, robot_arm_class: MagicMock
+    ):
+        stage_api = MagicMock()
+        robot_arm_class.get_prim_path.return_value = "/World/DemoTable/Robot"
+
+        manager = _table_robot_manager_class()(
+            table_center=(0.0, 0.0, 0.0),
+            base_path="/World/DemoTable",
+            stage_api=stage_api,
+            articulation_api=articulation_api,
+            robot_arm_class=robot_arm_class,
+        )
+        stage_api.reset_mock()
+
+        manager.destroy()
+
+        stage_api.remove_prim.assert_any_call("/World/DemoTable/Robot")
+        stage_api.remove_prim.assert_any_call("/World/DemoTable/CueStick")
+
+    def test_table_robot_manager_destroy_does_not_remove_shared_base_path(
+        self, articulation_api: MagicMock, robot_arm_class: MagicMock
+    ):
+        """
+        base_path（如 /World/Table_Demo）跟 BilliardTable 共用，只有
+        BilliardTable.destroy() 有資格移除它；TableRobotManager 只能移除
+        自己的 Robot/CueStick 子路徑，否則會連桌子跟球一起誤刪。
+        """
+        stage_api = MagicMock()
+        robot_arm_class.get_prim_path.return_value = "/World/DemoTable/Robot"
+
+        manager = _table_robot_manager_class()(
+            table_center=(0.0, 0.0, 0.0),
+            base_path="/World/DemoTable",
+            stage_api=stage_api,
+            articulation_api=articulation_api,
+            robot_arm_class=robot_arm_class,
+        )
+        stage_api.reset_mock()
+
+        manager.destroy()
+
+        removed_paths = [c.args[0] for c in stage_api.remove_prim.call_args_list]
+        assert "/World/DemoTable" not in removed_paths
+
     def test_table_robot_manager_creates_cue_stick_reference_prim(
         self, articulation_api: MagicMock, robot_arm_class: MagicMock
     ):

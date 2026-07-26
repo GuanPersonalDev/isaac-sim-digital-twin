@@ -76,6 +76,9 @@ class TableOrchestrator(ABC):
         self._error_state.clear()
         self._script_controller.reset()
 
+    def get_current_state(self) -> BilliardStatus:
+        return self._script_controller.get_current_state()
+
     @abstractmethod
     def _reset_downstream(self) -> None:
         """下游（手臂等）reset """
