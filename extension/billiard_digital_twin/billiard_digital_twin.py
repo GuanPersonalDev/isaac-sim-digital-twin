@@ -28,12 +28,14 @@ from isaac_sim_impl_6_0.stage_api_impl import StageAPIImpl
 from isaac_sim_impl_6_0.material_api_impl import MaterialAPIImpl
 from isaac_sim_impl_6_0.rigid_body_api_impl import RigidBodyAPIImpl
 from isaac_sim_impl_6_0.articulation_api_impl import ArticulationAPIImpl
+from isaac_sim_impl_6_0.physics_api_impl import PhysicsAPIImpl
 from ui.debug_menu import DebugMenu
 from ui.tool_menu_registry import discover_and_register, unregister
 from core.models.billiard_table import BilliardTable
 from core.models.table_robot_manager import TableRobotManager
 from core.services.error_state import ErrorState
 from core.services.impulse_striking_service import ImpulseStrikingService
+from core.services.pocket_event_handler import PocketEventHandler
 from core.services.rolling_resistance_service import RollingResistanceService
 
 _TABLE_COUNT = 1
@@ -55,6 +57,7 @@ class BilliardExtension(omni.ext.IExt):
         self._demo_table = None
         self._robot = None
         self._table_runtimes: list[TableRuntime] = []
+        self._pocket_event_handlers: list[PocketEventHandler] = []
         self._runtime_state = RuntimeState.NOT_READY
         scripts_dir = os.path.join(_PROJECT_ROOT, "scripts")
         self._tool_menu_items = discover_and_register(scripts_dir, _TOOL_MENU_NAME)
@@ -183,22 +186,35 @@ class BilliardExtension(omni.ext.IExt):
             self._articulation_api.initialize()
             self._runtime_state = RuntimeState.RUNNING
 
+    def _register_pocket_event_handler(self, table: BilliardTable, table_ball_set) -> None:
+        physics_api = PhysicsAPIImpl()
+        handler = PocketEventHandler(
+            physics_api=physics_api,
+            pocket_prim_paths=table.get_pocket_prim_paths(),
+            ball_prim_paths=table_ball_set.get_ball_prim_paths(),
+            on_ball_pocketed=table_ball_set.hide_ball,
+        )
+        handler.start()
+        self._pocket_event_handlers.append(handler)
+
     def _register_demo_table_runtime(self, table: BilliardTable, robot_arm: RobotArm) -> None:
         table_ball_set = table.get_table_ball_set()
         if table_ball_set:
+            self._register_pocket_event_handler(table, table_ball_set)
             controller = ScriptController()
             error_state = ErrorState()
             demo_table_runtime = TableRuntime(
                 DemoTableObservationBuilder(table_ball_set, self._rigid_body_api, table_ball_set.ball_motion_monitor, error_state, table.position_provider, robot_arm),
                 DemoTableOrchestrator(controller, table_ball_set, table.position_provider, robot_arm, self._articulation_api, error_state, self._rolling_resistance_service))
             self._table_runtimes.append(demo_table_runtime)
-            
+
     def _register_training_table_runtime(self, table: BilliardTable) -> None:
         table_ball_set = table.get_table_ball_set()
-        if table_ball_set: 
+        if table_ball_set:
+            self._register_pocket_event_handler(table, table_ball_set)
             controller = ScriptController()
             error_state = ErrorState()
- 
+
             impulse_striking_service = ImpulseStrikingService(self._rigid_body_api, table_ball_set.get_ball_prim_paths()[0], table_ball_set.get_ball_radius())
 
             training_table_runtime = TableRuntime(
@@ -220,6 +236,9 @@ class BilliardExtension(omni.ext.IExt):
             self._articulation_api.shutdown()
         if self._runtime_state != RuntimeState.NOT_READY:
             SimulationManager.deregister_callback(self._tick_callback_id)
+        for handler in self._pocket_event_handlers:
+            handler.stop()
+        self._pocket_event_handlers = []
         if self._tool_menu_items:
             unregister(self._tool_menu_items, _TOOL_MENU_NAME)
             self._tool_menu_items = None

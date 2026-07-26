@@ -4,7 +4,7 @@ from ..ports.stage_api import StageAPI
 from ..ports.material_api import MaterialAPI
 from ..ports.rigid_body_api import RigidBodyAPI
 from ..services.break_shot_position_provider import BreakShotPositionProvider
-from ..services.asset_utility import TABLE_PATH
+from ..services.asset_utility import TABLE_PATH, POCKET_RELATIVE_PATH, POCKET_NAMES
 
 
 class BilliardTable:
@@ -54,3 +54,9 @@ class BilliardTable:
 
     def get_table_ball_set(self) -> TableBallSet | None:
         return self._table_set
+
+    def get_pocket_prim_paths(self) -> list[str]:
+        return [
+            f"{self._table_prim_path}/{POCKET_RELATIVE_PATH}/{name}"
+            for name in POCKET_NAMES
+        ]

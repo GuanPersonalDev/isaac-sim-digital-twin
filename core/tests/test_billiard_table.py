@@ -65,6 +65,19 @@ class TestBilliardTableRobot:
         assert not hasattr(billiard_table, "_robot")
 
 
+class TestBilliardTablePockets:
+    def test_get_pocket_prim_paths_returns_six_pockets_under_table(
+        self, billiard_table, billiard_table_base_path
+    ):
+        pocket_paths = billiard_table.get_pocket_prim_paths()
+
+        assert len(pocket_paths) == 6
+        assert all(
+            path.startswith(f"{billiard_table_base_path}/Table/") for path in pocket_paths
+        )
+        assert len(set(pocket_paths)) == 6
+
+
 class TestBilliardTableLifecycle:
     def test_get_table_prim_path_returns_table_path(
         self, billiard_table, billiard_table_base_path

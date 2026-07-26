@@ -187,7 +187,7 @@ def Xform "Root"
                 }
 
                 def Cylinder "Pocket_HeadLeft" (
-                    apiSchemas = ["MaterialBindingAPI"]
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
                 )
                 {
                     uniform token axis = "Z"
@@ -206,7 +206,7 @@ def Xform "Root"
                 }
 
                 def Cylinder "Pocket_HeadRight" (
-                    apiSchemas = ["MaterialBindingAPI"]
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
                 )
                 {
                     uniform token axis = "Z"
@@ -225,7 +225,7 @@ def Xform "Root"
                 }
 
                 def Cylinder "Pocket_SideLeft" (
-                    apiSchemas = ["MaterialBindingAPI"]
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
                 )
                 {
                     uniform token axis = "Z"
@@ -244,7 +244,7 @@ def Xform "Root"
                 }
 
                 def Cylinder "Pocket_SideRight" (
-                    apiSchemas = ["MaterialBindingAPI"]
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
                 )
                 {
                     uniform token axis = "Z"
@@ -263,7 +263,7 @@ def Xform "Root"
                 }
 
                 def Cylinder "Pocket_FootLeft" (
-                    apiSchemas = ["MaterialBindingAPI"]
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
                 )
                 {
                     uniform token axis = "Z"
@@ -282,7 +282,7 @@ def Xform "Root"
                 }
 
                 def Cylinder "Pocket_FootRight" (
-                    apiSchemas = ["MaterialBindingAPI"]
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
                 )
                 {
                     uniform token axis = "Z"
