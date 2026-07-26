@@ -1,9 +1,10 @@
 from ..ports.stage_api import StageAPI
 from ..ports.articulation_api import ArticulationAPI
 from ..services.asset_utility import UR5_PATH
+from .robot_arm import RobotArm
 
 
-class UR5Robot:
+class UR5Robot(RobotArm):
     _END_EFFECTOR_LINK_NAME = "wrist_3_link"
 
     def __init__(

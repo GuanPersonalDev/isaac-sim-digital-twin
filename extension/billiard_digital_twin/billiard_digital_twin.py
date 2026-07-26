@@ -16,7 +16,8 @@ for p in [_EXT_DIR, _PROJECT_ROOT]:
 
 from core.controllers.script_controller import ScriptController
 from core.models.table_ball_set import TableBallSet
-from core.models.ur5_robot import UR5Robot
+from core.models.robot_arm import RobotArm
+from core.models.barrett_wam_robot import BarrettWamRobot
 from core.ports import RigidBodyAPI
 from core.services.observation_builder import DemoTableObservationBuilder, TrainingTableObservationBuilder
 from core.services.table_orchestrator import DemoTableOrchestrator, TrainingTableOrchestrator
@@ -37,6 +38,8 @@ from core.services.rolling_resistance_service import RollingResistanceService
 
 _TABLE_COUNT = 1
 _TOOL_MENU_NAME = "Tools"
+# Demo 桌實際掛載的手臂類別，換手臂只需要改這一行（見 core/models/robot_arm.py）。
+_ROBOT_ARM_CLASS: type[RobotArm] = BarrettWamRobot
 
 class RuntimeState(Enum):
     NOT_READY = 1
@@ -94,8 +97,8 @@ class BilliardExtension(omni.ext.IExt):
         self._rolling_resistance_service = RollingResistanceService(
             self._rigid_body_api, self._demo_table.get_table_ball_set().get_ball_radius()
         )
-        robot_prim_path = UR5Robot.get_prim_path(demo_table_path)
-        robot_end_effector_prim_path = UR5Robot.get_end_effector_prim_path(demo_table_path)
+        robot_prim_path = _ROBOT_ARM_CLASS.get_prim_path(demo_table_path)
+        robot_end_effector_prim_path = _ROBOT_ARM_CLASS.get_end_effector_prim_path(demo_table_path)
         self._articulation_api = ArticulationAPIImpl(robot_prim_path, robot_end_effector_prim_path)
        
         self._table_unit_side_length = self._get_table_side_length(
@@ -104,7 +107,7 @@ class BilliardExtension(omni.ext.IExt):
 
         demo_table_center = self._demo_table.get_table_center()
         self._robot = TableRobotManager(
-            demo_table_center, demo_table_path, self._stage_api, self._articulation_api
+            demo_table_center, demo_table_path, self._stage_api, self._articulation_api, _ROBOT_ARM_CLASS
         )
 
         self._build_training_tables(_TABLE_COUNT, self._stage_api, material_api, self._rigid_body_api)
@@ -180,14 +183,14 @@ class BilliardExtension(omni.ext.IExt):
             self._articulation_api.initialize()
             self._runtime_state = RuntimeState.RUNNING
 
-    def _register_demo_table_runtime(self, table: BilliardTable, ur5_robot: UR5Robot) -> None:
+    def _register_demo_table_runtime(self, table: BilliardTable, robot_arm: RobotArm) -> None:
         table_ball_set = table.get_table_ball_set()
-        if table_ball_set: 
+        if table_ball_set:
             controller = ScriptController()
             error_state = ErrorState()
             demo_table_runtime = TableRuntime(
-                DemoTableObservationBuilder(table_ball_set, self._rigid_body_api, table_ball_set.ball_motion_monitor, error_state, table.position_provider, ur5_robot), 
-                DemoTableOrchestrator(controller, table_ball_set, table.position_provider, ur5_robot, self._articulation_api, error_state, self._rolling_resistance_service))
+                DemoTableObservationBuilder(table_ball_set, self._rigid_body_api, table_ball_set.ball_motion_monitor, error_state, table.position_provider, robot_arm),
+                DemoTableOrchestrator(controller, table_ball_set, table.position_provider, robot_arm, self._articulation_api, error_state, self._rolling_resistance_service))
             self._table_runtimes.append(demo_table_runtime)
             
     def _register_training_table_runtime(self, table: BilliardTable) -> None:

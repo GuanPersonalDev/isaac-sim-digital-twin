@@ -1,0 +1,80 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "URDF USD Converter v0.1.2"
+    }
+    defaultPrim = "wam"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\tmp2cx2lwr0\\wam.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\urdf_import_wam7_dwl9a1gj\\usdex_wam7\\wam.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\urdf_import_wam7_dwl9a1gj\\temp_wam7\\wam7.usd
+
+
+Generated from Composed Stage of root layer C:\\Other\\OmniverseProjects\\isaac-sim-digital-twin\\assets\\barrett_wam\\wam7\\payloads\\base.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    subLayers = [
+        @./physics.usda@
+    ]
+    upAxis = "Z"
+)
+
+over "wam"
+{
+    over "Physics"
+    {
+        over "wam_base_yaw_joint" (
+            prepend apiSchemas = ["PhysxJointAPI"]
+        )
+        {
+            float physxJoint:maxJointVelocity = 114.59156
+        }
+
+        over "wam_shoulder_pitch_joint" (
+            prepend apiSchemas = ["PhysxJointAPI"]
+        )
+        {
+            float physxJoint:maxJointVelocity = 114.59156
+        }
+
+        over "wam_shoulder_yaw_joint" (
+            prepend apiSchemas = ["PhysxJointAPI"]
+        )
+        {
+            float physxJoint:maxJointVelocity = 114.59156
+        }
+
+        over "wam_elbow_pitch_joint" (
+            prepend apiSchemas = ["PhysxJointAPI"]
+        )
+        {
+            float physxJoint:maxJointVelocity = 114.59156
+        }
+
+        over "wam_wrist_yaw_joint" (
+            prepend apiSchemas = ["PhysxJointAPI"]
+        )
+        {
+            float physxJoint:maxJointVelocity = 114.59156
+        }
+
+        over "wam_wrist_pitch_joint" (
+            prepend apiSchemas = ["PhysxJointAPI"]
+        )
+        {
+            float physxJoint:maxJointVelocity = 114.59156
+        }
+
+        over "wam_palm_yaw_joint" (
+            prepend apiSchemas = ["PhysxJointAPI"]
+        )
+        {
+            float physxJoint:maxJointVelocity = 114.59156
+        }
+    }
+}
+

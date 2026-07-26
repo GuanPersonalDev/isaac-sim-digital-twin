@@ -60,7 +60,7 @@
 | 4-5 | Block 4 | 設計球桿與 UR5 末端的固定連結（Fixed Joint） | 0.5h | M2: 場景與機器人 | TRUE | 2026-07-16 | 2026-07-18 | #89 |
 | 4-8 | Block 4 | 空揮測速：單獨場景量測 TCP 峰值速度（含 asset velocity/effort limit 檢查）→ 定 A 動作空間速度上限 | 3h | M2: 場景與機器人 | TRUE | 2026-07-17 | 2026-07-19 | #176 |
 | 9-0 | Block 9 | Early termination 設計確認（球靜止偵測 → 立即計算 reward 並 reset） | 0.5h | M5: RL 訓練與多環境 | TRUE | 2026-07-17 | 2026-07-19 | #178 |
-| 3-6 | Block 3 | 確認球的碰撞與滾動物理行為正常（PhysX 參數調校） | 1h | M2: 場景與機器人 | FALSE |  | 2026-07-19 | #81 |
+| 3-6 | Block 3 | 確認球的碰撞與滾動物理行為正常（PhysX 參數調校） | 1h | M2: 場景與機器人 | TRUE | 2026-07-26 | 2026-07-19 | #81 |
 | 3-9b | Block 3 | 場景整體穩定性確認，物理仿真無異常 | 0.5h | M2: 場景與機器人 | FALSE |  | 2026-07-19 | #153 |
 | 5-1 | Block 5 | 設計擊球參數資料格式（放置XY 方向角 速度 偏移2）+ Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-17 | 2026-07-19 | #92 |
 | 5-2 | Block 5 | 設計 ScriptController 狀態機（A 版 STRIKING = set_velocities） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-17 | 2026-07-19 | #93 |
@@ -78,7 +78,7 @@
 | 5-9d-impl | Block 5 | TableRuntime：組裝 ObservationBuilder + TableOrchestrator | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-26 | #200 |
 | 5-9d-test | Block 5 | TableRuntime Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-22 | 2026-07-26 | #201 |
 | 5-9e | Block 5 | Extension 訓練桌 timeline play/stop 生命週期串接 | 1.5h | M3: 擊球動作與評估 | TRUE | 2026-07-24 | 2026-07-26 | #202 |
-| 5-9 | Block 5 | 單次擊球循環跑通確認（set_velocities 版） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-26 | #100 |
+| 5-9 | Block 5 | 單次擊球循環跑通確認（set_velocities 版） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-26 | 2026-07-26 | #100 |
 | 5-10 | Block 5 | 物理參數調校：確認賦速後球散開效果合理 | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-27 | #101 |
 | 6-1 | Block 6 | 設計 ShotResult 資料格式（各球最終位置 進袋狀態 散開分數） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-07-28 | #102 |
 | 6-2 | Block 6 | 實作散開分數（凸包面積×0.5 + 平均最近鄰距離×0.5）+ Unit Test | 1h | M3: 擊球動作與評估 | FALSE |  | 2026-07-29 | #103 |

@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 
 from ..models.table_ball_set import TableBallSet
 from ..models.observation import Observation
-from ..models.ur5_robot import UR5Robot
+from ..models.robot_arm import RobotArm
 from ..ports.rigid_body_api import RigidBodyAPI
 from ..services.error_state import ErrorState
 from .ball_motion_monitor import BallMotionMonitor
@@ -65,9 +65,9 @@ class ObservationBuilder(ABC):
         ...
        
 class DemoTableObservationBuilder(ObservationBuilder):
-    def __init__(self, table_ball_set, rigid_body_api, ball_motion_monitor, error_state, ball_position_provider, ur5_robot: UR5Robot):
+    def __init__(self, table_ball_set, rigid_body_api, ball_motion_monitor, error_state, ball_position_provider, robot_arm: RobotArm):
         super().__init__(table_ball_set, rigid_body_api, ball_motion_monitor, error_state, ball_position_provider)
-        self._robot = ur5_robot
+        self._robot = robot_arm
 
     def _is_motion_complete(self):
         return self._robot.is_reset_complete()

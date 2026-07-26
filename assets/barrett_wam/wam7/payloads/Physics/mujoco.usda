@@ -1,0 +1,238 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "URDF USD Converter v0.1.2"
+    }
+    doc = """Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\tmp2cx2lwr0\\wam.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\urdf_import_wam7_dwl9a1gj\\usdex_wam7\\wam.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\urdf_import_wam7_dwl9a1gj\\temp_wam7\\wam7.usd
+
+
+Generated from Composed Stage of root layer C:\\Other\\OmniverseProjects\\isaac-sim-digital-twin\\assets\\barrett_wam\\wam7\\payloads\\base.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+over "wam"
+{
+    over "Geometry"
+    {
+        over "world"
+        {
+            over "wam_base_link"
+            {
+                over "wam_shoulder_yaw_link"
+                {
+                    over "wam_shoulder_pitch_link"
+                    {
+                        over "wam_upper_arm_link"
+                        {
+                            over "wam_forearm_link"
+                            {
+                                over "wam_wrist_yaw_link"
+                                {
+                                    over "wam_wrist_pitch_link"
+                                    {
+                                        over "wam_wrist_palm_link"
+                                        {
+                                            over "wam_wrist_palm_stump_link"
+                                            {
+                                            }
+
+                                            over "wrist_palm_link_fine"
+                                            {
+                                            }
+
+                                            over "wrist_palm_link_convex"
+                                            {
+                                            }
+                                        }
+
+                                        over "wrist_pitch_link_fine"
+                                        {
+                                        }
+
+                                        over "wrist_pitch_link_convex_decomposition"
+                                        {
+                                            over "tn__wristpitchlink_pEB"
+                                            {
+                                            }
+
+                                            over "tn__wristpitchlink001_sHBm8"
+                                            {
+                                            }
+
+                                            over "tn__wristpitchlink002_sHBm8"
+                                            {
+                                            }
+                                        }
+                                    }
+
+                                    over "wrist_yaw_link_fine"
+                                    {
+                                    }
+
+                                    over "wrist_yaw_link_convex_decomposition"
+                                    {
+                                        over "tn__wristyawlink_nC9"
+                                        {
+                                        }
+
+                                        over "tn__wristyawlink001_qF9n7"
+                                        {
+                                        }
+                                    }
+                                }
+
+                                over "elbow_link_fine"
+                                {
+                                }
+
+                                over "forearm_link_fine"
+                                {
+                                }
+
+                                over "elbow_link_convex"
+                                {
+                                }
+
+                                over "forearm_link_convex_decomposition"
+                                {
+                                    over "tn__forearmlinkfine_sFC"
+                                    {
+                                    }
+
+                                    over "tn__forearmlinkfine001_vICW9"
+                                    {
+                                    }
+
+                                    over "tn__forearmlinkfine002_vICW9"
+                                    {
+                                    }
+                                }
+                            }
+
+                            over "upper_arm_link_fine"
+                            {
+                            }
+
+                            over "upper_arm_link_convex_decomposition"
+                            {
+                                over "tn__upperarmlinkfine_rG9E"
+                                {
+                                }
+
+                                over "tn__upperarmlinkfine001_uJ9EVA"
+                                {
+                                }
+                            }
+                        }
+
+                        over "shoulder_pitch_link_fine"
+                        {
+                        }
+
+                        over "shoulder_pitch_link_convex"
+                        {
+                        }
+                    }
+
+                    over "shoulder_link_fine"
+                    {
+                    }
+
+                    over "shoulder_link_convex_decomposition"
+                    {
+                        over "tn__shoulderlink_qC"
+                        {
+                        }
+
+                        over "tn__shoulderlink001_tFY7"
+                        {
+                        }
+
+                        over "tn__shoulderlink002_tFY7"
+                        {
+                        }
+                    }
+                }
+
+                over "base_link_fine"
+                {
+                }
+
+                over "base_link_convex"
+                {
+                }
+            }
+        }
+    }
+
+    over "Physics"
+    {
+        over "wam_wam_fixed_joint"
+        {
+        }
+
+        over "wam_base_yaw_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wam_shoulder_pitch_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wam_shoulder_yaw_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wam_elbow_pitch_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wam_wrist_yaw_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wam_wrist_pitch_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wam_palm_yaw_joint" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wam_wrist_palm_stump_joint"
+        {
+        }
+    }
+
+    over "Materials"
+    {
+    }
+
+    over "VisualMaterials"
+    {
+    }
+}
+

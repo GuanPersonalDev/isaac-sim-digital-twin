@@ -6,7 +6,7 @@ from ..models.billiard_state import BilliardStatus
 from ..models.observation import Observation
 from ..models.table_ball_set import TableBallSet
 from ..ports.articulation_api import ArticulationAPI
-from ..models.ur5_robot import UR5Robot
+from ..models.robot_arm import RobotArm
 from .ball_motion_monitor import BallMotionMonitor
 from .ball_position_provider import BallPositionProvider
 from .impulse_striking_service import ImpulseStrikingService
@@ -97,24 +97,24 @@ class DemoTableOrchestrator(TableOrchestrator):
         script_controller: ControllerBase,
         table_ball_set: TableBallSet,
         ball_position_provider: BallPositionProvider,
-        ur5_robot: UR5Robot,
+        robot_arm: RobotArm,
         articulation_api: ArticulationAPI,
         error_state: ErrorState,
         rolling_resistance_service: RollingResistanceService
     ) -> None:
         super().__init__(script_controller, table_ball_set, ball_position_provider, error_state, rolling_resistance_service)
-        self._ur5_robot = ur5_robot
+        self._robot_arm = robot_arm
         self._articulation_api = articulation_api
 
     def _reset_downstream(self) -> None:
-        self._ur5_robot.reset()
+        self._robot_arm.reset()
 
     def _execute_aim(self, action: Action) -> None:
-        #TODO: 把 action 轉譯成 ur5_robot 需要的操作
+        #TODO: 把 action 轉譯成 robot_arm 需要的操作
         ...
 
     def _execute_strike(self, action: Action) -> None:
-        #TODO: 把 action 轉譯成 ur5_robot 需要的操作
+        #TODO: 把 action 轉譯成 robot_arm 需要的操作
         ...
 
 class TrainingTableOrchestrator(TableOrchestrator):

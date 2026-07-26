@@ -1,10 +1,16 @@
 from ..ports.stage_api import StageAPI
 from ..ports.articulation_api import ArticulationAPI
-from ..models.ur5_robot import UR5Robot
+from .robot_arm import RobotArm
 from ..services.asset_utility import CUE_STICK_PATH
 
 
 class TableRobotManager:
+    """
+    掛載手臂＋球桿的通用流程，實際掛哪一款手臂由呼叫端傳入的
+    robot_arm_class 決定（見 RobotArm 抽象介面），本類別不依賴任何
+    特定手臂的具體實作。
+    """
+
     _ROBOT_OFFSET_FROM_TABLE_CENTER = (1.5, 0.0, 0.0)
 
     def __init__(
@@ -13,6 +19,7 @@ class TableRobotManager:
         base_path: str,
         stage_api: StageAPI,
         articulation_api: ArticulationAPI,
+        robot_arm_class: type[RobotArm],
     ) -> None:
         world_position = (
             table_center[0] + self._ROBOT_OFFSET_FROM_TABLE_CENTER[0],
@@ -20,11 +27,12 @@ class TableRobotManager:
             table_center[2] + self._ROBOT_OFFSET_FROM_TABLE_CENTER[2],
         )
         self._robot_base_path = base_path
-        self._robot = UR5Robot(base_path, stage_api, articulation_api, world_position)
+        self._robot_arm_class = robot_arm_class
+        self._robot = robot_arm_class(base_path, stage_api, articulation_api, world_position)
         self._cue_stick_prim_path = base_path + "/CueStick"
         stage_api.create_reference_prim(self._cue_stick_prim_path, CUE_STICK_PATH)
-        end_effector_path = UR5Robot.get_end_effector_prim_path(base_path)
-        
+        end_effector_path = robot_arm_class.get_end_effector_prim_path(base_path)
+
         stage_api.align_prim_to_target(self._cue_stick_prim_path, end_effector_path)
         stage_api.filter_collision_pair(self._cue_stick_prim_path, end_effector_path)
 
@@ -37,9 +45,9 @@ class TableRobotManager:
         return self._cue_stick_prim_path
 
     def get_robot_prim_path(self) -> str:
-        return UR5Robot.get_prim_path(self._robot_base_path)
-    
-    def get_robot(self) -> UR5Robot | None:
+        return self._robot_arm_class.get_prim_path(self._robot_base_path)
+
+    def get_robot(self) -> RobotArm | None:
         return self._robot
 
     def destroy(self) -> None:

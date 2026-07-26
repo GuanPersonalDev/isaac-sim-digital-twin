@@ -1,0 +1,57 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "URDF USD Converter v0.1.2"
+    }
+    doc = """Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\tmp2cx2lwr0\\wam.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\urdf_import_wam7_dwl9a1gj\\usdex_wam7\\wam.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\urdf_import_wam7_dwl9a1gj\\temp_wam7\\wam7.usd
+
+
+Generated from Composed Stage of root layer C:\\Other\\OmniverseProjects\\isaac-sim-digital-twin\\assets\\barrett_wam\\wam7\\payloads\\base.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Scope "Materials"
+{
+    def Material "WAMGrey"
+    {
+        color3f inputs:diffuseColor = (0.44798842, 0.44798842, 0.44798842)
+        float inputs:metallic = 0
+        float inputs:opacity = 1
+        float inputs:roughness = 0.5
+        token inputs:wrapMode = "repeat"
+        token outputs:displacement (
+            displayGroup = "Outputs"
+        )
+        prepend token outputs:displacement.connect = </Materials/WAMGrey/PreviewSurface.outputs:displacement>
+        token outputs:surface (
+            displayGroup = "Outputs"
+        )
+        prepend token outputs:surface.connect = </Materials/WAMGrey/PreviewSurface.outputs:surface>
+        token outputs:volume (
+            displayGroup = "Outputs"
+        )
+
+        def Shader "PreviewSurface" (
+            apiSchemas = ["NodeDefAPI"]
+        )
+        {
+            token info:id = "UsdPreviewSurface"
+            prepend color3f inputs:diffuseColor.connect = </Materials/WAMGrey.inputs:diffuseColor>
+            prepend float inputs:metallic.connect = </Materials/WAMGrey.inputs:metallic>
+            prepend float inputs:opacity.connect = </Materials/WAMGrey.inputs:opacity>
+            prepend float inputs:roughness.connect = </Materials/WAMGrey.inputs:roughness>
+            token outputs:displacement
+            token outputs:surface
+        }
+    }
+}
+

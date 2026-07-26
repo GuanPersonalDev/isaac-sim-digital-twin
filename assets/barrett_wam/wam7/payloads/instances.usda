@@ -1,0 +1,452 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "URDF USD Converter v0.1.2"
+    }
+    doc = """Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\tmp2cx2lwr0\\wam.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\urdf_import_wam7_dwl9a1gj\\usdex_wam7\\wam.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\guan_\\AppData\\Local\\Temp\\urdf_import_wam7_dwl9a1gj\\temp_wam7\\wam7.usd
+
+
+Generated from Composed Stage of root layer C:\\Other\\OmniverseProjects\\isaac-sim-digital-twin\\assets\\barrett_wam\\wam7\\payloads\\base.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Scope "Instances"
+{
+    def Xform "base_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/base_link_fine>
+    )
+    {
+        over "base_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/base_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "shoulder_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/shoulder_link_fine>
+    )
+    {
+        over "shoulder_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/shoulder_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "shoulder_pitch_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/shoulder_pitch_link_fine>
+    )
+    {
+        over "shoulder_pitch_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/shoulder_pitch_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "upper_arm_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/upper_arm_link_fine>
+    )
+    {
+        over "upper_arm_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/upper_arm_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "elbow_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/elbow_link_fine>
+    )
+    {
+        over "elbow_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/elbow_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "forearm_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/forearm_link_fine>
+    )
+    {
+        over "forearm_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/forearm_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "wrist_yaw_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/wrist_yaw_link_fine>
+    )
+    {
+        over "wrist_yaw_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/wrist_yaw_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "wrist_pitch_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/wrist_pitch_link_fine>
+    )
+    {
+        over "wrist_pitch_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/wrist_pitch_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "wrist_palm_link_fine" (
+        prepend references = @./geometries.usd@</Geometries/wrist_palm_link_fine>
+    )
+    {
+        over "wrist_palm_link_fine" (
+            apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            custom rel material:binding
+            prepend rel material:binding = </Instances/wrist_palm_link_fine/VisualMaterials/WAMGrey>
+        }
+
+        def Scope "VisualMaterials"
+        {
+            def Material "WAMGrey" (
+                instanceable = true
+                prepend references = @./materials.usda@</Materials/WAMGrey>
+            )
+            {
+            }
+        }
+    }
+
+    def Xform "wrist_palm_link_convex" (
+        prepend references = @./geometries.usd@</Geometries/wrist_palm_link_convex>
+    )
+    {
+        over "wrist_palm_link_convex" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__wristpitchlink_pEB" (
+        prepend references = @./geometries.usd@</Geometries/tn__wristpitchlink_pEB>
+    )
+    {
+        over "tn__wristpitchlink_pEB" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__wristpitchlink001_sHBm8" (
+        prepend references = @./geometries.usd@</Geometries/tn__wristpitchlink001_sHBm8>
+    )
+    {
+        over "tn__wristpitchlink001_sHBm8" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__wristpitchlink002_sHBm8" (
+        prepend references = @./geometries.usd@</Geometries/tn__wristpitchlink002_sHBm8>
+    )
+    {
+        over "tn__wristpitchlink002_sHBm8" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__wristyawlink_nC9" (
+        prepend references = @./geometries.usd@</Geometries/tn__wristyawlink_nC9>
+    )
+    {
+        over "tn__wristyawlink_nC9" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__wristyawlink001_qF9n7" (
+        prepend references = @./geometries.usd@</Geometries/tn__wristyawlink001_qF9n7>
+    )
+    {
+        over "tn__wristyawlink001_qF9n7" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "elbow_link_convex" (
+        prepend references = @./geometries.usd@</Geometries/elbow_link_convex>
+    )
+    {
+        over "elbow_link_convex" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__forearmlinkfine_sFC" (
+        prepend references = @./geometries.usd@</Geometries/tn__forearmlinkfine_sFC>
+    )
+    {
+        over "tn__forearmlinkfine_sFC" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__forearmlinkfine001_vICW9" (
+        prepend references = @./geometries.usd@</Geometries/tn__forearmlinkfine001_vICW9>
+    )
+    {
+        over "tn__forearmlinkfine001_vICW9" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__forearmlinkfine002_vICW9" (
+        prepend references = @./geometries.usd@</Geometries/tn__forearmlinkfine002_vICW9>
+    )
+    {
+        over "tn__forearmlinkfine002_vICW9" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__upperarmlinkfine_rG9E" (
+        prepend references = @./geometries.usd@</Geometries/tn__upperarmlinkfine_rG9E>
+    )
+    {
+        over "tn__upperarmlinkfine_rG9E" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__upperarmlinkfine001_uJ9EVA" (
+        prepend references = @./geometries.usd@</Geometries/tn__upperarmlinkfine001_uJ9EVA>
+    )
+    {
+        over "tn__upperarmlinkfine001_uJ9EVA" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "shoulder_pitch_link_convex" (
+        prepend references = @./geometries.usd@</Geometries/shoulder_pitch_link_convex>
+    )
+    {
+        over "shoulder_pitch_link_convex" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__shoulderlink_qC" (
+        prepend references = @./geometries.usd@</Geometries/tn__shoulderlink_qC>
+    )
+    {
+        over "tn__shoulderlink_qC" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__shoulderlink001_tFY7" (
+        prepend references = @./geometries.usd@</Geometries/tn__shoulderlink001_tFY7>
+    )
+    {
+        over "tn__shoulderlink001_tFY7" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "tn__shoulderlink002_tFY7" (
+        prepend references = @./geometries.usd@</Geometries/tn__shoulderlink002_tFY7>
+    )
+    {
+        over "tn__shoulderlink002_tFY7" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            uniform token purpose = "guide"
+        }
+    }
+
+    def Xform "base_link_convex" (
+        prepend references = @./geometries.usd@</Geometries/base_link_convex>
+    )
+    {
+        over "base_link_convex" (
+            apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "PhysicsMeshCollisionAPI", "NewtonMeshCollisionAPI"]
+        )
+        {
+            token physics:approximation = "convexHull"
+            token purpose = "guide"
+        }
+    }
+}
+

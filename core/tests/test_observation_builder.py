@@ -42,7 +42,7 @@ def error_state():
 
 
 @pytest.fixture
-def ur5_robot():
+def robot_arm():
     return MagicMock()
 
 
@@ -73,7 +73,7 @@ def demo_builder(
     ball_motion_monitor,
     error_state,
     ball_position_provider,
-    ur5_robot,
+    robot_arm,
 ):
     return DemoTableObservationBuilder(
         table_ball_set,
@@ -81,7 +81,7 @@ def demo_builder(
         ball_motion_monitor,
         error_state,
         ball_position_provider,
-        ur5_robot,
+        robot_arm,
     )
 
 
@@ -192,9 +192,9 @@ class TestObservationBuilderInterface:
 class TestDemoTableObservationBuilderMotionComplete:
     @pytest.mark.parametrize("reset_complete", [True, False])
     def test_demo_observation_builder_motion_complete_uses_ur5_reset_complete(
-        self, demo_builder, ur5_robot, reset_complete
+        self, demo_builder, robot_arm, reset_complete
     ):
-        ur5_robot.is_reset_complete.return_value = reset_complete
+        robot_arm.is_reset_complete.return_value = reset_complete
 
         assert demo_builder._is_motion_complete() is reset_complete
 

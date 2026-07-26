@@ -86,7 +86,7 @@ WAITING   → RESET    : observation.is_ball_moving == False
 
 `Action` 新增一個 `bool` 欄位 `should_execute_action`，表示「此 tick 下游是否需要真的觸發一次動作」——語意不限於手臂，Demo 桌（手臂路徑規劃）與訓練桌（衝量式擊球，#177）皆共用同一個欄位判斷「是否為狀態剛轉換的觸發 tick」，避免同一動作在同一狀態持續的多個 tick 內被重複觸發。
 
-`STRIKING` 狀態固定輸出 `cue_speed = ScriptController.MAX_ARM_SPEED`（`1.313`，Issue #176 空揮測速實測值）、`shot_angle = 0`、`position_offset = [0.0, 0.0]`；非零的角度/位移偏移量欄位保留給未來 `ModelController`（RL 模型）輸出使用，`ScriptController` 本身不做動態計算。
+`STRIKING` 狀態固定輸出 `cue_speed = ScriptController.MAX_CUE_BALL_SPEED`（`3.3392`，2026-07-26 換裝 Barrett WAM + 差動 IK 後實測母球初速上限，取代原 Issue #176 UR5 實測的 `1.313`）、`shot_angle = 0`、`position_offset = [0.0, 0.0]`；非零的角度/位移偏移量欄位保留給未來 `ModelController`（RL 模型）輸出使用，`ScriptController` 本身不做動態計算。
 
 `ArticulationAPI` **不需要**新增 `stop()`（曾於討論中提出，後定案改由下游在偵測到異常時直接回寫 `Observation.has_error`，不需要 `ScriptController` 呼叫任何停止方法）。
 

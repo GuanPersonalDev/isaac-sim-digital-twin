@@ -49,7 +49,7 @@ def ball_position_provider() -> MagicMock:
 
 
 @pytest.fixture
-def ur5_robot() -> MagicMock:
+def robot_arm() -> MagicMock:
     return MagicMock()
 
 
@@ -79,7 +79,7 @@ def demo_orchestrator(
     script_controller: MagicMock,
     table_ball_set: MagicMock,
     ball_position_provider: MagicMock,
-    ur5_robot: MagicMock,
+    robot_arm: MagicMock,
     articulation_api: MagicMock,
     error_state: MagicMock,
     rolling_resistance_service: MagicMock,
@@ -88,7 +88,7 @@ def demo_orchestrator(
         script_controller=script_controller,
         table_ball_set=table_ball_set,
         ball_position_provider=ball_position_provider,
-        ur5_robot=ur5_robot,
+        robot_arm=robot_arm,
         articulation_api=articulation_api,
         error_state=error_state,
         rolling_resistance_service=rolling_resistance_service,
@@ -121,7 +121,7 @@ class TestStepDispatch:
         script_controller: MagicMock,
         table_ball_set: MagicMock,
         ball_position_provider: MagicMock,
-        ur5_robot: MagicMock,
+        robot_arm: MagicMock,
     ):
         script_controller.get_action.return_value = _action(should_execute_action=True)
         script_controller.get_current_state.return_value = BilliardStatus.RESET
@@ -131,7 +131,7 @@ class TestStepDispatch:
 
         ball_position_provider.get_positions.assert_called_once_with()
         table_ball_set.reset.assert_called_once_with({0: (0.0, 0.0)})
-        ur5_robot.reset.assert_called_once_with()
+        robot_arm.reset.assert_called_once_with()
 
     def test_step_dispatches_aiming(
         self,
@@ -166,7 +166,7 @@ class TestStepDispatch:
         demo_orchestrator: DemoTableOrchestrator,
         script_controller: MagicMock,
         table_ball_set: MagicMock,
-        ur5_robot: MagicMock,
+        robot_arm: MagicMock,
         ball_position_provider: MagicMock,
     ):
         script_controller.get_action.return_value = _action(should_execute_action=False)
@@ -176,7 +176,7 @@ class TestStepDispatch:
 
         ball_position_provider.get_positions.assert_not_called()
         table_ball_set.reset.assert_not_called()
-        ur5_robot.reset.assert_not_called()
+        robot_arm.reset.assert_not_called()
 
     @pytest.mark.parametrize("state", [BilliardStatus.WAITING, BilliardStatus.IDLE])
     def test_step_has_no_downstream_action_for_waiting_or_idle(
@@ -184,7 +184,7 @@ class TestStepDispatch:
         demo_orchestrator: DemoTableOrchestrator,
         script_controller: MagicMock,
         table_ball_set: MagicMock,
-        ur5_robot: MagicMock,
+        robot_arm: MagicMock,
         state: BilliardStatus,
     ):
         script_controller.get_action.return_value = _action(should_execute_action=True)
@@ -193,7 +193,7 @@ class TestStepDispatch:
         demo_orchestrator.step(_observation())
 
         table_ball_set.reset.assert_not_called()
-        ur5_robot.reset.assert_not_called()
+        robot_arm.reset.assert_not_called()
 
     def test_step_calls_rolling_resistance_regardless_of_should_execute_action(
         self,
@@ -309,14 +309,14 @@ class TestResetBalls:
 
 
 class TestDemoTableOrchestrator:
-    def test_reset_downstream_calls_ur5_robot_reset(
+    def test_reset_downstream_calls_robot_arm_reset(
         self,
         demo_orchestrator: DemoTableOrchestrator,
-        ur5_robot: MagicMock,
+        robot_arm: MagicMock,
     ):
         demo_orchestrator._reset_downstream()
 
-        ur5_robot.reset.assert_called_once_with()
+        robot_arm.reset.assert_called_once_with()
 
 
 class TestTrainingTableOrchestrator:
