@@ -33,6 +33,7 @@ from core.models.billiard_table import BilliardTable
 from core.models.table_robot_manager import TableRobotManager
 from core.services.error_state import ErrorState
 from core.services.impulse_striking_service import ImpulseStrikingService
+from core.services.rolling_resistance_service import RollingResistanceService
 
 _TABLE_COUNT = 1
 _TOOL_MENU_NAME = "Tools"
@@ -89,6 +90,9 @@ class BilliardExtension(omni.ext.IExt):
         demo_table_path = "/World/Table_Demo"
         self._demo_table = self._build_table(
             demo_table_path, self._stage_api, material_api, self._rigid_body_api, (0, 0)
+        )
+        self._rolling_resistance_service = RollingResistanceService(
+            self._rigid_body_api, self._demo_table.get_table_ball_set().get_ball_radius()
         )
         robot_prim_path = UR5Robot.get_prim_path(demo_table_path)
         robot_end_effector_prim_path = UR5Robot.get_end_effector_prim_path(demo_table_path)
@@ -183,7 +187,7 @@ class BilliardExtension(omni.ext.IExt):
             error_state = ErrorState()
             demo_table_runtime = TableRuntime(
                 DemoTableObservationBuilder(table_ball_set, self._rigid_body_api, table_ball_set.ball_motion_monitor, error_state, table.position_provider, ur5_robot), 
-                DemoTableOrchestrator(controller, table_ball_set, table.position_provider, ur5_robot, self._articulation_api, error_state))
+                DemoTableOrchestrator(controller, table_ball_set, table.position_provider, ur5_robot, self._articulation_api, error_state, self._rolling_resistance_service))
             self._table_runtimes.append(demo_table_runtime)
             
     def _register_training_table_runtime(self, table: BilliardTable) -> None:
@@ -192,11 +196,11 @@ class BilliardExtension(omni.ext.IExt):
             controller = ScriptController()
             error_state = ErrorState()
  
-            impulse_striking_service = ImpulseStrikingService(self._stage_api, self._rigid_body_api, table_ball_set.get_ball_prim_paths()[0], table_ball_set.get_ball_radius())
+            impulse_striking_service = ImpulseStrikingService(self._rigid_body_api, table_ball_set.get_ball_prim_paths()[0], table_ball_set.get_ball_radius())
 
             training_table_runtime = TableRuntime(
                 TrainingTableObservationBuilder(table_ball_set, self._rigid_body_api, table_ball_set.ball_motion_monitor, error_state, table.position_provider), 
-                TrainingTableOrchestrator(controller, table_ball_set, table.position_provider, impulse_striking_service, error_state))
+                TrainingTableOrchestrator(controller, table_ball_set, table.position_provider, impulse_striking_service, error_state, self._rolling_resistance_service))
             self._table_runtimes.append(training_table_runtime)
     
     def _on_tick(self, step_dt, context) -> None:

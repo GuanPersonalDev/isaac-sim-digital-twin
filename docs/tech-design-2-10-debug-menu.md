@@ -117,3 +117,22 @@ Extension 主類別
 
 - [ ] [6-6] 在 VStack 加入 Ball Reset 按鈕
 - [ ] [7-6] 在 VStack 加入 LivePosition 相關控制按鈕
+
+---
+
+## 9. 候補功能構想（非本次任務範圍）
+
+### 狀態機／球體運動除錯資訊顯示區塊
+
+**背景：** 2026-07-26 排查「加上 RollingResistanceService 衰減後按下 Play 母球不會被擊出」的 bug 時，最終靠著在 `ScriptController.get_action()`、`ImpulseStrikingService.strike()`、`TrainingTableOrchestrator._execute_strike()` 三處加臨時 `print()` 才逐步定位到真正根因（見 `core/services/rolling_resistance_service.py` 的 `_SETTLING_NOISE_CEILING` 設計說明）。這些臨時輸出在確認修正後已移除，但排查過程證實了以下幾項資訊是診斷「球不會動」「狀態機卡住不轉換」類問題的關鍵訊號：
+
+1. 目前狀態機狀態（`BilliardStatus`：RESET/IDLE/AIMING/STRIKING/WAITING/ERROR）
+2. `Observation` 的 `is_ball_moving`、`is_motion_complete`、`has_error`
+3. 母球世界座標（`cue_ball_position`）
+4. 每顆球的線速度／角速度（尤其是用來發現「卡在門檻附近不消失的殘留速度」這類需要逐球比對數值才能抓到的問題）
+
+**建議：** 未來替 Debug Menu 加入一個顯示區塊（或用 toggle 開關），即時顯示上述資訊，取代每次排查都要手動加臨時 print 再手動移除的流程。可考慮的呈現方式：
+- 簡單版：VStack 內加一段文字，每幀更新顯示目前狀態機狀態 + `is_ball_moving` 等布林值
+- 進階版：加一個「顯示各球速度」的 toggle，勾選後才逐幀查詢並顯示 10 顆球的線速度／角速度（避免預設就對 tensor API 做額外查詢，影響效能）
+
+**範圍判斷：** 這不屬於本次任務（rolling resistance 修正）範圍，留待之後透過 feature-design-flow／progress-planner 正式排入任務時再細部設計介面與資料流。

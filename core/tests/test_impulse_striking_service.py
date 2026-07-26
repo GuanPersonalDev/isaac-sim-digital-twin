@@ -136,10 +136,9 @@ class TestAngularVelocity:
 class TestImpulseStrikingServiceStrike:
     def test_places_cue_ball_at_placement_xy(self):
         # Arrange
-        stage_api = MagicMock()
         rigid_body_api = MagicMock()
         service = ImpulseStrikingService(
-            stage_api, rigid_body_api, cue_ball_prim="/World/CueBall", ball_radius=1.0
+            rigid_body_api, cue_ball_prim="/World/CueBall", ball_radius=1.0
         )
         action = _action(cue_speed=2.0, shot_angle=0.0, cue_ball_placement=(0.1, -0.2))
 
@@ -147,16 +146,18 @@ class TestImpulseStrikingServiceStrike:
         service.strike(action, table_x=5.0, table_y=3.0, table_z=0.75)
 
         # Assert
-        stage_api.set_prim_translate.assert_called_once_with(
-            "/World/CueBall", pytest.approx(5.1), pytest.approx(2.8), 0.75
+        # 必須用 RigidBodyAPI.set_position()（tensor API），不能用 StageAPI 的
+        # raw xform op——見 core/ports/rigid_body_api.py 的說明，混用會讓
+        # set_velocities() 靜默失效（實測回報的 bug：母球擊球後完全不動）。
+        rigid_body_api.set_position.assert_called_once_with(
+            "/World/CueBall", pytest.approx(5.1), pytest.approx(2.8), 1.75
         )
 
     def test_sets_computed_velocities_on_cue_ball(self):
         # Arrange
-        stage_api = MagicMock()
         rigid_body_api = MagicMock()
         service = ImpulseStrikingService(
-            stage_api, rigid_body_api, cue_ball_prim="/World/CueBall", ball_radius=1.0
+            rigid_body_api, cue_ball_prim="/World/CueBall", ball_radius=1.0
         )
         action = _action(cue_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
 
@@ -173,13 +174,12 @@ class TestImpulseStrikingServiceStrike:
 
     def test_places_ball_before_setting_velocities(self):
         # Arrange
-        stage_api = MagicMock()
         rigid_body_api = MagicMock()
         manager = MagicMock()
-        manager.attach_mock(stage_api.set_prim_translate, "translate")
+        manager.attach_mock(rigid_body_api.set_position, "set_position")
         manager.attach_mock(rigid_body_api.set_velocities, "set_velocities")
         service = ImpulseStrikingService(
-            stage_api, rigid_body_api, cue_ball_prim="/World/CueBall", ball_radius=1.0
+            rigid_body_api, cue_ball_prim="/World/CueBall", ball_radius=1.0
         )
         action = _action()
 
@@ -187,14 +187,12 @@ class TestImpulseStrikingServiceStrike:
         service.strike(action, table_x=0.0, table_y=0.0, table_z=0.75)
 
         # Assert
-        assert [call[0] for call in manager.mock_calls] == ["translate", "set_velocities"]
+        assert [call[0] for call in manager.mock_calls] == ["set_position", "set_velocities"]
 
     def test_uses_configured_spin_efficiency(self):
         # Arrange
-        stage_api = MagicMock()
         rigid_body_api = MagicMock()
         service = ImpulseStrikingService(
-            stage_api,
             rigid_body_api,
             cue_ball_prim="/World/CueBall",
             ball_radius=1.0,

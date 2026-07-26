@@ -26,6 +26,16 @@ class RigidBodyAPIImpl(RigidBodyAPI):
         positions, _ = rigid_prim.get_world_poses()
         return positions[0].list()
 
+    def set_position(self, prim_path: str, x: float, y: float, z: float) -> None:
+        """
+        Teleport 設定世界座標 (x, y, z) (m)。用 RigidPrim.set_world_poses()
+        （tensor API），不能改用 StageAPI 的 raw xform op——見
+        core/ports/rigid_body_api.py 的說明，兩條路徑混用會讓後續
+        set_velocities() 靜默失效。
+        """
+        rigid_prim = self._get_rigid_prim(prim_path)
+        rigid_prim.set_world_poses(positions=np.array([[x, y, z]]))
+
     def get_linear_velocity(self, prim_path: str) -> list[float]:
         """
         回傳速度 (vx, vy, vz) (m/s)

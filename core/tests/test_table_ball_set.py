@@ -151,33 +151,37 @@ class TestTableBallSet:
     def test_reset_moves_balls_to_given_positions(
         self,
         table_ball_set,
-        stage_api: MagicMock,
+        rigid_body_api: MagicMock,
         positions: dict[int, tuple[float, float]],
     ):
         table_ball_set.build(positions)
-        stage_api.set_prim_translate.reset_mock()
+        rigid_body_api.set_position.reset_mock()
 
+        # reset() 必須用 RigidBodyAPI.set_position()（tensor API），不能用
+        # StageAPI 的 raw xform op——這個 prim 每個 tick 都會被
+        # ObservationBuilder 呼叫 get_position() 讀取，兩條路徑混用會讓
+        # set_velocities() 靜默失效（見 core/ports/rigid_body_api.py 說明）。
         new_positions = {ball_id: (ball_id * 0.2, ball_id * 0.3) for ball_id in range(10)}
         table_ball_set.reset(new_positions)
 
         for ball_id in range(10):
             x, y = new_positions[ball_id]
-            stage_api.set_prim_translate.assert_any_call(
+            rigid_body_api.set_position.assert_any_call(
                 _prim_path(ball_id), x, y, pytest.approx(0.75 + 0.028575)
             )
 
     def test_reset_uses_correct_z(
         self,
         table_ball_set,
-        stage_api: MagicMock,
+        rigid_body_api: MagicMock,
         positions: dict[int, tuple[float, float]],
     ):
         table_ball_set.build(positions)
-        stage_api.set_prim_translate.reset_mock()
+        rigid_body_api.set_position.reset_mock()
 
         table_ball_set.reset(positions)
 
-        z_values = [c.args[3] for c in stage_api.set_prim_translate.call_args_list]
+        z_values = [c.args[3] for c in rigid_body_api.set_position.call_args_list]
         assert all(z == pytest.approx(0.75 + 0.028575) for z in z_values)
 
     def test_reset_zeroes_ball_velocities(
@@ -256,17 +260,17 @@ class TestTableBallSet:
     def test_reset_adds_table_position_offset(
         self,
         offset_table_ball_set,
-        stage_api: MagicMock,
+        rigid_body_api: MagicMock,
         positions: dict[int, tuple[float, float]],
     ):
         offset_table_ball_set.build(positions)
-        stage_api.set_prim_translate.reset_mock()
+        rigid_body_api.set_position.reset_mock()
 
         offset_table_ball_set.reset(positions)
 
         for ball_id in range(10):
             x, y = positions[ball_id]
-            stage_api.set_prim_translate.assert_any_call(
+            rigid_body_api.set_position.assert_any_call(
                 _prim_path(ball_id), 2.0 + x, 3.0 + y, pytest.approx(0.75 + 0.028575)
             )
 

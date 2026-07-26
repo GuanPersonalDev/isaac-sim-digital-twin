@@ -2,7 +2,6 @@ import math
 
 from ..models.action import Action
 from ..ports.rigid_body_api import RigidBodyAPI
-from ..ports.stage_api import StageAPI
 
 def compute_cue_ball_velocities(action: Action, ball_radius: float, spin_efficiency: float = 0.8) -> tuple[list[float], list[float]]:
     """
@@ -28,21 +27,24 @@ def compute_cue_ball_velocities(action: Action, ball_radius: float, spin_efficie
     return linear_velocity, angular_velocity
 
 class ImpulseStrikingService:
-    
-    def __init__(self, stage_api: StageAPI, rigid_body_api: RigidBodyAPI, cue_ball_prim: str, ball_radius: float, spin_efficiency: float = 0.8) -> None:
-        self._stage_api = stage_api
+
+    def __init__(self, rigid_body_api: RigidBodyAPI, cue_ball_prim: str, ball_radius: float, spin_efficiency: float = 0.8) -> None:
         self._rigid_body_api = rigid_body_api
         self._cue_ball_prim = cue_ball_prim
         self._ball_radius = ball_radius
         self._spin_efficiency = spin_efficiency
-    
+
     def strike(self, action: Action, table_x: float, table_y: float, table_z: float) -> None:
         x, y = action.cue_ball_placement
         x += table_x
         y += table_y
         z = table_z + self._ball_radius
-        self._stage_api.set_prim_translate(self._cue_ball_prim, x, y, z)
-        
+        # 必須用 RigidBodyAPI.set_position()（tensor API），不能用 StageAPI 的
+        # raw xform op——這個 prim 每個 tick 都會被 ObservationBuilder 呼叫
+        # get_position() 讀取，兩條路徑混用會讓下面的 set_velocities() 靜默
+        # 失效（球完全沒有被賦予速度，見 core/ports/rigid_body_api.py 說明）。
+        self._rigid_body_api.set_position(self._cue_ball_prim, x, y, z)
+
         linear_velocity, angular_velocity = compute_cue_ball_velocities(action, self._ball_radius, self._spin_efficiency)
-        
+
         self._rigid_body_api.set_velocities(self._cue_ball_prim, linear_velocity, angular_velocity)

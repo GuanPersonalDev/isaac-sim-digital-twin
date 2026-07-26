@@ -11,6 +11,7 @@ from .ball_motion_monitor import BallMotionMonitor
 from .ball_position_provider import BallPositionProvider
 from .impulse_striking_service import ImpulseStrikingService
 from .error_state import ErrorState
+from .rolling_resistance_service import RollingResistanceService
 
 
 class TableOrchestrator(ABC):
@@ -25,17 +26,22 @@ class TableOrchestrator(ABC):
         script_controller: ControllerBase,
         table_ball_set: TableBallSet,
         ball_position_provider: BallPositionProvider,
-        error_state: ErrorState
+        error_state: ErrorState,
+        rolling_resistance_service: RollingResistanceService
     ) -> None:
         self._script_controller = script_controller
         self._table_ball_set = table_ball_set
         self._ball_position_provider = ball_position_provider
         self._error_state = error_state
+        self._rolling_resistance_service = rolling_resistance_service
 
     def step(self, observation: Observation) -> None:
         """
-        每個 tick 呼叫一次的共用骨架，見 docs/tech-design-5-9-table-orchestrator.md 第 3 節。
+        每個 tick 呼叫一次的共用骨架，見 docs/tech-design-5-9-table-orchestrator.md 第 3 節、
+        docs/tech-design/rolling-resistance-correction-tech-design.md 第 4 節。
         """
+        self._rolling_resistance_service.apply(self._table_ball_set.get_ball_prim_paths())
+
         action = self._script_controller.get_action(observation)
         current_state = self._script_controller.get_current_state()
         
@@ -93,9 +99,10 @@ class DemoTableOrchestrator(TableOrchestrator):
         ball_position_provider: BallPositionProvider,
         ur5_robot: UR5Robot,
         articulation_api: ArticulationAPI,
-        error_state: ErrorState
+        error_state: ErrorState,
+        rolling_resistance_service: RollingResistanceService
     ) -> None:
-        super().__init__(script_controller, table_ball_set, ball_position_provider, error_state)
+        super().__init__(script_controller, table_ball_set, ball_position_provider, error_state, rolling_resistance_service)
         self._ur5_robot = ur5_robot
         self._articulation_api = articulation_api
 
@@ -117,9 +124,10 @@ class TrainingTableOrchestrator(TableOrchestrator):
         table_ball_set: TableBallSet,
         ball_position_provider: BallPositionProvider,
         impulse_striking_service: ImpulseStrikingService,
-        error_state: ErrorState
+        error_state: ErrorState,
+        rolling_resistance_service: RollingResistanceService
     ) -> None:
-        super().__init__(script_controller, table_ball_set, ball_position_provider, error_state)
+        super().__init__(script_controller, table_ball_set, ball_position_provider, error_state, rolling_resistance_service)
         self._impulse_striking_service = impulse_striking_service
 
     def _reset_downstream(self) -> None:
@@ -136,4 +144,5 @@ class TrainingTableOrchestrator(TableOrchestrator):
 
     def _execute_strike(self, action: Action) -> None:
         table_x, table_y = self._table_ball_set.get_table_x_y()
-        self._impulse_striking_service.strike(action, table_x, table_y, table_z=self._table_ball_set.get_table_z())
+        table_z = self._table_ball_set.get_table_z()
+        self._impulse_striking_service.strike(action, table_x, table_y, table_z=table_z)

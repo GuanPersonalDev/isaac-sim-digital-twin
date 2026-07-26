@@ -70,6 +70,11 @@ def error_state() -> MagicMock:
 
 
 @pytest.fixture
+def rolling_resistance_service() -> MagicMock:
+    return MagicMock()
+
+
+@pytest.fixture
 def demo_orchestrator(
     script_controller: MagicMock,
     table_ball_set: MagicMock,
@@ -77,6 +82,7 @@ def demo_orchestrator(
     ur5_robot: MagicMock,
     articulation_api: MagicMock,
     error_state: MagicMock,
+    rolling_resistance_service: MagicMock,
 ) -> DemoTableOrchestrator:
     return DemoTableOrchestrator(
         script_controller=script_controller,
@@ -85,6 +91,7 @@ def demo_orchestrator(
         ur5_robot=ur5_robot,
         articulation_api=articulation_api,
         error_state=error_state,
+        rolling_resistance_service=rolling_resistance_service,
     )
 
 
@@ -95,6 +102,7 @@ def training_orchestrator(
     ball_position_provider: MagicMock,
     impulse_striking_service: MagicMock,
     error_state: MagicMock,
+    rolling_resistance_service: MagicMock,
 ) -> TrainingTableOrchestrator:
     return TrainingTableOrchestrator(
         script_controller=script_controller,
@@ -102,6 +110,7 @@ def training_orchestrator(
         ball_position_provider=ball_position_provider,
         impulse_striking_service=impulse_striking_service,
         error_state=error_state,
+        rolling_resistance_service=rolling_resistance_service,
     )
 
 
@@ -185,6 +194,43 @@ class TestStepDispatch:
 
         table_ball_set.reset.assert_not_called()
         ur5_robot.reset.assert_not_called()
+
+    def test_step_calls_rolling_resistance_regardless_of_should_execute_action(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        table_ball_set: MagicMock,
+        rolling_resistance_service: MagicMock,
+    ):
+        table_ball_set.get_ball_prim_paths.return_value = ["/World/Table_Demo/Balls/Ball_0"]
+        script_controller.get_action.return_value = _action(should_execute_action=False)
+        script_controller.get_current_state.return_value = BilliardStatus.IDLE
+
+        demo_orchestrator.step(_observation())
+
+        rolling_resistance_service.apply.assert_called_once_with(["/World/Table_Demo/Balls/Ball_0"])
+
+    def test_step_calls_rolling_resistance_before_state_dispatch(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        table_ball_set: MagicMock,
+        ball_position_provider: MagicMock,
+        rolling_resistance_service: MagicMock,
+    ):
+        manager = MagicMock()
+        manager.attach_mock(rolling_resistance_service.apply, "rolling_resistance_apply")
+        manager.attach_mock(table_ball_set.reset, "table_ball_set_reset")
+        script_controller.get_action.return_value = _action(should_execute_action=True)
+        script_controller.get_current_state.return_value = BilliardStatus.RESET
+        ball_position_provider.get_positions.return_value = {0: (0.0, 0.0)}
+
+        demo_orchestrator.step(_observation())
+
+        assert [call[0] for call in manager.mock_calls] == [
+            "rolling_resistance_apply",
+            "table_ball_set_reset",
+        ]
 
 
 class TestStepErrorHandling:

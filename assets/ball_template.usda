@@ -50,6 +50,8 @@ def Xform "Root" (
         )
         float physxCollision:contactOffset = 0.005
         float physxCollision:restOffset = 0
+        float physxCollision:torsionalPatchRadius = 0.5
+        float physxCollision:minTorsionalPatchRadius = 0.001
         double radius = 0.028575
         uniform token subdivisionScheme = "none"
         token ui:displayGroup = "Material Graphs"
@@ -70,9 +72,9 @@ def Xform "Root" (
                 }
                 hidden = true
             )
-            float physics:dynamicFriction = 0.05
+            float physics:dynamicFriction = 0.2
             float physics:restitution = 0.95
-            float physics:staticFriction = 0.05
+            float physics:staticFriction = 0.21
         }
     }
 }

@@ -134,7 +134,12 @@ class TableBallSet:
             prim_path = self._get_ball_prim_path(ball_id)
             self._stage_api.set_visibility(prim_path, visible=True)
             x, y = positions[ball_id]
-            self._stage_api.set_prim_translate(prim_path, self._table_x + x, self._table_y + y, z)
+            # 必須用 RigidBodyAPI.set_position()（tensor API），不能用 StageAPI 的
+            # raw xform op——這個 prim 每個 tick 都會被 ObservationBuilder 呼叫
+            # get_position() 讀取，兩條路徑混用會讓下面的 set_velocities() 靜默
+            # 失效（見 core/ports/rigid_body_api.py 說明）。build() 時因為 prim
+            # 剛建立、從未被讀取過，沒有這個風險，可以繼續用 StageAPI。
+            self._rigid_body_api.set_position(prim_path, self._table_x + x, self._table_y + y, z)
             self._rigid_body_api.set_velocities(prim_path, [0, 0, 0], [0, 0, 0])
 
     def _check_built(self) -> None:
