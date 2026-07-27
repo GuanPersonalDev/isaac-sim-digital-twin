@@ -25,6 +25,9 @@ class _TableComboBoxModel(omni.ui.AbstractItemModel):
     def __init__(self) -> None:
         super().__init__()
         self._current_index = omni.ui.SimpleIntModel(-1)
+        self._current_index.add_value_changed_fn(
+            lambda _: self._item_changed(None)
+        )
         self._items: list[_TableComboItem] = []
 
     def get_item_children(self, item=None):
