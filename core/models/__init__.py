@@ -3,3 +3,4 @@ from .action import Action
 from .billiard_state import BilliardState, BilliardStatus
 from .shot_result import ShotResult
 from .contact_event import ContactEvent
+from .break_foul_result import BreakFoulResult
