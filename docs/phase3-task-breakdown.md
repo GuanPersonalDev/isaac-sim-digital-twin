@@ -30,13 +30,26 @@
 
 ## RL 設計定案
 
-### Observation（20個數字）
+### RL Observation（20 個數字）
 
-| 資料 | 數量 | 說明 |
-|---|---|---|
-| 1–9 號球 XY 位置 | 18 | 座標以桌面中心為原點 |
-| 白球 XY 位置 | 2 | 座標以桌面中心為原點 |
-| **總計** | **20** | |
+固定順序：
+
+`[ball_1_x, ball_1_y, ..., ball_9_x, ball_9_y, cue_ball_x, cue_ball_y]`
+
+| 索引 | 資料 | 數量 | 說明 |
+|---|---|---:|---|
+| 0–17 | 1–9 號球 XY 位置 | 18 | 依 ball_id 由 1 到 9；桌台相對座標，單位 m |
+| 18–19 | 母球 Ball_0 XY 位置 | 2 | 桌台相對座標，單位 m |
+| | **總計** | **20** | |
+
+資料來源為既有執行期 `Observation.ball_positions`。RL Encoder 將世界座標扣除
+桌台世界 XY，只保留 XY、忽略 Z；進袋球沿用該次 `Observation` 中的當前 XY。
+RL 向量不包含手臂關節角度、Action 擊球參數，亦不包含 `is_init_state`、
+`is_ball_moving`、`is_motion_complete`、`has_error` 等執行期控制旗標。
+
+Core 輸出原始 `list[float]`；`float32`、`observation_space`、正規化與裁切由
+後續 `BilliardEnv`（#122）負責。既有 `core/models/observation.py` 保留為
+TableRuntime／ScriptController 使用的執行期狀態，兩者不得混為同一資料契約。
 
 ### Action（6個數字）
 
@@ -225,13 +238,15 @@
 ---
 
 ## Block 7：Observation 收集與預留 RL 接口
-預估總時數：3.5h
+預估總時數：4.5h
 
 | # | 任務 | 預估 |
 |---|---|---|
-| 7-1 | 實作 `RigidBodyAPIImpl`（`isaac_sim_impl_6_0/`，查詢球的位置與速度） | 0.5h |
-| 7-2 | 實作 `LivePositionProvider`（`isaac_sim_impl_6_0/`，即時查詢球位置） | 0.5h |
-| 7-3 | 實作 Observation 收集函式（20個數字）+ Unit Test | 1h |
+| 7-1 | 確認 RL Observation 資料格式（20 維：1–9 號球 XY + 母球 XY） | 0.5h |
+| 7-1b | 實作 `RigidBodyAPIImpl`（`isaac_sim_impl_6_0/`，查詢球的位置與速度） | 0.5h |
+| 7-2b | 實作 `LivePositionProvider`（`isaac_sim_impl_6_0/`，即時查詢球位置） | 0.5h |
+| 7-2 | 實作 RL Observation Encoder（既有 `Observation` → 20 維）+ Unit Test | 1h |
+| 7-3 | 確認 Action 資料格式（6 維） | 0.5h |
 | 7-4 | 確認 `ControllerBase`：`get_action(observation) → action` 足以支撐未來 `ModelController` | 0.5h |
 | 7-5 | 在 `ScriptController` 中加入 Observation 收集與 Action 格式輸出 | 0.5h |
 | 7-6 | Debug Menu 新增「印出當前 Observation」按鈕 | 0.5h |
@@ -330,15 +345,15 @@
 | Block 4 | UR5 匯入與球桿設計 | 5h |
 | Block 5 | 擊球動作實作 | 7h |
 | Block 6 | Reward Function 與結果評估 | 4h |
-| Block 7 | Observation 收集與預留 RL 接口 | 3.5h |
+| Block 7 | Observation 收集與預留 RL 接口 | 4.5h |
 | Block 8 | 參數化控制與中途展示點 | 3.5h |
 | Block 9 | RL 訓練迴路 | 8h |
 | Block 10 | 多環境並行 | 4h |
 | Block 11 | 整合測試與補坑 | 4h |
 | Block 12 | Demo + README + LinkedIn | 6h |
-| **總計** | | **63.5h** |
+| **總計** | | **64.5h** |
 
-可用時數約 87h，緩衝空間約 23.5h。
+可用時數約 87h，緩衝空間約 22.5h。
 
 **高風險項目：**
 - Block 5（物理參數調校）：實際可能超時

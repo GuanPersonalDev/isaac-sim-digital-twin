@@ -37,12 +37,13 @@ project/
   │   │   └── script_controller.py       ← 腳本控制實作（Phase 3）
   │   ├── models/
   │   │   ├── billiard_state.py          ← 撞球場景狀態資料模型
-  │   │   ├── observation.py             ← Observation 資料格式
+  │   │   ├── observation.py             ← 執行期 Observation 狀態模型
   │   │   ├── action.py                  ← Action 資料格式
   │   │   └── shot_result.py             ← 擊球結果資料模型
   │   ├── services/
   │   │   ├── ball_position_provider.py  ← 取得球位置的抽象介面
   │   │   ├── break_shot_position_provider.py ← 衝球固定位置實作
+  │   │   ├── rl_observation_encoder.py  ← 執行期 Observation 轉 20 維 RL 向量
   │   │   ├── reward_service.py          ← Reward Function 計算邏輯
   │   │   └── mqtt_service.py            ← MQTT 資料處理邏輯
   │   └── tests/
@@ -226,7 +227,8 @@ Phase 3 實作 `ScriptController`，Phase 4 新增 `ModelController`（載入 RL
 
 | 接口 | 位置 | Phase 3 狀態 | Phase 4 延伸 |
 |---|---|---|---|
-| Observation 收集 | `core/models/observation.py` | 格式定義完成 | 接上訓練資料 pipeline |
+| 執行期 Observation | `core/models/observation.py` | TableRuntime／ScriptController 狀態格式已完成 | 保留執行期控制旗標，不直接作為 RL 向量 |
+| RL Observation Encoder | `core/services/rl_observation_encoder.py` | Block 7：將既有 Observation 轉為固定 20 維球位向量 | 接上 BilliardEnv 訓練資料 pipeline |
 | Action Space 定義 | `core/models/action.py` | 格式定義完成 | 接上 RL policy 輸出 |
 | Controller 抽換點 | `core/controllers/controller_base.py` | `ScriptController` 實作 | 新增 `ModelController` |
 | BallPositionProvider | `core/services/ball_position_provider.py` | `BreakShotPositionProvider` 實作 | `LivePositionProvider` 供其他情境使用 |
