@@ -88,8 +88,8 @@
 | 6-5 | Block 6 | 實作完整 Reward Function（整合散開分數、進袋獎懲與開球犯規）+ Unit Test | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-28 | 2026-08-01 | #106 |
 | 6-8 | Block 6 | 整合完整 Reward Function + Unit Test（由 #106 取代，不另行實作） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-28 | 2026-08-01 | #155 |
 | 7-1 | Block 7 | 確認 RL Observation 資料格式（20 維：1–9 號球 XY + 母球 XY，無手臂資訊） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #108 |
-| 7-1b | Block 7 | 實作 RigidBodyAPIImpl（isaac_sim_impl_6_0/，查詢球的位置與速度） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-01 | #156 |
-| 7-2b | Block 7 | 實作 LivePositionProvider（isaac_sim_impl_6_0/，即時查詢球位置） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-01 | #157 |
+| 7-1b | Block 7 | 實作 RigidBodyAPIImpl（isaac_sim_impl_6_0/，查詢球的位置與速度） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #156 |
+| 7-2b | Block 7 | 取消 LivePositionProvider（由 ObservationBuilder + RigidBodyAPI 即時查詢流程取代） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #157 |
 | 7-2 | Block 7 | 實作 RL Observation Encoder（既有 Observation → 20 維）+ Unit Test | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #109 |
 | 7-3 | Block 7 | 確認 Action 資料格式（6 維，速度上限依 #176 實測） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-01 | #110 |
 | 7-4 | Block 7 | 確認 ControllerBase：get_action(observation) → action 足以支撐未來 ModelController | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-02 | #111 |
