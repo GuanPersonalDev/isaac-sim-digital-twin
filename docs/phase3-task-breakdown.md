@@ -255,7 +255,7 @@ no-op 可使用 `cue_ball_speed = 0.0`；RL action space 的正規化、裁切�
 | 7-2 | 實作 RL Observation Encoder（既有 `Observation` → 20 維）+ Unit Test | 1h |
 | 7-3 | 確認 Action 資料格式（6 維） | 0.5h |
 | 7-4 | 補正 `ControllerBase` 完整生命週期契約（`get_action`／`get_current_state`／`reset`） | 0.5h |
-| 7-5 | 在 `ScriptController` 中加入 Observation 收集與 Action 格式輸出 | 0.5h |
+| 7-5 | 取消：Observation 收集已由 `ObservationBuilder`／`TableRuntime`（#198–#202）負責，Action 契約由 #110／#111 完成 | 0.5h |
 | 7-6 | Debug Menu 新增「印出當前 Observation」按鈕 | 0.5h |
 
 ---
