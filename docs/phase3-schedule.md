@@ -92,7 +92,7 @@
 | 7-2b | Block 7 | 取消 LivePositionProvider（由 ObservationBuilder + RigidBodyAPI 即時查詢流程取代） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #157 |
 | 7-2 | Block 7 | 實作 RL Observation Encoder（既有 Observation → 20 維）+ Unit Test | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #109 |
 | 7-3 | Block 7 | 確認 Action 資料格式（6 維，母球初速上限 3.3392 m/s） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #110 |
-| 7-4 | Block 7 | 確認 ControllerBase：get_action(observation) → action 足以支撐未來 ModelController | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-02 | #111 |
+| 7-4 | Block 7 | 補正 ControllerBase 完整生命週期契約（get_action/get_current_state/reset） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-02 | #111 |
 | 7-5 | Block 7 | 在 ScriptController 中加入 Observation 收集與 Action 格式輸出 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-02 | #112 |
 | 9-1 | Block 9 | 研究 Isaac Lab 環境設計規範（gym.Env 介面） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-02 | #120 |
 | 9-2 | Block 9 | 實作 BilliardEnv：繼承 Isaac Lab 環境介面整合 core/ 邏輯（含 early termination） | 1.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-02 | #121 |

@@ -204,22 +204,25 @@ class LivePositionProvider(BallPositionProvider):
 ```python
 # core/controllers/controller_base.py
 from abc import ABC, abstractmethod
+from core.models import Action, BilliardStatus, Observation
 
 class ControllerBase(ABC):
     """控制策略抽象介面，ScriptController 與 ModelController 均實作此介面"""
 
     @abstractmethod
-    def get_action(self, observation: dict) -> dict:
-        """根據當前觀測值決定動作"""
-        pass
+    def get_action(self, observation: Observation) -> Action: ...
 
     @abstractmethod
-    def reset(self) -> None:
-        """重置控制器狀態"""
-        pass
+    def get_current_state(self) -> BilliardStatus: ...
+
+    @abstractmethod
+    def reset(self) -> None: ...
 ```
 
-Phase 3 實作 `ScriptController`，Phase 4 新增 `ModelController`（載入 RL 訓練模型），高層邏輯完全不動。
+`get_action()` 可同步轉換狀態；高層會在其後立即呼叫
+`get_current_state()`，取得該 `Action` 對應的分派狀態。`reset()` 必須讓
+控制器回到 `BilliardStatus.RESET`。Phase 3 實作 `ScriptController`，
+Phase 4 新增 `ModelController`（載入 RL 訓練模型），高層邏輯完全不動。
 
 ---
 
@@ -230,7 +233,7 @@ Phase 3 實作 `ScriptController`，Phase 4 新增 `ModelController`（載入 RL
 | 執行期 Observation | `core/models/observation.py` | TableRuntime／ScriptController 狀態格式已完成 | 保留執行期控制旗標，不直接作為 RL 向量 |
 | RL Observation Encoder | `core/services/rl_observation_encoder.py` | Block 7：將既有 Observation 轉為固定 20 維球位向量 | 接上 BilliardEnv 訓練資料 pipeline |
 | Action Space 定義 | `core/models/action.py` | 物理域 6 維：母球擺位 XY、方向角、母球目標初速、上下／左右偏移；`should_execute_action` 不計入 | 由 `BilliardEnv` 定義 Box、正規化與裁切後接上 RL policy 輸出 |
-| Controller 抽換點 | `core/controllers/controller_base.py` | `ScriptController` 實作 | 新增 `ModelController` |
+| Controller 抽換點 | `core/controllers/controller_base.py` | 完整生命週期契約：`get_action()`、`get_current_state()`、`reset()`；`ScriptController` 已實作 | `ModelController` 實作相同契約，模型只決定 6 維擊球參數 |
 | BallPositionProvider | `core/services/ball_position_provider.py` | `BreakShotPositionProvider` 實作 | `LivePositionProvider` 供其他情境使用 |
 
 ---

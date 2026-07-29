@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from core.models.action import Action
+from core.models.billiard_state import BilliardStatus
 from core.models.observation import Observation
 
 
@@ -24,9 +25,18 @@ class IncompleteController(ControllerBase):
     pass
 
 
+class MissingCurrentStateController(ControllerBase):
+    def get_action(self, observation: Observation) -> Action:
+        raise NotImplementedError
+
+    def reset(self) -> None:
+        pass
+
+
 class ConcreteController(ControllerBase):
     def __init__(self):
         self.reset_called = False
+        self.current_state = BilliardStatus.IDLE
 
     def get_action(self, observation: Observation) -> Action:
         return Action(
@@ -39,6 +49,10 @@ class ConcreteController(ControllerBase):
 
     def reset(self) -> None:
         self.reset_called = True
+        self.current_state = BilliardStatus.RESET
+
+    def get_current_state(self) -> BilliardStatus:
+        return self.current_state
 
 
 @pytest.fixture
@@ -69,6 +83,10 @@ class TestControllerBase:
         # Assert
         assert isinstance(controller, ControllerBase)
 
+    def test_subclass_without_get_current_state_cannot_be_instantiated(self):
+        with pytest.raises(TypeError):
+            MissingCurrentStateController()
+
     def test_get_action_accepts_observation_and_returns_action(
         self,
         observation: Observation,
@@ -94,3 +112,9 @@ class TestControllerBase:
 
         # Assert
         assert controller.reset_called is True
+        assert controller.get_current_state() is BilliardStatus.RESET
+
+    def test_get_current_state_returns_domain_state(self):
+        controller = ConcreteController()
+
+        assert controller.get_current_state() is BilliardStatus.IDLE

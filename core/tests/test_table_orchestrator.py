@@ -5,6 +5,7 @@ import pytest
 from core.models.action import Action
 from core.models.billiard_state import BilliardStatus
 from core.models.observation import Observation
+from core.controllers.controller_base import ControllerBase
 from core.services.error_state import ErrorState
 from core.services.table_orchestrator import (
     DemoTableOrchestrator,
@@ -35,7 +36,7 @@ def _action(should_execute_action: bool) -> Action:
 
 @pytest.fixture
 def script_controller() -> MagicMock:
-    return MagicMock()
+    return MagicMock(spec=ControllerBase)
 
 
 @pytest.fixture

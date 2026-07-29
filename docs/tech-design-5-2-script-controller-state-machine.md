@@ -68,6 +68,10 @@ WAITING   → RESET    : observation.is_ball_moving == False
 
 - **`ControllerBase` 的實作只分兩種決策風格**：狀態機操作（`ScriptController`，本文件描述的對象）與衝量式操作，這個分類跟「有沒有手臂」無關。
 - **`ScriptController` 是純決策類別**：建構子不收任何參數（不再依賴 `ArticulationAPI`），`get_action(observation) -> Action` 只讀 `Observation`、只回傳 `Action`，內部不呼叫任何執行層 API，因此不會拋出執行層例外。
+- **`ControllerBase` 定義完整生命週期契約**：`get_action()`、
+  `get_current_state() -> BilliardStatus`、`reset()`。`get_action()` 可以同步
+  轉換狀態；Orchestrator 會在其後立即讀取 `get_current_state()`，取得該
+  `Action` 對應的分派狀態。此項於 2026-07-29 的 #111 介面檢查補正。
 - **執行（如何把 Action 變成物理動作）是下游職責，依桌子類型分流**：
   - Demo 桌：將 `Action` 解算為手臂路徑規劃，再呼叫 `ArticulationAPI` 操作手臂（對應 #95 `ArticulationAPIImpl`、#96/#97 手臂 AIMING/STRIKING，Milestone B）。
   - 訓練桌：將 `Action` 直接轉換為母球衝量，餵入 RL 訓練迴圈更新 Model（對應 #177）。

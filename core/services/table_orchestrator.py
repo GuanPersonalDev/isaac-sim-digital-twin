@@ -16,7 +16,7 @@ from .rolling_resistance_service import RollingResistanceService
 
 class TableOrchestrator(ABC):
     """
-    共用執行骨架：取得 Action → 依 ScriptController.get_current_state() 分派下游動作
+    共用執行骨架：取得 Action → 依 ControllerBase.get_current_state() 分派下游動作
     → 查詢球是否還在移動 → 查詢下游動作是否完成 → 組裝下一個 tick 的 Observation。
     差異部分（RESET 的手臂處理、AIMING/STRIKING 的實際動作、動作完成判定）交由子類別實作。
     """
@@ -70,7 +70,7 @@ class TableOrchestrator(ABC):
     def reset(self) -> None:
         """
         外部重新初始化入口，必須同時清除 error_state 與重置狀態機：
-        ScriptController.get_action() 判斷 has_error 優先於 current_state，
+        ControllerBase.get_action() 的具體實作可能優先處理 has_error，
         只清一邊會讓狀態機瞬間又跳回 ERROR。
         """
         self._error_state.clear()

@@ -15,13 +15,13 @@
 單一撞球桌（Demo 桌／訓練桌）的每 tick 執行迴圈由三個角色分工組成：
 
 1. **`ObservationBuilder`**：每個 tick 開始時，即時查詢所有下游狀態（球位置、是否還在移動、下游動作是否完成、是否為初始擺球狀態、是否有錯誤），完整生成一份 `Observation`（不接受任何既有值，永遠從頭組裝）。
-2. **`TableOrchestrator`**：拿到 `Observation` 後，呼叫 `ScriptController.get_action()` 取得純決策結果 `Action`，再依 `ScriptController.get_current_state()` 回傳的 `BilliardStatus` 把 `Action` 轉譯成真正的下游副作用（球位置重置、手臂歸位、瞄準、擊球）。`step()` 只負責「決策 + 執行動作」，不組裝／回傳 `Observation`。
+2. **`TableOrchestrator`**：拿到 `Observation` 後，透過 `ControllerBase.get_action()` 取得純決策結果 `Action`，再依 `ControllerBase.get_current_state()` 回傳的 `BilliardStatus` 把 `Action` 轉譯成真正的下游副作用（球位置重置、手臂歸位、瞄準、擊球）。`step()` 只負責「決策 + 執行動作」，不組裝／回傳 `Observation`。
 3. **`TableRuntime`**：不持有任何狀態，單純把上述兩者串起來——`tick()` 呼叫 `ObservationBuilder.build()` 取得本次 `Observation`，再傳給 `TableOrchestrator.step()` 執行。
 
 這個設計填補了 Issue #99 遺留的缺口——`TableBallSet.reset()` 與 `UR5Robot.reset()`/`is_reset_complete()` 目前都只是「有能力被呼叫」，先前沒有生產程式碼真的呼叫它們——並補上執行期間的錯誤處理（`ErrorState`：下游動作拋例外時記錄但不中斷其他桌子）與外部重新初始化入口（`TableOrchestrator.reset()`）。
 
 本次（Block 5 任務 5-9）的**實作範圍**：
-- 已完成：RESET 狀態的完整資料流（`ScriptController.get_current_state()`、`TableOrchestrator`/`DemoTableOrchestrator`/`TrainingTableOrchestrator` 骨架、`Observation` 死欄位清理、`TableBallSet` 世界偏移量修正）。
+- 已完成：RESET 狀態的完整資料流（`ControllerBase.get_current_state()` 契約與 `ScriptController` 實作、`TableOrchestrator`/`DemoTableOrchestrator`/`TrainingTableOrchestrator` 骨架、`Observation` 死欄位清理、`TableBallSet` 世界偏移量修正）。
 - 本次待實作：`ErrorState`、`ObservationBuilder`（含 Demo/Training 兩種子類別）、`TableOrchestrator`/`TrainingTableOrchestrator` 的錯誤處理與 `reset()` 支援、`TableRuntime`、兩個缺口 getter、Extension 端訓練桌的 timeline play/stop 生命週期串接。
 - 明確排除在本次範圍外：Demo 桌的完整 `TableRuntime` 組裝與 `ArticulationAPI` 注入方式（留待 #96/#97 手臂操作實作時處理）、AIMING/STRIKING 的實際手臂動作內容。
 
@@ -31,8 +31,8 @@
 
 | 模組 | 所在層級 | 職責 | 檔案路徑 | 狀態 |
 |---|---|---|---|---|
-| `ScriptController.get_current_state()` | core/controllers | 回傳 `self._current_state`（`BilliardStatus`），供 `TableOrchestrator.step()` 查詢後分派下游動作 | `core/controllers/script_controller.py` | 已完成 |
-| `TableOrchestrator`（抽象基底） | core/services | 共用執行迴圈：呼叫 `ScriptController.get_action()`、依狀態分派下游動作、`try/except` 包住下游動作並回報 `ErrorState`、提供統一 `reset()` 入口 | `core/services/table_orchestrator.py` | 骨架已完成／`ErrorState` 與 `reset()` 支援待實作 |
+| `ControllerBase.get_current_state()` | core/controllers | 定義回傳 `BilliardStatus` 的共同契約；`ScriptController` 回傳 `self._current_state`，未來 `ModelController` 必須提供相同行為 | `core/controllers/controller_base.py`、`script_controller.py` | 已完成 |
+| `TableOrchestrator`（抽象基底） | core/services | 只依賴 `ControllerBase` 的三個生命週期方法，依狀態分派下游動作、`try/except` 包住下游動作並回報 `ErrorState`、提供統一 `reset()` 入口 | `core/services/table_orchestrator.py` | 已完成 |
 | `DemoTableOrchestrator` | core/services | Demo 桌差異實作：RESET 呼叫 `UR5Robot.reset()`；AIMING/STRIKING 僅定義介面（留給 #96/#97） | `core/services/table_orchestrator.py` | 骨架已完成／`ErrorState` 支援待實作 |
 | `TrainingTableOrchestrator` | core/services | 訓練桌差異實作：RESET/AIMING no-op 或恆真，STRIKING 呼叫 `ImpulseStrikingService.strike()` | `core/services/table_orchestrator.py` | 骨架已完成／`ErrorState` 支援待實作 |
 | `ErrorState`（新元件） | core/services | 集中記錄下游執行例外：`mark_error()`（log + 記錄，不重拋）、`has_error()`、`get_last_exception()`、`clear()` | `core/services/error_state.py` | 待實作 |
@@ -53,12 +53,18 @@
 
 ## 3. 類別設計
 
-### ScriptController.get_current_state()（已完成）
+### ControllerBase.get_current_state()（已完成）
 
-**職責：** 回傳目前狀態機所在的 `BilliardStatus`，狀態單一事實來源維持在 `ScriptController` 內部。
+**職責：** 要求所有 Controller 回傳目前所在的 `BilliardStatus`。狀態單一
+事實來源維持在具體 Controller 內部，不複製到 `Observation` 或 `Action`。
 
 **介面（現況程式碼）：**
 ```python
+class ControllerBase(ABC):
+    @abstractmethod
+    def get_current_state(self) -> BilliardStatus: ...
+
+
 class ScriptController(ControllerBase):
     def __init__(self) -> None:
         self._current_state = BilliardStatus.RESET
@@ -73,9 +79,12 @@ class ScriptController(ControllerBase):
         self._change_state(BilliardStatus.RESET)
 ```
 
+`get_action()` 可以同步轉換狀態；`TableOrchestrator.step()` 在其後立即呼叫
+`get_current_state()`，因此回傳值必須是該 `Action` 對應的分派狀態。
+
 **依賴：**
 - 輸入來源：無（純讀內部欄位）
-- 輸出去向：`TableOrchestrator.step()` 用於分派下游動作；`TableOrchestrator.reset()` 呼叫 `script_controller.reset()`
+- 輸出去向：`TableOrchestrator.step()` 用於分派下游動作；`TableOrchestrator.reset()` 呼叫 Controller 的 `reset()`
 
 ---
 
@@ -626,7 +635,7 @@ Extension（billiard_digital_twin.py）
 
 ## 8. 待決定事項
 
-- [x] **狀態分派的資料來源（已定案 2026-07-21）**：採方案 (b)——`ScriptController` 新增公開方法 `get_current_state() -> BilliardStatus`，回傳 `self._current_state`，供 `TableOrchestrator.step()` 查詢後分派下游動作。理由：狀態單一事實來源維持在 `ScriptController` 內部，不需要在 `Observation`/`Action` 額外複製一份狀態、不用擔心同步問題，改動範圍最小。此方法尚未實作，屬於 `TableOrchestrator` 實作前置工作的一部分。
+- [x] **狀態分派的資料來源（已定案 2026-07-21，#111 於 2026-07-29 補正介面）**：採方案 (b)——由 Controller 提供 `get_current_state() -> BilliardStatus`，供 `TableOrchestrator.step()` 查詢後分派下游動作。理由：狀態單一事實來源維持在具體 Controller 內部，不需要在 `Observation`/`Action` 額外複製一份狀態、不用擔心同步問題。最初只將方法加到 `ScriptController`；#111 檢查發現 `TableOrchestrator` 以 `ControllerBase` 型別呼叫此方法，因此已將它提升為 `ControllerBase` 的抽象契約。
 - [x] **`TableBallSet.reset(positions)` 座標來源與世界偏移量（已定案 2026-07-22）**：`_reset_balls()` 呼叫 `ball_position_provider.get_positions()`（`BreakShotPositionProvider`）取得桌台相對座標，直接傳給 `table_ball_set.reset(positions)`。過程中發現既有 bug：`TableBallSet.build()`/`reset()` 原本完全不處理世界偏移量，全靠呼叫端（`BilliardTable.__init__`）自己在呼叫 `build()` 前手動加總 `x_pos`/`y_pos`，但 `TableOrchestrator._reset_balls()` 繞過 `BilliardTable`、直接呼叫 `TableBallSet.reset()`，導致非原點桌子（Demo 桌以外的所有訓練桌）reset 後球會出現在錯誤的世界座標。修法：`TableBallSet` 建構子新增 `table_position: tuple[float, float] = (0.0, 0.0)`，`build()`/`reset()` 內部統一套用偏移量，兩者語意從此一致（皆吃「相對桌台座標」）；`BilliardTable.__init__` 拿掉手動偏移量加總，改傳 `table_position` 給 `TableBallSet`。
 - [ ] `DemoTableOrchestrator` 建構子是否需要同時注入 `UR5Robot` 與 `ArticulationAPI`，或只需注入 `UR5Robot`（`ArticulationAPI` 透過 `UR5Robot` 內部間接使用）——AIMING/STRIKING 的 `move_to_pose`/`execute_strike` 目前只存在於 `ArticulationAPI`，`UR5Robot` 本身未包裝這两个方法，待 #96/#97 实作時一併確認是否要在 `UR5Robot` 新增對應包裝方法。
 - [ ] Extension tick／physics callback 尚未存在，`TableOrchestrator.step()` 目前沒有任何生產程式碼呼叫入口，串接時機留待後續任務。
