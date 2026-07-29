@@ -62,7 +62,7 @@ class ScriptController(ControllerBase):
     def _aiming_state_action_result(self, observation: Observation) -> Action:
         result = self._generate_action_result()
         if observation.is_motion_complete:
-            result.cue_speed = self.MAX_CUE_BALL_SPEED
+            result.cue_ball_speed = self.MAX_CUE_BALL_SPEED
             result.should_execute_action = True
             self._change_state(BilliardStatus.STRIKING)
         
@@ -90,7 +90,13 @@ class ScriptController(ControllerBase):
         return result
         
     def _generate_action_result(self) -> Action:
-        return Action(cue_speed=0, position_offset=[0, 0], shot_angle=0, cue_ball_placement=[0, 0], should_execute_action=False)
+        return Action(
+            cue_ball_placement=[0, 0],
+            shot_angle=0,
+            cue_ball_speed=0,
+            position_offset=[0, 0],
+            should_execute_action=False,
+        )
 
     def reset(self):
         self._change_state(BilliardStatus.RESET)

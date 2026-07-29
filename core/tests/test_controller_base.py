@@ -30,7 +30,7 @@ class ConcreteController(ControllerBase):
 
     def get_action(self, observation: Observation) -> Action:
         return Action(
-            cue_speed=observation.cue_ball_position[0],
+            cue_ball_speed=observation.cue_ball_position[0],
             shot_angle=observation.cue_ball_position[1],
             position_offset=[observation.cue_ball_position[2], 0.0],
             cue_ball_placement=[0.0, 0.0],
@@ -81,7 +81,7 @@ class TestControllerBase:
 
         # Assert
         assert isinstance(action, Action)
-        assert action.cue_speed == observation.cue_ball_position[0]
+        assert action.cue_ball_speed == observation.cue_ball_position[0]
         assert action.shot_angle == observation.cue_ball_position[1]
         assert action.position_offset == [observation.cue_ball_position[2], 0.0]
 

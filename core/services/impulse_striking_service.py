@@ -11,13 +11,17 @@ def compute_cue_ball_velocities(action: Action, ball_radius: float, spin_efficie
     forward = (-math.sin(theta), math.cos(theta), 0.0)
     side = (math.cos(theta), math.sin(theta), 0.0)
     
-    speed = action.cue_speed
+    cue_ball_speed = action.cue_ball_speed
     a = action.position_offset[0] * ball_radius
     b = action.position_offset[1] * ball_radius
     
-    linear_velocity = [speed * forward[0], speed * forward[1], speed * forward[2]]
+    linear_velocity = [
+        cue_ball_speed * forward[0],
+        cue_ball_speed * forward[1],
+        cue_ball_speed * forward[2],
+    ]
     
-    k = spin_efficiency * 5.0 * speed / (2 * ball_radius**2)
+    k = spin_efficiency * 5.0 * cue_ball_speed / (2 * ball_radius**2)
     angular_velocity = [
         -k * a * side[0],
         -k * a * side[1],

@@ -1,3 +1,4 @@
+from dataclasses import fields
 from unittest.mock import MagicMock, patch
 
 from core.models.action import Action
@@ -90,22 +91,31 @@ class TestObservation:
 
 
 class TestAction:
+    def test_field_order_matches_rl_contract_and_runtime_flag_is_last(self):
+        assert [field.name for field in fields(Action)] == [
+            "cue_ball_placement",
+            "shot_angle",
+            "cue_ball_speed",
+            "position_offset",
+            "should_execute_action",
+        ]
+
     def test_create_valid_action_preserves_shot_command(self):
         action = Action(
-            cue_speed=2.5,
+            cue_ball_speed=2.5,
             shot_angle=42.0,
             position_offset=[0.01, -0.02],
             cue_ball_placement=[0.1, -0.2],
             should_execute_action=False,
         )
 
-        assert action.cue_speed == 2.5
+        assert action.cue_ball_speed == 2.5
         assert action.shot_angle == 42.0
         assert len(action.position_offset) == 2
 
     def test_create_with_position_offset_preserves_two_values(self):
         action = Action(
-            cue_speed=2.5,
+            cue_ball_speed=2.5,
             shot_angle=42.0,
             position_offset=[0.01, -0.02],
             cue_ball_placement=[0.1, -0.2],
@@ -114,16 +124,16 @@ class TestAction:
 
         assert action.position_offset == [0.01, -0.02]
 
-    def test_create_with_zero_cue_speed_preserves_boundary_value(self):
+    def test_runtime_noop_allows_zero_cue_ball_speed(self):
         action = Action(
-            cue_speed=0.0,
+            cue_ball_speed=0.0,
             shot_angle=42.0,
             position_offset=[0.0, 0.0],
             cue_ball_placement=[0.0, 0.0],
             should_execute_action=False,
         )
 
-        assert action.cue_speed == 0.0
+        assert action.cue_ball_speed == 0.0
 
 
 class TestShotResult:

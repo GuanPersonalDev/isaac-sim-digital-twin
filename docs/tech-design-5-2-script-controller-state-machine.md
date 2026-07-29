@@ -86,7 +86,7 @@ WAITING   → RESET    : observation.is_ball_moving == False
 
 `Action` 新增一個 `bool` 欄位 `should_execute_action`，表示「此 tick 下游是否需要真的觸發一次動作」——語意不限於手臂，Demo 桌（手臂路徑規劃）與訓練桌（衝量式擊球，#177）皆共用同一個欄位判斷「是否為狀態剛轉換的觸發 tick」，避免同一動作在同一狀態持續的多個 tick 內被重複觸發。
 
-`STRIKING` 狀態固定輸出 `cue_speed = ScriptController.MAX_CUE_BALL_SPEED`（`3.3392`，2026-07-26 換裝 Barrett WAM + 差動 IK 後實測母球初速上限，取代原 Issue #176 UR5 實測的 `1.313`）、`shot_angle = 0`、`position_offset = [0.0, 0.0]`；非零的角度/位移偏移量欄位保留給未來 `ModelController`（RL 模型）輸出使用，`ScriptController` 本身不做動態計算。
+`STRIKING` 狀態固定輸出 `cue_ball_speed = ScriptController.MAX_CUE_BALL_SPEED`（`3.3392`，2026-07-26 換裝 Barrett WAM + 差動 IK 後實測母球初速上限，取代原 Issue #176 UR5 實測的 `1.313`）、`shot_angle = 0`、`position_offset = [0.0, 0.0]`；非零的角度/位移偏移量欄位保留給未來 `ModelController`（RL 模型）輸出使用，`ScriptController` 本身不做動態計算。
 
 `ArticulationAPI` **不需要**新增 `stop()`（曾於討論中提出，後定案改由下游在偵測到異常時直接回寫 `Observation.has_error`，不需要 `ScriptController` 呼叫任何停止方法）。
 
@@ -96,12 +96,12 @@ WAITING   → RESET    : observation.is_ball_moving == False
 
 | 欄位 | 型別 | 用途 |
 |---|---|---|
-| `cue_speed` | `float` | 出桿速度 |
-| `shot_angle` | `float` | 出桿方向角度（相對桌面水平角） |
-| `position_offset` | `list[float]`（2 維） | 擊球位置偏移——打在白球表面的上下／左右偏移量（撞球「加塞」），與世界座標無關 |
-| `cue_ball_placement` | `list[float]`（2 維，新增） | 白球擺放位置 XY（Kitchen 區內） |
+| `cue_ball_placement` | `list[float]`（2 維） | RL 索引 0–1；母球桌台相對 XY（m），球心須位於 Kitchen 安全範圍 |
+| `shot_angle` | `float` | RL 索引 2；`[0, 360)` 度，`0°` 朝桌台 `+Y`，正角朝 `-X` 增加 |
+| `cue_ball_speed` | `float` | RL 索引 3；母球目標初速，範圍 `0.5–3.3392 m/s` |
+| `position_offset` | `list[float]`（2 維） | RL 索引 4–5；依序為上下／左右偏移，範圍各為 `[-0.5, 0.5]` 球半徑 |
 | `should_execute_action` | `bool` | 見 5.3 節 |
 
-`cue_speed` + `shot_angle` + `position_offset`（2）+ `cue_ball_placement`（2）＝ 6 維，對應 RL Action 空間；`should_execute_action` 是 `ScriptController` 執行層額外需要的欄位（Demo 桌、訓練桌皆共用），不計入 RL 的 6 維。
+`cue_ball_placement`（2）+ `shot_angle` + `cue_ball_speed` + `position_offset`（2）＝ 6 維，對應 RL Action 空間；`should_execute_action` 是 `ScriptController` 執行層額外需要的欄位（Demo 桌、訓練桌皆共用），不計入 RL 的 6 維。執行期 no-op 可使用 `cue_ball_speed = 0.0`；RL action space 的正規化、裁切及 `gymnasium.spaces.Box` 由 `BilliardEnv`（#122）負責。
 
 `RigidBodyAPI`（`core/ports/rigid_body_api.py`）新增 `set_velocities(prim_path, linear_velocity, angular_velocity)`，供 Issue #177（impulse-based 擊球）直接對母球賦速使用。

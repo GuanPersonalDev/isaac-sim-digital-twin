@@ -229,7 +229,7 @@ Phase 3 實作 `ScriptController`，Phase 4 新增 `ModelController`（載入 RL
 |---|---|---|---|
 | 執行期 Observation | `core/models/observation.py` | TableRuntime／ScriptController 狀態格式已完成 | 保留執行期控制旗標，不直接作為 RL 向量 |
 | RL Observation Encoder | `core/services/rl_observation_encoder.py` | Block 7：將既有 Observation 轉為固定 20 維球位向量 | 接上 BilliardEnv 訓練資料 pipeline |
-| Action Space 定義 | `core/models/action.py` | 格式定義完成 | 接上 RL policy 輸出 |
+| Action Space 定義 | `core/models/action.py` | 物理域 6 維：母球擺位 XY、方向角、母球目標初速、上下／左右偏移；`should_execute_action` 不計入 | 由 `BilliardEnv` 定義 Box、正規化與裁切後接上 RL policy 輸出 |
 | Controller 抽換點 | `core/controllers/controller_base.py` | `ScriptController` 實作 | 新增 `ModelController` |
 | BallPositionProvider | `core/services/ball_position_provider.py` | `BreakShotPositionProvider` 實作 | `LivePositionProvider` 供其他情境使用 |
 

@@ -91,7 +91,7 @@
 | 7-1b | Block 7 | 實作 RigidBodyAPIImpl（isaac_sim_impl_6_0/，查詢球的位置與速度） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #156 |
 | 7-2b | Block 7 | 取消 LivePositionProvider（由 ObservationBuilder + RigidBodyAPI 即時查詢流程取代） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #157 |
 | 7-2 | Block 7 | 實作 RL Observation Encoder（既有 Observation → 20 維）+ Unit Test | 1h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #109 |
-| 7-3 | Block 7 | 確認 Action 資料格式（6 維，速度上限依 #176 實測） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-01 | #110 |
+| 7-3 | Block 7 | 確認 Action 資料格式（6 維，母球初速上限 3.3392 m/s） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #110 |
 | 7-4 | Block 7 | 確認 ControllerBase：get_action(observation) → action 足以支撐未來 ModelController | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-02 | #111 |
 | 7-5 | Block 7 | 在 ScriptController 中加入 Observation 收集與 Action 格式輸出 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-02 | #112 |
 | 9-1 | Block 9 | 研究 Isaac Lab 環境設計規範（gym.Env 介面） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-02 | #120 |
@@ -111,7 +111,7 @@
 | 4-7 | Block 4 | 確認 UR5 + 球桿基座位置（併入 B-1 可行性地圖） | 0.5h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-08 | #91 |
 | 9-8 | Block 9 | 實作 ModelController（載入訓練模型替換 ScriptController） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #127 |
 | 9-9 | Block 9 | 確認 ModelController 執行效果優於隨機參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #128 |
-| 8-1 | Block 8 | 實作擊球參數的可調介面（桿速範圍角度範圍位置偏移範圍） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #114 |
+| 8-1 | Block 8 | 實作 Action 物理域參數設定（母球擺位初速角度擊球偏移） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #114 |
 | 8-2 | Block 8 | HUD 新增參數控制面板（可即時調整擊球參數） | 1h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #115 |
 | 8-3 | Block 8 | HUD 新增 ShotResult 顯示（散開分數白球狀態9號球狀態） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #116 |
 | 6-6 | Block 6 | Debug Menu 新增「顯示當前 ShotResult」按鈕手動驗證計算正確性 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-09 | #107 |

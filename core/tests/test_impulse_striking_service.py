@@ -11,13 +11,13 @@ from core.services.impulse_striking_service import (
 
 
 def _action(
-    cue_speed: float = 1.0,
+    cue_ball_speed: float = 1.0,
     shot_angle: float = 0.0,
     position_offset: tuple[float, float] = (0.0, 0.0),
     cue_ball_placement: tuple[float, float] = (0.0, 0.0),
 ) -> Action:
     return Action(
-        cue_speed=cue_speed,
+        cue_ball_speed=cue_ball_speed,
         shot_angle=shot_angle,
         position_offset=list(position_offset),
         cue_ball_placement=list(cue_ball_placement),
@@ -28,7 +28,7 @@ def _action(
 class TestLinearVelocity:
     def test_zero_angle_travels_along_positive_y(self):
         # Arrange
-        action = _action(cue_speed=2.0, shot_angle=0.0)
+        action = _action(cue_ball_speed=2.0, shot_angle=0.0)
 
         # Act
         linear, _ = compute_cue_ball_velocities(action, ball_radius=1.0)
@@ -38,7 +38,7 @@ class TestLinearVelocity:
 
     def test_90_degree_angle_travels_along_negative_x(self):
         # Arrange
-        action = _action(cue_speed=2.0, shot_angle=90.0)
+        action = _action(cue_ball_speed=2.0, shot_angle=90.0)
 
         # Act
         linear, _ = compute_cue_ball_velocities(action, ball_radius=1.0)
@@ -46,9 +46,9 @@ class TestLinearVelocity:
         # Assert
         assert linear == pytest.approx([-2.0, 0.0, 0.0], abs=1e-9)
 
-    def test_linear_velocity_magnitude_equals_cue_speed_regardless_of_angle(self):
+    def test_linear_velocity_magnitude_equals_cue_ball_speed_regardless_of_angle(self):
         # Arrange
-        action = _action(cue_speed=3.5, shot_angle=137.0)
+        action = _action(cue_ball_speed=3.5, shot_angle=137.0)
 
         # Act
         linear, _ = compute_cue_ball_velocities(action, ball_radius=1.0)
@@ -59,8 +59,8 @@ class TestLinearVelocity:
 
     def test_position_offset_does_not_affect_linear_velocity(self):
         # Arrange
-        no_offset = _action(cue_speed=2.0, shot_angle=20.0, position_offset=(0.0, 0.0))
-        with_offset = _action(cue_speed=2.0, shot_angle=20.0, position_offset=(0.4, -0.3))
+        no_offset = _action(cue_ball_speed=2.0, shot_angle=20.0, position_offset=(0.0, 0.0))
+        with_offset = _action(cue_ball_speed=2.0, shot_angle=20.0, position_offset=(0.4, -0.3))
 
         # Act
         linear_no_offset, _ = compute_cue_ball_velocities(no_offset, ball_radius=1.0)
@@ -73,7 +73,7 @@ class TestLinearVelocity:
 class TestAngularVelocity:
     def test_zero_offset_produces_zero_angular_velocity(self):
         # Arrange
-        action = _action(cue_speed=2.0, shot_angle=45.0, position_offset=(0.0, 0.0))
+        action = _action(cue_ball_speed=2.0, shot_angle=45.0, position_offset=(0.0, 0.0))
 
         # Act
         _, angular = compute_cue_ball_velocities(action, ball_radius=1.0)
@@ -83,7 +83,7 @@ class TestAngularVelocity:
 
     def test_top_offset_at_zero_angle_spins_about_horizontal_x_axis_only(self):
         # Arrange
-        action = _action(cue_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.0))
+        action = _action(cue_ball_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.0))
 
         # Act
         _, angular = compute_cue_ball_velocities(action, ball_radius=1.0)
@@ -97,7 +97,7 @@ class TestAngularVelocity:
         # Arrange / Act / Assert
         for shot_angle in (0.0, 33.0, 90.0, 210.0):
             action = _action(
-                cue_speed=2.0, shot_angle=shot_angle, position_offset=(0.0, 0.3)
+                cue_ball_speed=2.0, shot_angle=shot_angle, position_offset=(0.0, 0.3)
             )
             _, angular = compute_cue_ball_velocities(action, ball_radius=1.0)
 
@@ -107,7 +107,7 @@ class TestAngularVelocity:
 
     def test_spin_efficiency_scales_angular_velocity_linearly(self):
         # Arrange
-        action = _action(cue_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
+        action = _action(cue_ball_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
 
         # Act
         _, angular_full = compute_cue_ball_velocities(
@@ -123,7 +123,7 @@ class TestAngularVelocity:
 
     def test_larger_ball_radius_reduces_angular_velocity_for_same_offset_ratio(self):
         # Arrange
-        action = _action(cue_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.0))
+        action = _action(cue_ball_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.0))
 
         # Act
         _, angular_small_radius = compute_cue_ball_velocities(action, ball_radius=0.5)
@@ -140,7 +140,7 @@ class TestImpulseStrikingServiceStrike:
         service = ImpulseStrikingService(
             rigid_body_api, cue_ball_prim="/World/CueBall", ball_radius=1.0
         )
-        action = _action(cue_speed=2.0, shot_angle=0.0, cue_ball_placement=(0.1, -0.2))
+        action = _action(cue_ball_speed=2.0, shot_angle=0.0, cue_ball_placement=(0.1, -0.2))
 
         # Act
         service.strike(action, table_x=5.0, table_y=3.0, table_z=0.75)
@@ -159,7 +159,7 @@ class TestImpulseStrikingServiceStrike:
         service = ImpulseStrikingService(
             rigid_body_api, cue_ball_prim="/World/CueBall", ball_radius=1.0
         )
-        action = _action(cue_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
+        action = _action(cue_ball_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
 
         # Act
         service.strike(action, table_x=0.0, table_y=0.0, table_z=0.75)
@@ -198,7 +198,7 @@ class TestImpulseStrikingServiceStrike:
             ball_radius=1.0,
             spin_efficiency=0.5,
         )
-        action = _action(cue_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
+        action = _action(cue_ball_speed=2.0, shot_angle=0.0, position_offset=(0.2, 0.3))
 
         # Act
         service.strike(action, table_x=0.0, table_y=0.0, table_z=0.75)

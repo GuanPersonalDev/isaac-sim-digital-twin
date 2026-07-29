@@ -2,6 +2,11 @@
 
 > 本文件為 GitHub Issue #176 的完整開發規格，內容彙整自 Issue body 與兩則規劃補全 comment（2026-07-16 定案）。
 > Issue: https://github.com/GuanPersonalDev/isaac-sim-digital-twin/issues/176
+>
+> **歷史文件提示（2026-07-29）：** 本文件記錄已淘汰的 UR5 量測規劃與
+> `1.313 m/s` 結論。專案換裝 Barrett WAM 後，#101 已將 RL Action 的速度
+> 語意定為「母球目標初速」，目前範圍為 `0.5–3.3392 m/s`；#110 與
+> `phase3-task-breakdown.md` 的現行規格優先於本文件。
 
 ---
 

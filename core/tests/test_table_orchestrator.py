@@ -25,7 +25,7 @@ def _observation() -> Observation:
 
 def _action(should_execute_action: bool) -> Action:
     return Action(
-        cue_speed=0.0,
+        cue_ball_speed=0.0,
         shot_angle=0.0,
         position_offset=[0.0, 0.0],
         cue_ball_placement=[0.0, 0.0],

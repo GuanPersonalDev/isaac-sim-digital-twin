@@ -53,13 +53,20 @@ TableRuntime／ScriptController 使用的執行期狀態，兩者不得混為同
 
 ### Action（6個數字）
 
-| 資料 | 數量 | 說明 |
-|---|---|---|
-| 白球擺放位置 XY | 2 | Kitchen 區內（桌面頭端 1/4 範圍） |
-| 出桿方向角度 | 1 | 相對桌面的水平角度 |
-| 出桿速度 | 1 | 球桿擊球時的速度 |
-| 擊球位置偏移 | 2 | 擊打白球的上下左右偏移量 |
-| **總計** | **6** | |
+| 索引 | `Action` 欄位 | 資料 | 物理域範圍與語意 |
+|---:|---|---|---|
+| 0 | `cue_ball_placement[0]` | 母球擺位 X | 桌台相對座標；球心安全範圍 `[-0.606425, 0.606425] m` |
+| 1 | `cue_ball_placement[1]` | 母球擺位 Y | Kitchen 球心範圍 `[-1.241425, -0.635] m` |
+| 2 | `shot_angle` | 擊球方向角 | `[0, 360)` 度；`0°` 朝桌台 `+Y`，正角朝 `-X` 方向增加 |
+| 3 | `cue_ball_speed` | 母球目標初速 | `[0.5, 3.3392] m/s` |
+| 4 | `position_offset[0]` | 上下擊球偏移 | `[-0.5, 0.5]`，單位為球半徑比例 |
+| 5 | `position_offset[1]` | 左右擊球偏移 | `[-0.5, 0.5]`，單位為球半徑比例 |
+| | | **總計** | **6** |
+
+此處定義的是 RL Policy 使用的物理域向量。`Action.should_execute_action` 是
+TableRuntime／ScriptController 的執行期控制旗標，不計入 6 維向量。執行期
+no-op 可使用 `cue_ball_speed = 0.0`；RL action space 的正規化、裁切與
+`gymnasium.spaces.Box` 由後續 `BilliardEnv`（#122）負責。
 
 ### Reward Function
 
@@ -120,7 +127,7 @@ TableRuntime／ScriptController 使用的執行期狀態，兩者不得混為同
 
 | 項目 | 數值 |
 |---|---|
-| 出桿速度範圍（母球初速） | 0.5 ~ 3.3392 m/s（2026-07-26 換裝 Barrett WAM + 差動 IK 取代 RMPflow 後實測：預設姿態桿尖峰值速度 2.5302 m/s，套用真實撞球動量傳遞公式 v_ball=v_cue×(1+e)×M桿/(M桿+m球)（球桿 0.5kg、母球 0.163kg、皮革頭恢復係數 e=0.75）換算為母球初速上限 3.3392 m/s，已寫入 `ScriptController.MAX_CUE_BALL_SPEED`。原 UR5 直線推桿版本 1.313 m/s 已淘汰。姿態仍有優化空間未窮舉，離真實開球水準（業餘 ~7.6 m/s、職業 ~8.9–11.2 m/s）仍有明顯差距，詳見對應調查紀錄） |
+| 母球目標初速範圍 | 0.5 ~ 3.3392 m/s（2026-07-26 換裝 Barrett WAM + 差動 IK 取代 RMPflow 後實測：預設姿態桿尖峰值速度 2.5302 m/s，套用真實撞球動量傳遞公式 v_ball=v_cue×(1+e)×M桿/(M桿+m球)（球桿 0.5kg、母球 0.163kg、皮革頭恢復係數 e=0.75）換算為母球初速上限 3.3392 m/s，已寫入 `ScriptController.MAX_CUE_BALL_SPEED`。原 UR5 直線推桿版本 1.313 m/s 已淘汰。姿態仍有優化空間未窮舉，離真實開球水準（業餘 ~7.6 m/s、職業 ~8.9–11.2 m/s）仍有明顯差距，詳見對應調查紀錄） |
 | 出桿角度範圍 | 0 ~ 360 度 |
 | 擊球位置偏移範圍 | ±0.5 球半徑 |
 | 靜止判定閾值 | 所有球速度 < 0.01 m/s |
@@ -208,7 +215,7 @@ TableRuntime／ScriptController 使用的執行期狀態，兩者不得混為同
 
 | # | 任務 | 預估 |
 |---|---|---|
-| 5-1 | 設計擊球參數資料格式（桿速 0.5–7m/s、角度 0–360°、位置偏移 ±0.5r）+ Unit Test | 0.5h |
+| 5-1 | 設計擊球參數資料格式（母球初速 0.5–3.3392m/s、角度 `[0, 360)`、位置偏移 ±0.5r）+ Unit Test | 0.5h |
 | 5-2 | 設計 `ScriptController` 狀態機（`IDLE` / `AIMING` / `STRIKING` / `WAITING` / `RESET` / `ERROR`） | 0.5h |
 | 5-3 | 撰寫狀態機 Unit Test（Mock `ArticulationAPI`） | 1h |
 | 5-4 | 實作 `ArticulationAPIImpl`（`isaac_sim_impl_6_0/`） | 0.5h |
@@ -260,7 +267,7 @@ TableRuntime／ScriptController 使用的執行期狀態，兩者不得混為同
 
 | # | 任務 | 預估 |
 |---|---|---|
-| 8-1 | 實作擊球參數的可調介面（桿速、角度、位置偏移可即時調整） | 0.5h |
+| 8-1 | 實作 Action 物理域參數設定（母球擺位、初速、角度、擊球偏移） | 0.5h |
 | 8-2 | HUD 新增參數控制面板 | 1h |
 | 8-3 | HUD 新增 ShotResult 顯示（散開分數、白球狀態、9號球狀態） | 0.5h |
 | 8-4 | 確認手動調整參數 → 擊球 → 結果顯示的完整流程 | 0.5h |
