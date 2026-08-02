@@ -22,3 +22,10 @@ Thumbs.db
 
 # Sub-agent docs (local only)
 docs/api-migration-agent.md
+
+# Secrets (local only, never commit)
+.env
+.env.*
+!.env.example
+*.key
+secrets/

@@ -2,17 +2,40 @@
 
 ## 排程規則
 
-- 7 月起：平日（一～五）1h／天，週六 4h（2×2h），週日 4h（2×2h）
-- 2026-07-13 依 `phase3-plan-risks-solutions.md` 全面重排：改為雙 Milestone 結構
-  - **Milestone A（RL 訓練）**：impulse-based（`set_velocities`）、無手臂、128 平行環境。**硬約束：7 月底前訓練收斂**（Wave 1 求職目標 8 月中倒推）
-  - **Milestone B（手臂執行，GitHub M7）**：UR5 + 球桿剛性連結、單一環境；可行性地圖 → 關節空間揮桿軌跡 → 真實接觸物理校正，約 4 週排入 8 月
-- 本週順序固定（訓練配置定案前置）：[4-8] 空揮測速（#176）→ [9-0] early termination 確認（#178）→ 完成後 A 訓練配置才算定案
-- Fallback 決策點：**8/02** A 收斂判定（#179）、**8/20** 揮桿軌跡判定（#181，不達標降檔位 c）、**8/23** 偏移精度判定（#182，不穩降檔位 b 固定中心）。檔位定義見 #183
-- Wave 1（8 月中）交付線：A 收斂成果 + 中途 Demo（篇6）+ README + B 進行中敘事；B 完成線 = fallback 檔位 (b)
-- 篇 5（Phase 2 完成文）不依賴 Phase 3，可立即發布，不佔本表開發時數
-- 排程結果：Wave 1 所需項目（Demo、篇6、README）於 **2026-08-12** 前完成；全部任務預計 **2026-09-06** 完成
-- ⚠️ **2026-07-14 重排（零緩衝）**：因新增 4-3d~4-3g（撞球桌/手臂職責拆分）5.5h 工作量，且 4-3e-impl/4-3e-test/4-3f 時數由 0.5h 上修為 1h，07-14 ~ 08-02（A-CP）共 19 天的額度被排到全滿，部分任務跨日拆半天完成（如 4-8、5-3、9-1、9-2、9-5）。**此區間沒有任何緩衝**，任一天延誤都會讓 A-CP（#179）超過 8/02 硬約束。使用者已確認接受此風險（不犧牲 4-3g/6-6/7-6 等非關鍵任務換取緩衝）。
-- 🔴 **2026-07-21 再次重排（A-CP 已突破硬約束）**：因 TableOrchestrator 後續設計新增 5-9b/5-9c/5-9d/5-9e 共 4 組（#196–#202）合計 7.5h 工作量，插入於 5-9-test（#195）與 5-9（#100）之間。依既有每日工時規則（平日 1h、週六/週日 4h）依序重排 5-9 之後所有任務，**A-CP（#179）從 2026-08-02 順延至 2026-08-08，超出「7 月底前訓練收斂」的硬約束 6 天**。使用者已決定採方案(a)全數順延，暫不壓縮其他任務或調整硬約束本身，待後續視實際進度再決定是否加速。B-1（#180）等 Milestone B（Block 13）任務維持原排程日期不變（其排程邏輯獨立於此處的逐日工時模型，未隨 A-CP 順延回推）。
+- 2026-08-01 全面重排（雲端訓練 + 週末制）。此前的規則（平日 1h/天、週六日各 4h、A 收斂硬約束 7/31、全部完成 9/06）**全數作廢**，以下為現行版本。
+- **工時模型**：平日（一～五）0.5h／天、週末（六日）5h／天。
+  - ⚠️ **平日 0.5h 只能巡檢，不排開發任務**。有效開發容量 = 週末日 × 5h。
+  - 2026-08-02 ~ 2026-09-19 共 14 個週末日 = **70h 有效容量**，工作量約 61h，名目緩衝 9h（13%）。
+  - 套 1.3× 歷史低估修正 → 約 79h，短缺約 9h ≈ 1.8 個週末日。**不做調整的達成率約 40–50%**。
+- **平日巡檢用途**：看雲端訓練 reward 曲線、確認 checkpoint 有寫入、GPU 是否掉線、費用累計；決定要不要調參重啟。不需開 Isaac Sim 的文書/測試工作也可放平日。
+- **加速槓桿（兩者疊加可補齊 9h 缺口，達成率升至 ~70%）**：
+  - 平日 0.5h → 1.0h：省 5–6h，**性價比最高**。再往 1.5h/2.0h 邊際效益快速遞減（平日可做的任務池本身有限）。
+  - sub-agent 委派：僅省 ~3.5h（unit-test 寫測試骨架、tech-doc 產 README 初稿、api-scanner、api-lookup）。**B-2 + B-3 共 26h 完全不可委派**——核心是「跑模擬 → 看行為 → 判斷對不對 → 調參」的閉環。
+- **訓練平台改為雲端**：RunPod Community RTX 4090（約 $0.34/hr，總成本估 $17–20），NVIDIA pre-built container `nvcr.io/nvidia/isaac-lab:3.0.0-beta2`（headless）。**本機不需安裝 Isaac Lab**。訓練在背景跑不佔工時：週末啟動 → 整週背景跑 → 下個週末收成果。需開頻繁 checkpoint（實例可能被回收），不訓練時終止實例。
+- **雙 Milestone 結構**
+  - **Milestone A（RL 訓練）**：impulse-based（`set_velocities`）、無手臂、雲端 1024+ 平行環境。
+  - **Milestone B（手臂執行，GitHub M7）**：UR5 + 球桿剛性連結、單一環境、**在本機跑**（需開 GUI 看物理行為）。承諾範圍 = fallback **(b)**。
+- **Fallback 檔位**：(a) 全功能含 spin 偏移 → **(b) 方向+速度正確、中心擊球、真實桿尖接觸 ← 承諾範圍** → (c) 空揮到位 + programmatic impulse。
+  - **(c) 已被否決**：手臂揮桿與球的運動在物理上無因果關係，技術面試被問「球是真的被打到的嗎」會答不出來。
+  - (b) 與 (c) 差 23.5h ≈ 5 個週末日，關鍵在 B-3——(b) 雖放棄 spin 但仍要求球是真的被桿尖打出去的，B-3 一項都省不掉。
+- **決策點**
+  - **2026-08-15 A-CP（#179）**：reward 曲線收斂或明確上升趨勢。**未收斂則直接帶不完美 policy 進入 Milestone B，不為 A 犧牲 B 的時間**——B 不依賴 A 的訓練結果，只依賴手臂本身。
+  - **2026-08-16 B-CP1（#180）**：IK 有解、後擺空間足夠支撐 (b) 檔位。
+  - **2026-08-29 B-CP2（#181）**：B-2 完工確認（動作連續、無關節限位衝突、擊球點速度在 #176 實測上限 1.313 m/s 內）。**這是完工確認，不是降級判斷點**。
+  - **2026-09-06 B-CP3（#182，最後防線）**：球的運動方向/速度與揮桿有清楚因果關係，同參數重複 3 次落點一致。**未達標不回頭砍到 (c)，改砍 Block 12 深度換時間**。
+- **Observation 設計變更（20 維 → 21 維）**：新增 `max_offset ∈ [0.0, 1.0]` 條件變數，用單一 policy 做 (a)/(b) 行為切換，取代「訓練兩個 policy」。
+  - **必須放在 observation，不可放在 action**（放 action 會讓 policy 自己選，它必然選滿檔）。
+  - 訓練時每 episode 從 `[0,1]` 均勻取樣；**環境端**負責把 policy 輸出的偏移量 clamp 到該上限。
+  - 推論時填入 #180 量到的手臂實際偏移能力（0.0 = 中心擊球 / 1.0 = 完整三檔）。
+  - 21 維組裝必須放 `core/` 共用層，訓練端與 Demo 端 import 同一份。**維度或欄位順序不一致時 policy 不報錯，只會安靜輸出垃圾動作**。
+- **已合併／作廢的任務（不再列於下表）**
+  - #91（UR5+球桿基座位置）→ 併入 #180 作為驗收條件。
+  - #96 / #97（RMPflow AIMING / STRIKING）→ superseded，方法論已被 #181 關節空間軌跡取代。
+  - #119（LinkedIn 篇6 草稿）→ M4 中途展示合併進最終發布，不獨立發篇6，敘事併入 Block 12 單篇（參數化控制 → RL 訓練 → 手臂執行完整弧線）。
+  - #129–#133（多環境漸進放大）→ 合併為 #223，估時 4h → 1h。漸進策略是為 RTX 4060 8GB 本機設計的，雲端 GPU 記憶體充裕後前提消失。
+- **Wave 1 求職 outreach 與專案完成度脫鉤**：8 月中即可開始投遞與更新 LinkedIn 個人檔案，不需等專案 100% 完成。
+- ⚠️ **最高風險：B-3 真實接觸物理校正（#182，14h）**。定義本身模糊（「看起來正確且大致可重複」無客觀停止條件）、不可委派、且必須在本機跑——而本機有兩個未解的藍屏問題（Avast 過濾驅動、i9-14900HX MCE）。**B-2/B-3 期間每 15–20 分鐘手動存檔一次**，把單次藍屏損失壓在一輪迭代內。
+- ⚠️ `project-tools/check_progress.py` 第 97 行仍硬編碼「預計完成日 2026-09-06」與「Milestone A 收斂硬約束 2026-07-31」，兩者皆已作廢（現為 2026-09-19 / 2026-08-15），需另行修正該程式碼。
 
 ## 任務排程明細
 
@@ -94,47 +117,46 @@
 | 7-3 | Block 7 | 確認 Action 資料格式（6 維，母球初速上限 3.3392 m/s） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #110 |
 | 7-4 | Block 7 | 補正 ControllerBase 完整生命週期契約（get_action/get_current_state/reset） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-02 | #111 |
 | 7-5 | Block 7 | 取消：Observation 收集由 ObservationBuilder/TableRuntime 負責，Action 契約已完成 | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-02 | #112 |
-| 9-1 | Block 9 | 研究 Isaac Lab 環境設計規範（gym.Env 介面） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-02 | #120 |
-| 9-2 | Block 9 | 實作 BilliardEnv：繼承 Isaac Lab 環境介面整合 core/ 邏輯（含 early termination） | 1.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-02 | #121 |
-| 9-3 | Block 9 | 確認 BilliardEnv 的 reset() step() observation_space action_space 正確 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-03 | #122 |
-| 9-4 | Block 9 | 選定 RL 演算法（PPO）設定超參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-03 | #123 |
-| 9-5 | Block 9 | 單環境訓練跑通確認（確認 reward 有在變化） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-04 | #124 |
-| 10-1 | Block 10 | 研究 Isaac Lab 多環境並行設計（Vectorized Environment） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-05 | #129 |
-| 10-2 | Block 10 | 調整 BilliardEnv 支援多環境實例化 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-06 | #130 |
-| 10-3 | Block 10 | 測試 8 台並行確認物理仿真穩定 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-07 | #131 |
-| 10-4 | Block 10 | 逐步擴大規模（32 → 64 → 128）記錄每個規模的 FPS | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #132 |
-| 10-5 | Block 10 | 確認最大可穩定運行的環境數量 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #133 |
-| 9-6 | Block 9 | 確認訓練過程中 reward 曲線有上升趨勢（訓練跑背景，此為監控判讀） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #125 |
-| 9-7 | Block 9 | 儲存訓練好的模型確認可以載入並執行推論 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #126 |
-| A-CP | Block 10 | Milestone A 收斂判定點（未收斂 → 偏移三檔/降環境數重跑，Wave 1 改依 fallback） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #179 |
-| B-1 | Block 13 | 可達性掃描與可行性地圖（orientation-constrained IK + 後擺走廊） | 5h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-08 | #180 |
-| 4-7 | Block 4 | 確認 UR5 + 球桿基座位置（併入 B-1 可行性地圖） | 0.5h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-08 | #91 |
-| 9-8 | Block 9 | 實作 ModelController（載入訓練模型替換 ScriptController） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #127 |
-| 9-9 | Block 9 | 確認 ModelController 執行效果優於隨機參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #128 |
-| 8-1 | Block 8 | 實作 Action 物理域參數設定（母球擺位初速角度擊球偏移） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #114 |
-| 8-2 | Block 8 | HUD 新增參數控制面板（可即時調整擊球參數） | 1h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #115 |
-| 8-3 | Block 8 | HUD 新增 ShotResult 顯示（散開分數白球狀態9號球狀態） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #116 |
-| 6-6 | Block 6 | Debug Menu 新增「顯示當前 ShotResult」按鈕手動驗證計算正確性 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-09 | #107 |
-| 7-6 | Block 7 | Debug Menu 新增「印出當前 Observation」按鈕 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-09 | #113 |
-| 8-4 | Block 8 | 確認手動調整參數 → 擊球 → 結果顯示的完整流程 | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #117 |
-| 8-5 | Block 8 | 錄製中途展示 Demo 影片（RL 訓練成果 + 參數化擊球） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #118 |
-| 8-6 | Block 8 | LinkedIn 篇6 草稿撰寫與發布（USD Collection + Material Binding） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-09 | #119 |
-| 12-4 | Block 12 | README 架構圖 + 技術亮點撰寫（Wave 1 前置） | 1.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-08-11 | #142 |
-| 12-5 | Block 12 | README 接口設計說明（RL 訓練架構 + 版本升級策略） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-08-12 | #143 |
-| 12-6 | Block 12 | README 收尾確認上傳 GitHub | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-08-12 | #144 |
-| B-2 | Block 13 | 關節空間揮桿軌跡生成（後擺 → 加速 → 擊球點，joint target 播放） | 15h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-19 | #181 |
-| 4-6 | Block 4 | 評估是否仍需 RMPflow 設定檔（僅非擊球移動用途） | 1h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-20 | #90 |
-| 5-5 | Block 5 | 手臂 AIMING（併入 B-2 關節空間軌跡） | 1h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-19 | #96 |
-| 5-6 | Block 5 | 手臂 STRIKING（併入 B-2 關節空間軌跡） | 1h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-19 | #97 |
-| B-3 | Block 13 | 真實接觸物理校正（physics dt 1e-4 + CCD + spin_efficiency） | 20h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-29 | #182 |
-| B-CP | Block 13 | Fallback 檔位決策點（8/20 軌跡判定、8/23 偏移判定） | 0.5h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-23 | #183 |
-| 11-1 | Block 11 | 全流程跑通確認（多環境並行 → RL 訓練 → 收斂 → ModelController 執行） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-08-30 | #134 |
-| 11-2 | Block 11 | Debug Menu 所有按鈕確認 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-08-30 | #135 |
-| 11-3 | Block 11 | 穩定性測試（長時間訓練確認無記憶體洩漏） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-08-30 | #136 |
-| 11-4 | Block 11 | API 掃描：執行 api-scanner 掃描 isaac_sim_impl_6_0/ 產出 API 使用清單 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-08-31 | #137 |
-| 11-5 | Block 11 | 補坑收尾 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-01 | #138 |
-| 12-1 | Block 12 | Demo 影片腳本規劃（RL 訓練 → 手臂執行完整 pipeline） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-02 | #139 |
-| 12-2 | Block 12 | 錄製 Demo 影片（OBS） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-03 | #140 |
-| 12-3 | Block 12 | 影片剪輯確認 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-05 | #141 |
-| 12-7 | Block 12 | LinkedIn 篇8 草稿撰寫與發布（含精度/速度 trade-off 敘事） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-05 | #145 |
-| 12-8 | Block 12 | LinkedIn 篇8 潤稿確認 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-06 | #146 |
+| 9-C1 | Block 9 | 雲端基礎設施建置（RunPod 實例 + pull container + checkpoint/volume + 成本監控與自動終止 + 容器內 pytest 驗證） | 5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-02 | #224 |
+| 5-9f-impl | Block 5 | RollingResistanceService 實作（滾動摩擦，影響 reward 品質） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-08 | #203 |
+| 5-9f-test | Block 5 | RollingResistanceService Unit Test | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-08 | #204 |
+| 9-1 | Block 9 | 研究 Isaac Lab 環境設計規範（在 RunPod container 內，gym.Env / ManagerBasedRLEnv 介面與環境註冊） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #120 |
+| 9-2 | Block 9 | 實作 BilliardEnv：繼承 Isaac Lab 環境介面整合 core/ 邏輯（21 維 observation_space、含 early termination） | 1.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #121 |
+| 7-2-rework | Block 7 | RL Observation Encoder 改 21 維（新增 max_offset 條件變數，訓練時均勻取樣、環境端 clamp）+ Unit Test | 1.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-08 | #222 |
+| 9-3 | Block 9 | 確認 BilliardEnv 的 reset() step() observation_space(21維) action_space 正確 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #122 |
+| 9-C2 | Block 9 | core/ 共用 observation/action 組裝層（訓練端與 Demo 端共用 21 維組裝與 action 還原）+ 一致性 Unit Test | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #225 |
+| 9-4 | Block 9 | 選定 RL 演算法（PPO）設定超參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #123 |
+| 9-5 | Block 9 | 單環境訓練跑通確認（確認 reward 有在變化）→ 啟動雲端背景訓練 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #124 |
+| 9-6 | Block 9 | 確認訓練過程中 reward 曲線有上升趨勢（訓練跑背景，此為監控判讀） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #125 |
+| 9-7 | Block 9 | 儲存訓練好的模型確認可以載入並執行推論 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #126 |
+| 9-C3 | Block 9 | exported policy 取回流程（從 RunPod 下載 policy.pt / policy.onnx / params/env.yaml） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #226 |
+| 9-8 | Block 9 | 實作 ModelController（載入 TorchScript exported/policy.pt，normalizer 已內建） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #127 |
+| 9-9 | Block 9 | 確認 ModelController 執行效果優於隨機參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #128 |
+| 10-merge | Block 10 | 雲端多環境並行：直接設定高環境數（1024+）+ 一次性穩定性檢查 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #223 |
+| A-CP | Block 10 | Milestone A 收斂判定點（未收斂 → 直接帶不完美 policy 進 B，不為 A 犧牲 B 的時間） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #179 |
+| B-1 | Block 13 | 可達性掃描與可行性地圖（orientation-constrained IK + 後擺走廊）→ 量出手臂實際偏移能力填入 max_offset | 4h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-16 | #180 |
+| 4-6 | Block 4 | RMPflow 設定檔（僅非擊球移動用途，如回到待命姿態） | 1h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-16 | #90 |
+| B-2 | Block 13 | 關節空間揮桿軌跡生成（後擺 → 加速 → 擊球點，joint target 播放） | 12h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-29 | #181 |
+| B-3 | Block 13 | 真實接觸物理校正（physics dt 1e-4 + CCD + spin_efficiency） | 14h | M7: Milestone B 手臂執行 | FALSE |  | 2026-09-06 | #182 |
+| B-CP | Block 13 | Fallback 檔位決策點總覽（B-CP1 8/16、B-CP2 8/29、B-CP3 9/06） | 0.5h | M7: Milestone B 手臂執行 | FALSE |  | 2026-09-06 | #183 |
+| 8-1 | Block 8 | 實作 Action 物理域參數設定（母球擺位初速角度擊球偏移） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #114 |
+| 8-2 | Block 8 | HUD 新增參數控制面板（可即時調整擊球參數） | 1h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #115 |
+| 8-3 | Block 8 | HUD 新增 ShotResult 顯示（散開分數白球狀態9號球狀態） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #116 |
+| 6-6 | Block 6 | Debug Menu 新增「顯示當前 ShotResult」按鈕手動驗證計算正確性 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-09-06 | #107 |
+| 7-6 | Block 7 | Debug Menu 新增「印出當前 Observation」按鈕 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-09-06 | #113 |
+| 8-4 | Block 8 | 確認手動調整參數 → 擊球 → 結果顯示的完整流程 | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #117 |
+| 8-5 | Block 8 | 錄製展示片段（參數化擊球，素材併入最終單篇 Demo） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-12 | #118 |
+| 11-1 | Block 11 | 全流程跑通確認（雲端訓練 → 匯出 policy → 本機 ModelController 執行） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #134 |
+| 11-2 | Block 11 | Debug Menu 所有按鈕確認 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #135 |
+| 11-3 | Block 11 | 穩定性測試（長時間訓練確認無記憶體洩漏） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #136 |
+| 11-4 | Block 11 | API 掃描：執行 api-scanner 掃描 isaac_sim_impl_6_0/ 產出 API 使用清單 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #137 |
+| 11-5 | Block 11 | 補坑收尾 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #138 |
+| 12-C1 | Block 12 | 本機 Demo 播放與錄影流程（Isaac Sim 內建 PyTorch 載入 TorchScript policy，GUI 運鏡錄影） | 1.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #227 |
+| 12-1 | Block 12 | Demo 影片腳本規劃（完整故事弧線：參數化控制 → RL 訓練 → 手臂執行） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #139 |
+| 12-2 | Block 12 | 錄製 Demo 影片（OBS） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #140 |
+| 12-3 | Block 12 | 影片剪輯確認 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #141 |
+| 12-4 | Block 12 | README 架構圖 + 技術亮點撰寫 | 1.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #142 |
+| 12-5 | Block 12 | README 接口設計說明（雲端 RL 訓練架構 + 版本升級策略） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #143 |
+| 12-6 | Block 12 | README 收尾確認上傳 GitHub | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #144 |
+| 12-7 | Block 12 | LinkedIn 草稿撰寫與發布（單篇整合版，含精度/速度 trade-off 敘事） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #145 |
+| 12-8 | Block 12 | LinkedIn 潤稿確認 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #146 |
