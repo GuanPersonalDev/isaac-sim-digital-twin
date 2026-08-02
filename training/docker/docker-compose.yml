@@ -21,7 +21,8 @@ services:
       - PRIVACY_CONSENT=Y
       - OMNI_KIT_ACCEPT_EULA=YES
       - PROJECT_ROOT=/workspace/billiard
-      - ISAACLAB_ROOT=/workspace/IsaacLab
+      # 實測為小寫 isaaclab；#224 寫的 /workspace/IsaacLab 是錯的
+      - ISAACLAB_ROOT=/workspace/isaaclab
       - PYTHONPATH=/workspace/billiard
 
     deploy:

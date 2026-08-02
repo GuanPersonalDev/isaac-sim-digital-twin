@@ -12,6 +12,8 @@ set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/GuanPersonalDev/isaac-sim-digital-twin.git}"
 PROJECT_ROOT="${PROJECT_ROOT:-/workspace/billiard}"
+# Isaac Lab 在 /workspace/isaaclab（小寫）。#224 寫的 /workspace/IsaacLab 是錯的。
+ISAACLAB_ROOT="${ISAACLAB_ROOT:-/workspace/isaaclab}"
 BRANCH="${BRANCH:-main}"
 RUN_AFTER_SYNC="${RUN_AFTER_SYNC:-0}"
 
@@ -40,8 +42,20 @@ echo "[bootstrap] HEAD = $(git -C "${PROJECT_ROOT}" rev-parse --short HEAD) $(gi
 
 REQUIREMENTS="${PROJECT_ROOT}/training/requirements.txt"
 if [[ -f "${REQUIREMENTS}" ]]; then
-    echo "[bootstrap] 安裝額外依賴"
-    python -m pip install --no-cache-dir -r "${REQUIREMENTS}"
+    # 容器內沒有 python 也沒有 python3，只有 /isaac-sim/python.sh。
+    # isaaclab.sh 自己也是解析到 $ISAACLAB_PATH/_isaac_sim/python.sh 這個 symlink。
+    if [[ -x "${ISAACLAB_ROOT}/_isaac_sim/python.sh" ]]; then
+        PYTHON_EXE="${ISAACLAB_ROOT}/_isaac_sim/python.sh"
+    elif [[ -x /isaac-sim/python.sh ]]; then
+        PYTHON_EXE=/isaac-sim/python.sh
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_EXE="$(command -v python3)"
+    else
+        echo "[bootstrap] 找不到可用的 Python" >&2
+        exit 1
+    fi
+    echo "[bootstrap] 安裝額外依賴（${PYTHON_EXE}）"
+    "${PYTHON_EXE}" -m pip install --no-cache-dir -r "${REQUIREMENTS}"
 fi
 
 chmod +x "${PROJECT_ROOT}/training/scripts/"*.sh

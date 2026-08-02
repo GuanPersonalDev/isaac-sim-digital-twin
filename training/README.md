@@ -18,8 +18,21 @@
 兩邊的 `/workspace/billiard` 內容因此等價。若改成把程式碼 COPY 進映像，
 每次改動都要重建並推送約 25GB 映像，與「週末寫 code → 丟雲端跑」的節奏不相容。
 
-官方映像已預裝 Isaac Lab 於 `/workspace/IsaacLab`，內含 Isaac Sim **6.0.1**
-（比本機 6.0.0 新一個 patch，查 API 時注意落差）。headless only。
+官方映像已預裝 Isaac Lab 於 `/workspace/isaaclab`（**小寫**，#224 body 寫的
+`/workspace/IsaacLab` 是錯的），內含 Isaac Sim **6.0.1**（比本機 6.0.0 新一個
+patch，查 API 時注意落差）。headless only。
+
+實測規格（`3.0.0-beta2`）：
+
+| 項目 | 值 |
+|---|---|
+| 映像大小 | 31.8GB（RunPod container disk 建議 80GB） |
+| 執行使用者 | uid/gid 1000（`ubuntu`） |
+| `HOME` | `/root`，已 chown 給 uid 1000，可寫 |
+| Python | **沒有 `python` 也沒有 `python3`**，只有 `/isaac-sim/python.sh`（`/workspace/isaaclab/_isaac_sim` 是指向 `/isaac-sim` 的 symlink） |
+
+腳本裡的 Python 解析順序（與 `isaaclab.sh` 內部邏輯一致）：
+`${ISAACLAB_ROOT}/_isaac_sim/python.sh` → `/isaac-sim/python.sh` → `python3`。
 
 ## 結構
 
