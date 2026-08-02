@@ -1,0 +1,8 @@
+# 這個目錄的檔案會被 COPY 進 Linux 容器執行。
+# repo 的 core.autocrlf=true 會讓 checkout 出來的工作區檔案變成 CRLF，
+# shell script 帶 \r 進容器會噴 "bash: \r: command not found"，且訊息完全看不出原因。
+# 以下型別強制 LF，不受 autocrlf 影響。
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf

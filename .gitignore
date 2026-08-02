@@ -23,6 +23,9 @@ Thumbs.db
 # Sub-agent docs (local only)
 docs/api-migration-agent.md
 
+# 訓練產出（checkpoint / tensorboard log，體積大且可由設定檔重現）
+training/outputs/
+
 # Secrets (local only, never commit)
 .env
 .env.*

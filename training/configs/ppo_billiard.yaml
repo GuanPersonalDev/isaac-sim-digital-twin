@@ -1,0 +1,33 @@
+# 撞球 break shot RL 訓練設定
+# TODO: 數值為佔位值，待 RL 框架定案與首輪 sanity run 後校正。
+
+env:
+  name: billiard_break
+  num_envs: 1024
+  episode_length: 256
+  # core/services/rl_observation_encoder.py 決定觀測維度，兩邊須一致
+  obs_dim: null
+  action_dim: null
+
+algorithm:
+  name: ppo
+  learning_rate: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  entropy_coef: 0.005
+  value_coef: 0.5
+  max_grad_norm: 1.0
+  rollout_steps: 32
+  mini_batches: 4
+  update_epochs: 5
+
+runner:
+  max_iterations: 5000
+  save_interval: 100
+  seed: 42
+  device: cuda:0
+
+logging:
+  tensorboard: true
+  log_interval: 10

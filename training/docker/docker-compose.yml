@@ -1,0 +1,50 @@
+# 本機 smoke test 用。**不是**雲端交付物。
+#
+# 程式碼上雲走 git clone/pull（#224 項目 4），所以雲端與本機都直接使用官方
+# 映像，不自建映像、也不把程式碼烘焙進去。本機用 bind mount 掛入 repo，
+# RunPod 上則由 training/scripts/bootstrap_runpod.sh 做 clone/pull，
+# 兩邊的 /workspace/billiard 內容因此等價。
+#
+# 用法：
+#   docker compose -f training/docker/docker-compose.yml run --rm smoke
+
+# compose 預設用所在目錄名當 project name，這裡會變成 "docker"，
+# 與其他專案的 docker/ 目錄撞名（volume、network、orphan 容器都會混在一起）。
+name: billiard-rl
+
+services:
+  smoke:
+    image: nvcr.io/nvidia/isaac-lab:3.0.0-beta2
+
+    environment:
+      - ACCEPT_EULA=Y
+      - PRIVACY_CONSENT=Y
+      - OMNI_KIT_ACCEPT_EULA=YES
+      - PROJECT_ROOT=/workspace/billiard
+      - ISAACLAB_ROOT=/workspace/IsaacLab
+      - PYTHONPATH=/workspace/billiard
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    volumes:
+      # repo 根目錄掛進來，等同雲端 git clone 後的狀態
+      - ../..:/workspace/billiard
+      # Isaac Sim 首次啟動要編譯大量 shader，不做 cache 每次都要重跑十幾分鐘。
+      # TODO: 掛載點需依映像內實際 HOME 調整，映像下載完後確認再填。
+      - isaac-cache-kit:/isaac-sim/kit/cache
+
+    working_dir: /workspace/billiard
+    entrypoint: ["/workspace/billiard/training/scripts/run_train.sh"]
+
+    shm_size: "8gb"
+    stdin_open: true
+    tty: true
+
+volumes:
+  isaac-cache-kit:

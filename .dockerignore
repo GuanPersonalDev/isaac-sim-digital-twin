@@ -1,0 +1,32 @@
+# Build context 是 repo 根目錄，Docker 只會讀取放在 context 根目錄的 .dockerignore，
+# 所以這個檔案不能移到 training/ 底下。
+
+.git/
+.gitattributes
+
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+
+.venv/
+venv/
+env/
+
+.vscode/
+.idea/
+
+# 憑證絕對不能進映像
+.env
+.env.*
+!.env.example
+*.key
+secrets/
+
+docs/
+.agents/
+training/outputs/
+
+.DS_Store
+Thumbs.db
