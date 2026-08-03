@@ -1,86 +1,326 @@
 # training/
 
-雲端 RL 訓練（#224）。目標平台是 RunPod Community RTX 4090，本機只做 smoke test。
+雲端 RL 訓練（#224）。平台是 RunPod **Secure Cloud／EU-RO-1／RTX A4500**
+＋ 100GB Network Volume。
 
 這一層屬於部署／維運，不在 `docs/architecture-spec.md` 的分層規則內，因此與
 `core/`、`extension/` 平行，不互相依賴。
 
-## 核心原則：程式碼不進映像
+> **2026-08-02 大幅修訂。** 先前版本記載的「直接使用官方映像
+> `nvcr.io/nvidia/isaac-lab:3.0.0-beta2`＋每次開機跑 `bootstrap_runpod.sh`」路線
+> **已實測失敗並廢棄**，原因見下方〈為什麼不用官方映像〉。`scripts/bootstrap_runpod.sh`
+> 與 `docker/docker-compose.yml` 是舊路線的產物，**尚未改寫，目前不要使用**。
 
-雲端與本機**都直接使用官方映像** `nvcr.io/nvidia/isaac-lab:3.0.0-beta2`，
-不自建映像、不把程式碼烘焙進去。
-
-| | 程式碼來源 | 改一行 code 的代價 |
-|---|---|---|
-| RunPod | `bootstrap_runpod.sh` 做 git clone/pull | `git pull`，數秒 |
-| 本機 | compose bind mount repo 根目錄 | 不需重建，直接生效 |
-
-兩邊的 `/workspace/billiard` 內容因此等價。若改成把程式碼 COPY 進映像，
-每次改動都要重建並推送約 25GB 映像，與「週末寫 code → 丟雲端跑」的節奏不相容。
-
-官方映像已預裝 Isaac Lab 於 `/workspace/isaaclab`（**小寫**，#224 body 寫的
-`/workspace/IsaacLab` 是錯的），內含 Isaac Sim **6.0.1**（比本機 6.0.0 新一個
-patch，查 API 時注意落差）。headless only。
-
-實測規格（`3.0.0-beta2`）：
+## 環境現況（2026-08-02 建置完成並驗證）
 
 | 項目 | 值 |
 |---|---|
-| 映像大小 | 31.8GB（RunPod container disk 建議 80GB） |
-| 執行使用者 | uid/gid 1000（`ubuntu`） |
-| `HOME` | `/root`，已 chown 給 uid 1000，可寫 |
-| Python | **沒有 `python` 也沒有 `python3`**，只有 `/isaac-sim/python.sh`（`/workspace/isaaclab/_isaac_sim` 是指向 `/isaac-sim` 的 symlink） |
+| 平台 | RunPod **Secure Cloud**（Network Volume 僅 Secure Cloud 支援）|
+| Datacenter | **EU-RO-1**（Volume 綁死區域，建立後不可更改）|
+| GPU | **RTX A4500** $0.25/hr（20GB VRAM / 62GB RAM / 12 vCPU）|
+| Network Volume | `billiard-isaac-training` **100GB**，掛載 `/workspace`（原 50GB，2026-08-03 擴容；只能加不能減）|
+| Container Disk | 60GB，**停機即清空** |
+| 基礎映像 | `nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04` |
+| Python | **3.12**（Isaac Lab 硬限制 `>=3.12,<3.13`；Ubuntu 24.04 系統 Python 剛好命中）|
+| isaacsim | 6.0.1.0（pip 安裝）|
+| torch | 2.10.0+cu128 / CUDA 12.8 / 驅動 570.195.03 |
+| Isaac Sim 冷啟動 | 約 **58 秒**（實測兩次相同，與 shader 快取無關）|
 
-腳本裡的 Python 解析順序（與 `isaaclab.sh` 內部邏輯一致）：
-`${ISAACLAB_ROOT}/_isaac_sim/python.sh` → `/isaac-sim/python.sh` → `python3`。
+原定 RTX 4000 Ada（$0.28/hr）在 EU-RO-1 缺貨，改用 A4500 反而 RAM 與 vCPU 更多且更便宜。
 
-## 結構
+### Pod 環境變數（四個都必要）
+
+`ACCEPT_EULA=Y`、`PRIVACY_CONSENT=Y`、`OMNI_KIT_ACCEPT_EULA=YES`、`ISAACSIM_ACCEPT_EULA=YES`
+
+缺 `ISAACSIM_ACCEPT_EULA` 會卡在「Isaac Sim Additional Software and Materials License
+must be accepted」而容器直接結束。
+
+### Pod Start command（裝 sshd 並保持容器存活）
 
 ```
-training/
-├── docker/
-│   └── docker-compose.yml   # 本機 smoke test（官方映像 + bind mount）
-├── scripts/
-│   ├── bootstrap_runpod.sh  # 雲端：clone/pull + 裝依賴 + 交棒
-│   └── run_train.sh         # 共用進入點（必須 LF）
-├── configs/
-│   └── ppo_billiard.yaml    # 訓練超參數
-├── requirements.txt         # 額外依賴（Isaac Lab / torch / RL 框架已內含）
-└── .gitattributes           # 強制 .sh 為 LF
+bash -c 'apt update; DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server; mkdir -p ~/.ssh; chmod 700 ~/.ssh; echo "$PUBLIC_KEY" >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; mkdir -p /var/run/sshd; service ssh start; sleep infinity'
 ```
+
+## `/workspace` 佈局
+
+```
+/workspace/
+├── venv/                       Python 環境（約 50GB，含 isaacsim + torch + Isaac Lab）
+├── IsaacLab/                   Isaac Lab 原始碼（release/3.0.0-beta2）
+├── isaac-sim-digital-twin/     本專案
+├── setup.sh                    開機腳本
+└── pip-freeze-working.txt      已知可用狀態的回退點
+```
+
+**venv 在 Network Volume 上，所以 Python 套件停機後仍在，不需要每次重裝。**
+這是與舊路線最大的差別。
+
+## 為什麼不用官方映像
+
+`nvcr.io/nvidia/isaac-lab:3.0.0-beta2` 的 **ENTRYPOINT 會強制啟動 Isaac Sim Streaming**，
+而 RunPod 的 Container Start Command 覆寫的是 CMD，蓋不掉 ENTRYPOINT。結果是容器啟動 →
+跑 Streaming → 環境不合而結束 → 容器死掉重啟，SSH 一進去就被踢出來。
+
+診斷方法：把 start command 設成 `bash -c 'echo HELLO_FROM_START_COMMAND; sleep infinity'`，
+若 Container log 裡沒有出現該字串，即確認 ENTRYPOINT 吃掉了 CMD。
+
+另外 Network Volume 掛在 `/workspace` 會**遮蔽**官方映像內的 `/workspace/isaaclab`
+（小寫），而 Isaac Lab 在該映像內是 editable install，路徑被遮蔽後 `import isaaclab`
+直接失效。
+
+改用乾淨的 CUDA 基礎映像 + pip 安裝到 volume 上的 venv，沒有這些問題。
 
 ## 使用
 
-**本機 smoke test**
+### 每個週末：開機
 
-```powershell
-docker compose -f training\docker\docker-compose.yml run --rm smoke
-```
-
-**RunPod**
+1. RunPod 網頁 → Pods → **Start**
+2. Pod 卡片 → **Connect** → 複製 SSH 指令，在本機終端機執行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GuanPersonalDev/isaac-sim-digital-twin/main/training/scripts/bootstrap_runpod.sh | bash
+ssh <pod-id>-<hash>@ssh.runpod.io -i ~/.ssh/id_ed25519
 ```
 
-repo 為 public，clone 不需要任何憑證。
+3. **第一件事**：
+
+```bash
+source /workspace/setup.sh
+```
+
+看到 `torch 2.10.0+cu128 cuda True` 就代表環境正常。
+
+`setup.sh` 做的事：apt 重裝 `git tmux python3-dev build-essential`（container disk 停機
+清空）→ 設 `PIP_CACHE_DIR=/tmp/pipcache` → 啟用 venv → `git pull` 專案 → 印 torch/cuda 狀態。
+
+> ⚠️ **只能用 `source`，不能用 `./setup.sh`。** venv 啟用必須作用在當前 shell；用 `./`
+> 會開子行程，activate 完就隨子行程消失，但畫面上看起來「成功了」。檔案刻意不給執行位元
+> 作為防呆。
+
+### 每個週末：啟動訓練
+
+**一定要放進 tmux。** SSH session 綁在連線上，斷線前景程序就死——而訓練要跑整整一週。
+
+```bash
+tmux new -s train
+# 在 tmux 內啟動訓練
+```
+
+- 卸離（讓它繼續跑）：`Ctrl-B` 放開，再按 `D`
+- 回去看：`tmux attach -t train`
+- 確認還活著：`tmux ls`
+
+**判斷規則**：超過 1–2 分鐘的作業一律進 tmux；訓練不可省。
+
+### 每個週末：啟動訓練時一併掛上 GPU watchdog
+
+`scripts/gpu_watchdog.sh` 在 GPU 連續閒置達門檻（預設 30 分鐘）後自動停止 Pod。
+
+**它解決的是這個情境**：訓練在週二崩潰或跑完，你到週六才發現 —— 4 天 × 24h × $0.25 ≈ **$24**，
+等同整個專案預算。平日 0.5h 巡檢無法可靠攔截。
+
+```bash
+tmux new -s train
+/workspace/isaac-sim-digital-twin/training/scripts/gpu_watchdog.sh &
+# 接著啟動訓練
+```
+
+> ⚠️ **不要放進 `setup.sh` 開機自動啟動。** 週末你 SSH 進去寫 code、還沒開始訓練時
+> GPU 是閒置的，開機就啟動會讓 Pod 在 30 分鐘後自己關掉。
+>
+> 腳本本身還有一道保險：**必須先偵測到 GPU 真的忙碌過（armed）才會開始倒數**，
+> 所以誤啟動而訓練沒跑起來時它不會關機。但正確用法仍是「跟著訓練啟動」。
+
+**為什麼自動停機在這裡是安全的**：Pod「停止」不是「終止」，`/workspace` 完整保留。
+誤判的代價是重啟時間（約 1 分鐘 + Isaac Sim 冷啟動 58 秒），不是資料。
+
+可調參數（環境變數）：`IDLE_LIMIT`（分鐘，預設 30）、`UTIL_THRESHOLD`（%，預設 5）、
+`POLL_INTERVAL`（秒，預設 60）、`HOURLY_RATE`（僅用於 log 顯示累計花費）、`LOG`、`DRY_RUN`。
+
+首次使用建議先試跑，確認不會誤觸發：
+
+```bash
+DRY_RUN=1 IDLE_LIMIT=2 ./gpu_watchdog.sh
+```
+
+**前置需求**（`runpodctl` 不在自訂映像內，container disk 停機清空，需每次開機重裝）：
+
+```bash
+command -v runpodctl >/dev/null || bash <(wget -qO- cli.runpod.io)
+runpodctl config --apiKey "$RUNPOD_API_KEY"
+```
+
+⚠️ **`RUNPOD_API_KEY` 必須用 RunPod Template 的 Secret 注入，不可寫進任何檔案**——
+本 repo 是 public。RunPod 環境變數頁面的 🔑 圖示就是建立 Secret 的入口。
+
+log 寫在 `/workspace/watchdog.log`（volume 上，停機後仍在，可事後查為什麼被關）。
+
+### 平日巡檢（0.5h）
+
+```bash
+source /workspace/setup.sh
+tmux attach -t train                                    # 還在不在跑
+ls -lh /workspace/isaac-sim-digital-twin/training/outputs   # checkpoint 有沒有長出來
+nvidia-smi                                              # GPU 有沒有掉線
+```
+
+reward 曲線用 TensorBoard 看（需 Pod 建立時已開 HTTP Port `6006`）：
+
+```bash
+tensorboard --logdir <輸出目錄> --port 6006 --host 0.0.0.0
+```
+
+> **`--host 0.0.0.0` 不可省**（`--bind_all` 亦可）。服務只綁 localhost 的話 RunPod 的
+> proxy 連不進來，這是開了 port 卻連不上最常見的原因。
+
+費用在 RunPod 網頁的 Billing 頁看。**Pod 停機後 Network Volume 仍然計費**
+（100GB × $0.07/GB/月 = $7/月）。GPU $0.25/hr 只在開機時計。
+
+專案期間（8/02–9/19，約 1.6 個月）總估：GPU 約 50h ≈ $12.5 ＋ Volume ≈ $11.2 = **約 $24**。
+餘額不足時 Volume 可能被回收並連 checkpoint 一起消失，建議維持 $30–40 餘額。
+
+### 停機
+
+RunPod 網頁 → **Stop**。
+
+| 位置 | 停機後 |
+|---|---|
+| `/workspace`（Network Volume）— 含 **venv**、專案、IsaacLab、checkpoint | **保留** |
+| Container disk（`/`、`/tmp`、apt 裝的套件、sshd、symlink） | **清空** |
+
+所以**任何要留的東西都必須在 `/workspace` 底下**。`/tmp/pipcache` 是刻意放在
+container disk 的（見〈踩過的坑〉第 4 點）。
+
+## 只有 log，沒有畫面
+
+雲端是 headless，容器裡沒有顯示伺服器，**看不到 Isaac Sim 的 GUI 視窗**。能看的就是：
+terminal 的 stdout／stderr、TensorBoard 曲線、寫進 `/workspace` 的 checkpoint 與檔案。
+
+headless 下 `libGL.so.1` / `libXt.so.6` 缺失的錯誤**是正常的**（RTX 渲染走 Vulkan
+不走 GL），可以忽略。
+
+要**看**物理行為，走的是另一條路：把訓練好的 policy 取回本機（#226），在本機
+Isaac Sim GUI 播放（#227）。排程把 Milestone B（手臂執行）整段安排在本機跑，
+就是因為那部分必須肉眼看物理行為，雲端做不到。
+
+> Isaac Sim 本身有 WebRTC livestream 功能，理論上可以把畫面推到瀏覽器，但它需要 UDP
+> port，而 RunPod 的 proxy 只轉 TCP。**不要為了看畫面把時間花在這上面**——訓練是 headless
+> 跑 1024 個環境，本來也沒有「一個畫面」可看。
+
+## Demo 素材：訓練開始前就要設好
+
+Block 12 的影片要呈現「訓練過程」，但雲端 headless、沒有訓練當下的畫面可拍。
+唯一可行的做法是**用不同訓練階段的 checkpoint 在本機各回放一次**，剪成前後對照
+（iteration 0 亂噴 → 最終乾淨散開）。
+
+⚠️ **以下四項全部是訓練開始前的設定，事後補不回來。** 等 #226/#227 那個週末才發現
+沒設，代價是重開 pod 重跑一輪。
+
+### 1. 評估場景必須完全固定
+
+不同 checkpoint 的回放要能對照，前提是**除了 policy 以外每個變因都一樣**：
+
+- rack 擺位鎖死用 `BREAK_SHOT_POSITIONS`（已定案的固定值，非隨機生成）
+- eval 用的 seed 與訓練 seed 分開，且固定
+- 物理參數、`RollingResistanceService` 係數不得在訓練期間變動
+- **`max_offset` 條件值必須固定**（21 維 observation 的新欄位，見 #222/#225）——
+  這一項會直接改變 policy 行為，回放時若不固定，對照完全失去意義
+
+### 2. checkpoint 要保留多個，且必須在 volume 上
+
+- `configs/ppo_billiard.yaml` 的 `save_interval: 100` 已設定
+- **需確認所選框架不會自動 rotate 掉舊 checkpoint**（很多框架預設只留最近 N 個）
+- 輸出目錄必須在 `/workspace` 底下，否則停機就沒了
+
+預計要保留可回放的階段：**iteration 0 / 200 / 1000 / 最終**（實際數值待首輪跑完後
+依收斂速度調整）。
+
+### 3. ⚠️ 中間 checkpoint 也要在雲端 export 成 TorchScript
+
+**這是最容易漏、代價最高的一項。**
+
+rsl_rl 存的 `model_<iter>.pt` 是含 optimizer state 的訓練檔，要靠 rsl_rl 才載得動。
+但本機 Isaac Sim **沒有裝 rsl_rl**——#227 的設計是用 Isaac Sim 內建 PyTorch 載
+**TorchScript** 格式的 `exported/policy.pt`（normalizer 已打包進模型，餵原始觀測即可）。
+
+`play.py` 每跑一次就會自動匯出 `exported/policy.pt` 與 `policy.onnx`。所以每一個要拿來
+回放的中間 checkpoint，都必須**趁 pod 還活著時就跑一次 `play.py` 產生 TorchScript**。
+等訓練結束、只下載了最終 policy 才想起來，就得重開 pod、重跑 export。
+
+> ONNX 版匯出時 `dynamic_axes={}`，**batch size 固定為 1**。單機器人 Demo 夠用，
+> 但要批次推論就得重新匯出。
+
+### 4. TensorBoard event 檔要一起帶回來
+
+reward 曲線建議**下載 event 檔回本機自己畫圖**，不要螢幕錄影 TensorBoard UI——
+自己畫的圖乾淨、可控、可標註 A-CP 判定點。event 檔同樣要確認寫在 `/workspace`。
+
+### 誠實標註的界線
+
+影片裡若要放「多環境並行」的畫面，那是本機開少量環境（16/64）的**示意**，
+不是實際訓練畫面（實際訓練 headless、1024 環境、無渲染）。**必須在影片或說明中
+標明**——技術面試會追問這一點。
+
+## 踩過的坑（重建環境時直接避開）
+
+1. **不要用官方映像**——見上方〈為什麼不用官方映像〉。
+2. **安裝順序不可顛倒**：必須先
+   `pip install "isaacsim[all,extscache]==6.0.1.0" --extra-index-url https://pypi.nvidia.com`，
+   再 `cd /workspace/IsaacLab && ./isaaclab.sh --install`。順序反了 isaacsim 會把 torch
+   換成 2.11.0（CUDA 13），而驅動 570.x 不支援 CUDA 13，`torch.cuda.is_available()` 會變 False。
+3. **cu12/cu13 雙堆疊**：`nvidia-cublas-cu12` 與 `nvidia-cublas`（CUDA 13 世代拿掉後綴）
+   是不同套件名稱，pip 不會互相取代 → venv 曾膨脹到 66GB。目前仍有約 16 個 CUDA 13
+   孤兒套件（約 10–15GB）待清。
+4. **pip cache 不要放 `/workspace`**：會吃掉 Volume 配額（曾觸發
+   `Errno 122 Disk quota exceeded`）。放 `/tmp/pipcache`（container disk）即可——
+   venv 本身持久化，本來就不需要重裝。
+5. **`python3-dev` 必裝**，否則 `imgui` 編譯失敗（缺 `Python.h`）擋住 `isaaclab_teleop`。
+6. **isaacsim 與 isaaclab 有版本 pin 衝突**（`websockets`/`psutil`/`click`/`coverage`）——
+   **不要手動對版本**，硬降 `websockets` 會反過來弄壞 `viser`/`rerun`。用 smoke test
+   實測是否影響使用路徑。
+7. **快取不需重導**：實測 Omniverse 沒把快取寫到 HOME（`/root/.cache/ov` 僅 4K），
+   58 秒冷啟動與 shader 快取無關，不要花時間做 symlink 重導。
+8. **RunPod proxy SSH 會忽略遠端指令參數**，只給互動 shell；帶指令需 `-t`（要求 PTY）。
+9. **Web Terminal 打不開**是因為自訂映像沒有 sshd/RunPod agent——用 SSH（start command
+   已處理 sshd 安裝）。
+
+## Smoke test
+
+```bash
+cd /workspace/IsaacLab && ./isaaclab.sh -p scripts/tutorials/00_sim/log_time.py
+```
+
+⚠️ **這個腳本是無限迴圈，不會自己結束**（headless 下沒有視窗可關，
+`simulation_app.is_running()` 永遠為 True）。看到 `[INFO]: Setup complete...` 就按
+`Ctrl+C`。想確認它真的在跑，另開 tmux window：
+
+```bash
+wc -l /workspace/IsaacLab/logs/docker_tutorial/log.txt   # 行數持續增加 = 物理在 step
+```
+
+## 環境回退
+
+`/workspace/pip-freeze-working.txt` 是「已知可用」狀態的快照。清理套件或加裝東西弄壞了
+可以據此還原。**動任何套件之前先重存一份。**
 
 ## 尚未完成
 
-- **`run_train.sh` 的真正訓練呼叫**：目前只跑 smoke test（驗證 `import isaacsim`、
-  `import isaaclab`、`core/` 匯入）。`BilliardEnv` 完成後（#121/#122）才有可用的
-  `--task`，屆時把註解掉的 `isaaclab.sh -p .../rsl_rl/train.py` 那段換上。
-- **`configs/ppo_billiard.yaml`**：數值為佔位值，且格式要改成 Isaac Lab 選定
-  框架期望的 agent cfg。`obs_dim` / `action_dim` 兩欄應刪除——Isaac Lab 從 env 的
-  space 定義推導，留在 yaml 會變成第二個事實來源。
-  另注意 observation 規格是 **21 維**（見 #222/#225），現有
+- **`scripts/bootstrap_runpod.sh` 與 `docker/docker-compose.yml` 需改寫或刪除**——
+  兩者都是官方映像路線的產物，與現行環境不相容。
+- **`run_train.sh` 的真正訓練呼叫**：`BilliardEnv` 完成後（#121/#122）才有可用的
+  `--task`。
+- **`configs/ppo_billiard.yaml`**：數值為佔位值，格式要改成 rsl_rl 期望的 agent cfg。
+  `obs_dim` / `action_dim` 兩欄應刪除——Isaac Lab 從 env 的 space 定義推導，留在 yaml
+  會變成第二個事實來源。observation 規格是 **21 維**（見 #222/#225），現有
   `core/services/rl_observation_encoder.py` 是 20 維，尚未對齊。
-- **compose 的 cache volume 掛載點**：需依映像內實際 `HOME` 調整，待確認。
+- **`gpu_watchdog.sh` 尚未在真實 Pod 上驗證**：邏輯已用假 `nvidia-smi`／`runpodctl` 測過
+  兩條路徑（觸發停機、未武裝不誤觸發），但 `runpodctl` 是否裝得起來、`$RUNPOD_POD_ID`
+  是否真的被注入、`stop pod` 與 `pod stop` 何者為正確子指令，都要下次開機實測。
+- **CUDA 13 孤兒套件清理**（#224 未完項，選配）。
 
 ## 注意事項
 
 **憑證不進映像。** 根目錄 `.dockerignore` 已排除 `.env`、`*.key`、`secrets/`。
-NGC 金鑰在雲端用平台的 secret 注入，不要寫進任何檔案。
+實測 `nvcr.io` 的 isaac-sim 系列映像**公開可拉，不需要 NGC 金鑰**。
 
 **換行符號。** `.sh` 若帶 CRLF 進容器會噴 `bash: \r: command not found`，且訊息
 看不出原因。repo 的 `core.autocrlf=true` 會在 checkout 時把工作區檔案轉成 CRLF，
