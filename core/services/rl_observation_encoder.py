@@ -1,7 +1,5 @@
-import math
-from numbers import Real
-
 from ..models.observation import Observation
+from .numeric_validation import validate_finite_number, validate_max_offset
 
 
 _EXPECTED_BALL_COUNT = 10
@@ -11,9 +9,11 @@ _RL_BALL_ORDER = tuple(range(1, 10)) + (0,)
 def encode_rl_observation(
     observation: Observation,
     table_position: tuple[float, float],
+    max_offset: float
 ) -> list[float]:
-    """將執行期 Observation 編碼為固定 20 維 RL 球位向量。"""
+    """將執行期 Observation 編碼為固定 21 維 RL 球位向量。"""
     table_x, table_y = _validate_table_position(table_position)
+    limit = validate_max_offset(max_offset)
     ball_positions = observation.ball_positions
 
     if len(ball_positions) != _EXPECTED_BALL_COUNT:
@@ -36,7 +36,8 @@ def encode_rl_observation(
                 world_y - table_y,
             )
         )
-
+        
+    encoded.append(limit)
     return encoded
 
 
@@ -47,8 +48,8 @@ def _validate_table_position(
         raise ValueError("table_position must contain exactly two values")
 
     return (
-        _validate_finite_number(table_position[0], "table_position[0]"),
-        _validate_finite_number(table_position[1], "table_position[1]"),
+        validate_finite_number(table_position[0], "table_position[0]"),
+        validate_finite_number(table_position[1], "table_position[1]"),
     )
 
 
@@ -60,20 +61,6 @@ def _validate_xy_position(
         raise ValueError(f"{field_name} must contain at least X and Y")
 
     return (
-        _validate_finite_number(position[0], f"{field_name}[0]"),
-        _validate_finite_number(position[1], f"{field_name}[1]"),
+        validate_finite_number(position[0], f"{field_name}[0]"),
+        validate_finite_number(position[1], f"{field_name}[1]"),
     )
-
-
-def _validate_finite_number(
-    value: object,
-    field_name: str,
-) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{field_name} must be a real number")
-
-    numeric_value = float(value)
-    if not math.isfinite(numeric_value):
-        raise ValueError(f"{field_name} must be finite")
-
-    return numeric_value
