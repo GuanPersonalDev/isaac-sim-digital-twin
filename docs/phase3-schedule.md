@@ -5,13 +5,22 @@
 - 2026-08-01 全面重排（雲端訓練 + 週末制）。此前的規則（平日 1h/天、週六日各 4h、A 收斂硬約束 7/31、全部完成 9/06）**全數作廢**，以下為現行版本。
 - **工時模型**：平日（一～五）0.5h／天、週末（六日）5h／天。
   - ⚠️ **平日 0.5h 只能巡檢，不排開發任務**。有效開發容量 = 週末日 × 5h。
-  - 2026-08-02 ~ 2026-09-19 共 14 個週末日 = **70h 有效容量**，工作量約 61h，名目緩衝 9h（13%）。
-  - 套 1.3× 歷史低估修正 → 約 79h，短缺約 9h ≈ 1.8 個週末日。**不做調整的達成率約 40–50%**。
+  - 2026-08-02 ~ 2026-09-19 共 14 個週末日 = **70h 有效容量**，工作量約 62h，名目緩衝 8h（11%）。
+  - 套 1.3× 歷史低估修正 → 約 81h，短缺約 11h ≈ 2.2 個週末日。**不做調整的達成率約 40–50%**。
+  - 2026-08-02 修訂：#226（0.5h→1h）、#227（1.5h→2h）合計 +1h，用於 Block 12「訓練過程」段落的素材。雲端 headless 沒有訓練當下的畫面，只能靠不同階段 checkpoint 的對照回放呈現，且素材需求必須在訓練開始前設好（見 `training/README.md`）。
 - **平日巡檢用途**：看雲端訓練 reward 曲線、確認 checkpoint 有寫入、GPU 是否掉線、費用累計；決定要不要調參重啟。不需開 Isaac Sim 的文書/測試工作也可放平日。
-- **加速槓桿（兩者疊加可補齊 9h 缺口，達成率升至 ~70%）**：
+- **加速槓桿（兩者疊加約可補齊 9h，對 11h 缺口仍差 2h，達成率升至 ~65–70%）**：
   - 平日 0.5h → 1.0h：省 5–6h，**性價比最高**。再往 1.5h/2.0h 邊際效益快速遞減（平日可做的任務池本身有限）。
   - sub-agent 委派：僅省 ~3.5h（unit-test 寫測試骨架、tech-doc 產 README 初稿、api-scanner、api-lookup）。**B-2 + B-3 共 26h 完全不可委派**——核心是「跑模擬 → 看行為 → 判斷對不對 → 調參」的閉環。
-- **訓練平台改為雲端**：RunPod Community RTX 4090（約 $0.34/hr，總成本估 $17–20），NVIDIA pre-built container `nvcr.io/nvidia/isaac-lab:3.0.0-beta2`（headless）。**本機不需安裝 Isaac Lab**。訓練在背景跑不佔工時：週末啟動 → 整週背景跑 → 下個週末收成果。需開頻繁 checkpoint（實例可能被回收），不訓練時終止實例。
+  - **2026-08-03 首次實踐（8/03–8/07）**：把 #222 + #225 + #121 草擬移到平日，共約 3.5h，直接把 8/08 週末時段讓出來。判斷依據是「**本機能不能驗證**」——`core/` 是純 Python 邏輯，pytest 跑得動、不依賴 Isaac Lab 或 GPU，是最適合平日的任務類型。
+    - **本週平日需約 1h/天**（0.5h/天只夠 #222+#225 的 2.5h，#121 排不進去）。
+    - **#222 與 #225 應合併實作**——#222 是 21 維 Encoder 本身、#225 是把它做成訓練端與 Demo 端共用；Encoder 一開始就寫在 `core/` 共用層裡的話，#225 同時完成。分開做等於寫兩遍。
+    - **#121 只能草擬不能驗證**（需 `import isaaclab`，本機刻意不安裝）。平日寫 cfg／`observation_space` 接線／呼叫 `core/`，週末在 RunPod 上花約 0.5h 跑通。接受「寫的時候無法驗證 import 與型別」的代價換取週末時段。
+- **訓練平台改為雲端**（**規格 2026-08-03 實測定案**，取代 08-02 的暫定值）：RunPod **Secure Cloud**／**EU-RO-1**／**RTX A4500（$0.25/hr）**＋ **100GB Network Volume**（$0.07/GB/月，**Pod 停機仍計費**）＋ HTTP Port 6006（TensorBoard）。專案期間總成本估 **$24**（GPU 約 50h ≈ $12.5 ＋ Volume 1.6 個月 ≈ $11.2）。**本機不需安裝 Isaac Lab**。訓練在背景跑不佔工時：週末啟動 → 整週背景跑 → 下個週末收成果。需開頻繁 checkpoint，不訓練時停機。
+  - 選 Secure Cloud 而非 Community：Network Volume 僅 Secure Cloud 支援。**原定 RTX 4000 Ada（$0.28/hr）在 EU-RO-1 缺貨**（RTX 3090 同樣缺貨），改用 A4500 反而 RAM 與 vCPU 更多且更便宜。不選 4090 的理由：Milestone A 是純剛體物理 + 小 MLP，負載輕，而 4090 的 vCPU 只有 5（全場最少），Isaac Sim 啟動時的 USD 解析是 CPU 密集。
+  - ⚠️ **官方 container `nvcr.io/nvidia/isaac-lab:3.0.0-beta2` 已實測失敗並廢棄** —— 其 ENTRYPOINT 強制啟動 Isaac Sim Streaming，而 RunPod 的 start command 只覆寫 CMD 蓋不掉，導致容器不斷重啟、SSH 一進去就被踢。改用 `nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04` + pip 安裝到 volume 上的 venv。
+  - ⚠️ **Container Disk 停機即清空**，但 **venv 在 volume 上所以 Python 套件持久化，不需每週重裝**；只有 apt 套件與 symlink 要重建（`source /workspace/setup.sh` 處理）。Network Volume 掛在 `/workspace` 會遮蔽 container 內同路徑內容（官方 container 的 `/workspace/isaaclab` 就是這樣消失的）。**快取不需重導**（實測 Omniverse 未寫入 HOME，58s 冷啟動與 shader 快取無關）。
+  - 日常操作流程（連線、tmux、巡檢、停機、Demo 素材要求）見 `training/README.md`。
 - **雙 Milestone 結構**
   - **Milestone A（RL 訓練）**：impulse-based（`set_velocities`）、無手臂、雲端 1024+ 平行環境。
   - **Milestone B（手臂執行，GitHub M7）**：UR5 + 球桿剛性連結、單一環境、**在本機跑**（需開 GUI 看物理行為）。承諾範圍 = fallback **(b)**。
@@ -117,20 +126,22 @@
 | 7-3 | Block 7 | 確認 Action 資料格式（6 維，母球初速上限 3.3392 m/s） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-01 | #110 |
 | 7-4 | Block 7 | 補正 ControllerBase 完整生命週期契約（get_action/get_current_state/reset） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-02 | #111 |
 | 7-5 | Block 7 | 取消：Observation 收集由 ObservationBuilder/TableRuntime 負責，Action 契約已完成 | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-02 | #112 |
-| 9-C1 | Block 9 | 雲端基礎設施建置（RunPod 實例 + pull container + checkpoint/volume + 成本監控與自動終止 + 容器內 pytest 驗證） | 5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-02 | #224 |
-| 5-9f-impl | Block 5 | RollingResistanceService 實作（滾動摩擦，影響 reward 品質） | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-08 | #203 |
-| 5-9f-test | Block 5 | RollingResistanceService Unit Test | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-08 | #204 |
+| 7-2-rework | Block 7 | RL Observation Encoder 改 21 維（新增 max_offset 條件變數，訓練時均勻取樣、core/ 層 clamp）+ Unit Test【平日/本機可完成，與 #225 合併實作】 | 2h | M3: 擊球動作與評估 | TRUE | 2026-08-03 | 2026-08-05 | #222 |
+| 8-1 | Block 8 | 實作 Action 物理域參數設定（母球擺位初速角度擊球偏移）【平日/本機可完成；#225／#122／#127 的前置，已從 9/06 提前】 | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-08-04 | #114 |
+| 9-C2 | Block 9 | core/ 共用 action 還原函式與正規化策略（6 維模型輸出 → Action，反正規化取自 #114）+ Unit Test【平日/本機可完成；observation 組裝已隨 #222 完成，一致性測試拆至 #228】 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-05 | #225 |
+| 9-C1 | Block 9 | 雲端基礎設施建置（核心已完成 2026-08-02：Pod/volume/Python3.12/isaacsim 6.0.1.0/torch 2.10.0+cu128/smoke test 通過；剩停機後持久化驗證與成本監控腳本） | 5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #224 |
+| 5-9f-impl | Block 5 | RollingResistanceService 實作（滾動摩擦，影響 reward 品質） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-26 | 2026-08-08 | #203 |
+| 5-9f-test | Block 5 | RollingResistanceService Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-26 | 2026-08-08 | #204 |
 | 9-1 | Block 9 | 研究 Isaac Lab 環境設計規範（在 RunPod container 內，gym.Env / ManagerBasedRLEnv 介面與環境註冊） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #120 |
-| 9-2 | Block 9 | 實作 BilliardEnv：繼承 Isaac Lab 環境介面整合 core/ 邏輯（21 維 observation_space、含 early termination） | 1.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #121 |
-| 7-2-rework | Block 7 | RL Observation Encoder 改 21 維（新增 max_offset 條件變數，訓練時均勻取樣、環境端 clamp）+ Unit Test | 1.5h | M3: 擊球動作與評估 | FALSE |  | 2026-08-08 | #222 |
+| 9-2 | Block 9 | 實作 BilliardEnv：繼承 Isaac Lab 環境介面整合 core/ 邏輯（21 維 observation_space、含 early termination）【平日草擬 1h（08-07，本機無法驗證）+ 週末驗證跑通 0.5h】 | 1.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #121 |
 | 9-3 | Block 9 | 確認 BilliardEnv 的 reset() step() observation_space(21維) action_space 正確 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #122 |
-| 9-C2 | Block 9 | core/ 共用 observation/action 組裝層（訓練端與 Demo 端共用 21 維組裝與 action 還原）+ 一致性 Unit Test | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #225 |
 | 9-4 | Block 9 | 選定 RL 演算法（PPO）設定超參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #123 |
 | 9-5 | Block 9 | 單環境訓練跑通確認（確認 reward 有在變化）→ 啟動雲端背景訓練 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #124 |
 | 9-6 | Block 9 | 確認訓練過程中 reward 曲線有上升趨勢（訓練跑背景，此為監控判讀） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #125 |
 | 9-7 | Block 9 | 儲存訓練好的模型確認可以載入並執行推論 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #126 |
-| 9-C3 | Block 9 | exported policy 取回流程（從 RunPod 下載 policy.pt / policy.onnx / params/env.yaml） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #226 |
+| 9-C3 | Block 9 | 訓練成果取回流程（policy.pt / policy.onnx / env.yaml ＋ 中間 checkpoint 的 TorchScript ＋ TensorBoard event 檔） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #226 |
 | 9-8 | Block 9 | 實作 ModelController（載入 TorchScript exported/policy.pt，normalizer 已內建） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #127 |
+| 9-C4 | Block 9 | core/ 共用層兩端呼叫路徑一致性測試（訓練端 vs Demo 端輸出一致、無重複實作）【拆分自 #225，需 #121/#122/#127 到位】 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #228 |
 | 9-9 | Block 9 | 確認 ModelController 執行效果優於隨機參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #128 |
 | 10-merge | Block 10 | 雲端多環境並行：直接設定高環境數（1024+）+ 一次性穩定性檢查 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #223 |
 | A-CP | Block 10 | Milestone A 收斂判定點（未收斂 → 直接帶不完美 policy 進 B，不為 A 犧牲 B 的時間） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #179 |
@@ -139,7 +150,6 @@
 | B-2 | Block 13 | 關節空間揮桿軌跡生成（後擺 → 加速 → 擊球點，joint target 播放） | 12h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-29 | #181 |
 | B-3 | Block 13 | 真實接觸物理校正（physics dt 1e-4 + CCD + spin_efficiency） | 14h | M7: Milestone B 手臂執行 | FALSE |  | 2026-09-06 | #182 |
 | B-CP | Block 13 | Fallback 檔位決策點總覽（B-CP1 8/16、B-CP2 8/29、B-CP3 9/06） | 0.5h | M7: Milestone B 手臂執行 | FALSE |  | 2026-09-06 | #183 |
-| 8-1 | Block 8 | 實作 Action 物理域參數設定（母球擺位初速角度擊球偏移） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #114 |
 | 8-2 | Block 8 | HUD 新增參數控制面板（可即時調整擊球參數） | 1h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #115 |
 | 8-3 | Block 8 | HUD 新增 ShotResult 顯示（散開分數白球狀態9號球狀態） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #116 |
 | 6-6 | Block 6 | Debug Menu 新增「顯示當前 ShotResult」按鈕手動驗證計算正確性 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-09-06 | #107 |
@@ -151,7 +161,7 @@
 | 11-3 | Block 11 | 穩定性測試（長時間訓練確認無記憶體洩漏） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #136 |
 | 11-4 | Block 11 | API 掃描：執行 api-scanner 掃描 isaac_sim_impl_6_0/ 產出 API 使用清單 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #137 |
 | 11-5 | Block 11 | 補坑收尾 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #138 |
-| 12-C1 | Block 12 | 本機 Demo 播放與錄影流程（Isaac Sim 內建 PyTorch 載入 TorchScript policy，GUI 運鏡錄影） | 1.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #227 |
+| 12-C1 | Block 12 | 本機 Demo 播放與錄影流程（GUI 運鏡錄影 ＋ 4 階段 checkpoint 對照回放 ＋ 多環境並行示意） | 2h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #227 |
 | 12-1 | Block 12 | Demo 影片腳本規劃（完整故事弧線：參數化控制 → RL 訓練 → 手臂執行） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #139 |
 | 12-2 | Block 12 | 錄製 Demo 影片（OBS） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #140 |
 | 12-3 | Block 12 | 影片剪輯確認 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #141 |
