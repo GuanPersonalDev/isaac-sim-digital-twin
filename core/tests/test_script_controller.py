@@ -1,6 +1,7 @@
 import pytest
 
 from core.controllers.script_controller import ScriptController
+from core.models.action_bounds import CUE_BALL_SPEED
 from core.models.billiard_state import BilliardStatus
 from core.models.observation import Observation
 
@@ -168,7 +169,7 @@ class TestStrikingToWaiting:
 
         # Assert
         assert controller._current_state == BilliardStatus.STRIKING
-        assert action.cue_ball_speed == ScriptController.MAX_CUE_BALL_SPEED
+        assert action.cue_ball_speed == CUE_BALL_SPEED[1]
         assert action.shot_angle == 0
         assert action.position_offset == [0.0, 0.0]
 

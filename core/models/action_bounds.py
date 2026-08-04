@@ -1,0 +1,70 @@
+
+ACTION_DIM = 6
+
+# RL 訓練時 policy 會依序取得，因此順序不可更動
+# 每一項都是物理域（真實單位）的 (low, high)。
+
+# 母球擺位，桌台相對座標（m）；世界座標需先扣除桌台 XY。
+# X：桌面半寬 0.635 扣一顆球半徑 0.028575，得球心安全範圍。
+CUE_BALL_PLACEMENT_X = (-0.606425, 0.606425)
+# Y：Kitchen 的球心範圍。下界為 -1.27 + 球半徑；上界即 head string
+# （Y = -0.635），母球球心可壓在線上。
+CUE_BALL_PLACEMENT_Y = (-1.241425, -0.635)
+
+# 擊球方向角（degree）。0° 朝桌台 +Y，正角朝 -X 增加。
+#
+# ⚠️ 物理域是半開區間 [0, 360)，但 gymnasium 的 Box 只能表達閉區間，因此
+# high 記為 360.0，把 360 視為「週期」而非可達上限。反正規化的尾端必須
+# 統一做 `angle % 360.0` 把值收回 [0, 360)（#225 負責），否則正規化域的
+# +1 會還原成 360.0 —— 與 0.0 是同一個方向卻是不同數值，兩端各自處理就
+# 會出現只在邊界重現的不一致。
+SHOT_ANGLE = (0.0, 360.0)
+
+# 母球目標初速（m/s），不是球桿桿尖速度。
+#
+# 上限數值來源：2026-07-26 換裝 Barrett WAM + 差動 IK 後實測桿尖峰值速度
+# 2.5302 m/s（預設姿態，見 docs/phase3-task-breakdown.md 出桿速度範圍列的
+# 更新說明），套用真實撞球動量傳遞公式
+# v_ball = v_cue×(1+e)×M桿/(M桿+m球)（球桿 0.5kg、母球 0.163kg、皮革頭
+# 恢復係數 e=0.75，Dr. Dave Pool Info 引用範圍 0.71–0.75）換算得
+# 2.5302×1.75×0.5/0.663 ≈ 3.3392 m/s。#176 UR5 的 1.313 m/s 已淘汰。
+#
+# 訓練桌（impulse strike）路徑把這個上限直接當成母球初速（見
+# core/services/impulse_striking_service.py 的 compute_cue_ball_velocities，
+# 目前 1:1 直接賦值，沒有再套一次動量轉換）。
+#
+# 下限 0.5 m/s 只約束 RL Action；執行期 no-op Action 可用 0.0（#110）。
+CUE_BALL_SPEED = (0.5, 3.3392)
+
+# 上下（索引 4）／左右（索引 5）擊球偏移，單位是**球半徑比例**，不是公尺。
+# ±0.5R 已接近撞球物理的 miscue limit（約 0.5R，超過即滑桿）。
+#
+# ⚠️ 本檔全部是物理域，偏移量的 clamp 不在這把尺上執行：
+#
+#     policy 輸出（正規化域 [-1, 1]）
+#           ↓ clamp_position_offset(offset, max_offset)   ← 在這裡
+#           ↓ 反正規化 × 本檔的 ±0.5
+#       Action.position_offset（物理域 ±0.5R）
+#
+# `max_offset ∈ [0, 1]` 的語意是「可用偏移能力的比例」，與正規化域的
+# [-1, 1] 同一把尺，`hypot(offset)` 與它才能直接比較。若改成先反正規化再
+# clamp，物理域的最大範數只有 hypot(0.5, 0.5) ≈ 0.707，
+# `max_offset ∈ (0.707, 1.0]` 會整段變成死區，policy 分不出 0.8 與 1.0
+# （見 #222）。
+#
+# Box 的上下限維持 ±0.5（物理域）／±1（正規化域），不可寫成 [0, 0.5]，
+# 否則失去負方向偏移。
+POSITION_OFFSET_VERTICAL = (-0.5, 0.5)
+POSITION_OFFSET_HORIZONTAL = (-0.5, 0.5)
+
+ACTION_BOUNDS = (
+    CUE_BALL_PLACEMENT_X,
+    CUE_BALL_PLACEMENT_Y,
+    SHOT_ANGLE,
+    CUE_BALL_SPEED,
+    POSITION_OFFSET_VERTICAL,
+    POSITION_OFFSET_HORIZONTAL,
+)
+
+ACTION_LOW = [low for low, _ in ACTION_BOUNDS]
+ACTION_HIGH = [high for _, high in ACTION_BOUNDS]
