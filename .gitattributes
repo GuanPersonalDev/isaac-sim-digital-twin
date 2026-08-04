@@ -1,0 +1,21 @@
+# 本專案以 LF 為唯一換行規格：index 內全部是 LF，checkout 也一律給 LF。
+#
+# 不依賴各機器的 core.autocrlf（本 repo 目前設為 true）。autocrlf 只在
+# checkout／commit 當下轉換，編輯工具是直接寫 LF 進檔案，兩者混用會讓同一個
+# 檔案出現部分 CRLF、部分 LF，在 git diff 與 cat -A 顯示成行尾多出 ^M。
+# 明確指定 eol=lf 後，checkout 出來就是 LF，工具寫入的也是 LF，不再漂移。
+#
+# 二進位與 USD 資產不列入，維持 git 的預設處理。
+
+.gitattributes text eol=lf
+.gitignore     text eol=lf
+
+*.py     text eol=lf
+*.md     text eol=lf
+*.toml   text eol=lf
+*.json   text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.sh     text eol=lf
+*.cfg    text eol=lf
+*.txt    text eol=lf
