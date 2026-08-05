@@ -1,5 +1,5 @@
 from ..models.observation import Observation
-from .numeric_validation import validate_finite_number, validate_max_offset
+from .numeric_validation import validate_finite_number, validate_max_offset, validate_2d_value
 
 
 _EXPECTED_BALL_COUNT = 10
@@ -23,7 +23,7 @@ def encode_rl_observation(
 
     encoded: list[float] = []
     for ball_id in _RL_BALL_ORDER:
-        world_x, world_y = _validate_xy_position(
+        world_x, world_y = validate_2d_value(
             ball_positions[ball_id],
             field_name=f"ball_positions[{ball_id}]",
         )
@@ -50,17 +50,4 @@ def _validate_table_position(
     return (
         validate_finite_number(table_position[0], "table_position[0]"),
         validate_finite_number(table_position[1], "table_position[1]"),
-    )
-
-
-def _validate_xy_position(
-    position: list[float],
-    field_name: str,
-) -> tuple[float, float]:
-    if len(position) < 2:
-        raise ValueError(f"{field_name} must contain at least X and Y")
-
-    return (
-        validate_finite_number(position[0], f"{field_name}[0]"),
-        validate_finite_number(position[1], f"{field_name}[1]"),
     )
