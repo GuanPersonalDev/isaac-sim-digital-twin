@@ -128,7 +128,7 @@
 | 7-5 | Block 7 | 取消：Observation 收集由 ObservationBuilder/TableRuntime 負責，Action 契約已完成 | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-29 | 2026-08-02 | #112 |
 | 7-2-rework | Block 7 | RL Observation Encoder 改 21 維（新增 max_offset 條件變數，訓練時均勻取樣、core/ 層 clamp）+ Unit Test【平日/本機可完成，與 #225 合併實作】 | 2h | M3: 擊球動作與評估 | TRUE | 2026-08-03 | 2026-08-05 | #222 |
 | 8-1 | Block 8 | 實作 Action 物理域參數設定（母球擺位初速角度擊球偏移）【平日/本機可完成；#225／#122／#127 的前置，已從 9/06 提前】 | 0.5h | M4: 中途展示點 LinkedIn篇6 | TRUE | 2026-08-04 | 2026-08-04 | #114 |
-| 9-C2 | Block 9 | core/ 共用 action 還原函式與正規化策略（6 維模型輸出 → Action，反正規化取自 #114）+ Unit Test【平日/本機可完成；observation 組裝已隨 #222 完成，一致性測試拆至 #228】 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-05 | #225 |
+| 9-C2 | Block 9 | core/ 共用 action 還原函式與正規化策略（6 維模型輸出 → Action，反正規化取自 #114）+ Unit Test【平日/本機可完成；observation 組裝已隨 #222 完成，一致性測試拆至 #228】 | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-06 | 2026-08-05 | #225 |
 | 9-C1 | Block 9 | 雲端基礎設施建置（核心已完成 2026-08-02：Pod/volume/Python3.12/isaacsim 6.0.1.0/torch 2.10.0+cu128/smoke test 通過；剩停機後持久化驗證與成本監控腳本） | 5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-08 | #224 |
 | 5-9f-impl | Block 5 | RollingResistanceService 實作（滾動摩擦，影響 reward 品質） | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-26 | 2026-08-08 | #203 |
 | 5-9f-test | Block 5 | RollingResistanceService Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-26 | 2026-08-08 | #204 |
