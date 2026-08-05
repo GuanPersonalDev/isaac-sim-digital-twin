@@ -34,13 +34,15 @@
 
 **職責：** 對指定的球 prim path 清單，依真實滾動摩擦物理逐顆計算並寫回衰減後的線速度／角速度。
 
-**介面（2026-07-25 事後修正版，見第 6 節）：**
+**介面（2026-07-26 事後修正版，見第 6 節）：**
 ```python
 GRAVITY = 9.81
 NEGLIGIBLE_SPEED_THRESHOLD = 0.02  # m/s，低於此值視覺上等同停止，直接夾到 0（非跳過不處理）
 NEGLIGIBLE_SPIN_THRESHOLD = 0.1    # rad/s，殘留自旋低於此值視覺上等同停止，直接夾到 0
 PHYSICS_DT = 1.0 / 60.0            # 跟 SimulationManager.setup_simulation(dt=1/60) 一致的固定常數，不作為 apply() 參數傳入
 SPIN_DECAY_RATE = 10.0             # rad/s²，Dr. Dave Pool Info 記載的球-呢絨自旋衰減率 5–15 rad/s² 中間值
+_SETTLING_NOISE_CEILING = 0.005    # 沉降/接觸解算數值雜訊的量級上限；水平線速度與殘留自旋都低於此值時
+                                   # 完全跳過寫入，交還給 PhysX 的 sleep 機制（見第 6 節第三次事後修正）
 
 
 class RollingResistanceService:
@@ -58,8 +60,10 @@ class RollingResistanceService:
         """
         對每個 prim path 獨立執行一次速度衰減（見第 4 節資料流的演算法步驟）：
         線速度＋對應滾動角速度分量依滾動摩擦衰減；殘留角速度分量（含加塞／
-        english）依自旋衰減率獨立衰減。兩者都會被夾到精確 0，只有線速度與
-        殘留自旋皆已精確為 0 的球才會被跳過（純效能考量）。
+        english）依自旋衰減率獨立衰減。兩者都會被夾到精確 0；只有「水平線速度
+        與殘留自旋都低於 _SETTLING_NOISE_CEILING」的球會被完全跳過（不是效能
+        考量，是為了不打斷 PhysX 的 sleep 判定，見第 6 節第三次事後修正）。
+        垂直分量（vz）從頭到尾原封不動，不是本服務處理的對象。
         """
         ...
 ```
@@ -159,7 +163,11 @@ TableRuntime.tick()                                              [不變]
              ω_residual = ω_actual - ω_roll_before                 # 加塞／english 殘留分量
              residual_mag = |ω_residual|
 
-             若 v_h 與 residual_mag 都精確為 0 → 跳過這顆球（純效能考量，不寫入）
+             若 v_h < _SETTLING_NOISE_CEILING 且 residual_mag < _SETTLING_NOISE_CEILING
+                 → 完全跳過這顆球，不呼叫 set_velocities()
+                   （這是沉降/接觸解算的數值雜訊量級，不是真的在滾動或自旋；
+                    持續寫入會讓 PhysX 永遠無法進入 sleep，見第 6 節第三次事後修正。
+                    注意：此時即使 vz 還帶著明顯殘留也一樣跳過）
 
           2. 線速度＋滾動角速度分量（滾動摩擦）：
              Δv = rolling_friction_coeff * GRAVITY * PHYSICS_DT
@@ -222,7 +230,8 @@ billiard_digital_twin.py（extension 組裝層）
 | 這個 tick 該扣減的量 `Δv` 超過目前球速 `v_h` | 直接把線速度水平分量歸零、`linear_scale=0`，不會反向 |
 | 殘留自旋（含加塞／english）幅度已經低於 `NEGLIGIBLE_SPIN_THRESHOLD` | 直接把殘留分量夾到精確 0 |
 | 這個 tick 該扣減的自旋量 `Δw` 超過目前殘留自旋幅度 | 直接把殘留分量歸零、`spin_scale=0` |
-| 線速度與殘留自旋都已經精確為 0 | 完全跳過這顆球，不重複呼叫 `set_velocities`（純效能考量，用極小 epsilon 判斷，跟上面的視覺門檻是不同用途） |
+| 水平線速度與殘留自旋都低於 `_SETTLING_NOISE_CEILING`（0.005） | 完全跳過這顆球，**一次 `set_velocities` 都不呼叫**——這是沉降/接觸解算的數值雜訊，不是真的在滾動，必須交還給 PhysX 自己的 sleep 機制（見下方第三次事後修正） |
+| 上述跳過情境中垂直分量 `vz` 仍有明顯殘留 | 一樣跳過。`vz` 從頭到尾不是滾動摩擦要處理的對象，不該被本服務寫入或清零 |
 | Demo 桌與訓練桌 | 共用同一個 `RollingResistanceService` 實例，`step()` 的呼叫邏輯在 base class `TableOrchestrator` 裡，兩個子類別都會自動套用 |
 
 **關鍵設計決策（需保留紀錄）：** 角速度衰減採用「精確分解版」——把角速度分解成「由線速度決定的滾動分量」與「殘留分量（含加塞／english 自旋）」。此為使用者在設計討論階段主動選擇的方向，明確理由是為了讓未來實作加塞球路時不需要回頭修改這裡的邏輯。
@@ -234,6 +243,24 @@ billiard_digital_twin.py（extension 組裝層）
 1. **「低於門檻跳過」等於放棄處理**：球速一旦降到門檻附近，就不會再被寫入任何新速度，導致球用門檻附近的殘留速度/自旋永遠移動下去，達不到真正的靜止——這是實作疏漏，不是原本的設計意圖。修正為：低於門檻時**明確夾到精確 0**，只有在「線速度與殘留自旋都已經精確為 0」時才真正跳過（純效能優化，避免對已靜止的球重複寫入）。
 2. **殘留自旋（側旋／english）完全不衰減，不符合真實世界**：真實撞球的側旋也會因為跟呢絨的摩擦逐漸停止，這是跟滾動摩擦不同、但同樣重要的物理現象。追加 `SPIN_DECAY_RATE`（取 Dr. Dave Pool Info 記載的球-呢絨自旋衰減率 5–15 rad/s² 中間值，10 rad/s²），對殘留分量獨立衰減，衰減邏輯跟滾動摩擦的線速度衰減對稱（同樣有「夾到 0」的 clamp 機制）。
 
+### 第三次事後修正（2026-07-26，GUI 實測回報後追加 `_SETTLING_NOISE_CEILING`）
+
+**現象：** 開新場景後，rack 上的 9 顆球明明沒有被擊打，`vz` 卻永久卡在 ≈0.0687 m/s 不動，`is_ball_moving` 永遠回傳 True，狀態機因此卡死在 IDLE，整個流程無法推進。
+
+**根因：** 這是**顯式速度寫入與 PhysX sleep 機制的衝突**，不是衰減公式算錯。第二次修正後，只要球「低於視覺門檻」就會觸發一次「夾到 0」的 `set_velocities()` 寫入。問題在於沉降與多球接觸解算本來就會持續產生數值雜訊量級的殘留（實測線速度雜訊約 1e-7~1e-5 m/s、角速度殘留約 1e-4~1e-3 rad/s，永遠不是精確的 0），所以這個寫入會**每個 tick 都被觸發**。而顯式呼叫 `set_velocities()` 這個動作本身就會讓 PhysX 判定該剛體仍在被外部驅動，永遠沒機會進入 sleep；接觸解算於是每個 tick 重新產生類似大小的殘留，球就永遠卡在這個殘留值上不消失。
+
+**修正：** 新增 `_SETTLING_NOISE_CEILING = 0.005`，當**水平線速度與殘留自旋幅度都低於**此值時，`apply()` 對該球**完全跳過、一次寫入都不做**，把收斂交還給 PhysX 自己的 sleep 機制（純物理環境不受干擾時，殘留會在約 0.4 秒內自然收斂到 0 並保持 sleep）。
+
+**與既有兩個門檻的分工（三者用途完全不同，不可混用）：**
+
+| 常數 | 值 | 用途 |
+|---|---|---|
+| `NEGLIGIBLE_SPEED_THRESHOLD` | 0.02 m/s | 視覺門檻：低於此值視為已停止，**主動夾到 0** |
+| `NEGLIGIBLE_SPIN_THRESHOLD` | 0.1 rad/s | 同上，用於殘留自旋 |
+| `_SETTLING_NOISE_CEILING` | 0.005 | 雜訊門檻：低於此值視為「根本不是真的在動」，**完全不寫入** |
+
+門檻附近**真實的**低速蠕動（也就是第二次修正要解決的那個 bug）量級明顯大於 0.005，仍然會落入「主動夾停」分支，不會被這次的修正誤判跳過——兩者不衝突。
+
 ---
 
 ## 7. 測試涵蓋（對應 Unit Test）
@@ -241,19 +268,23 @@ billiard_digital_twin.py（extension 組裝層）
 | 測試案例 | 測試檔案 | 說明 |
 |---|---|---|
 | test_apply_decays_linear_velocity_by_rolling_friction | core/tests/test_rolling_resistance_service.py | 給定已知水平線速度，驗證扣減量等於 `rolling_friction_coeff * GRAVITY * PHYSICS_DT` |
+| test_apply_preserves_vertical_velocity_component | core/tests/test_rolling_resistance_service.py | 驗證 `vz` 原封不動寫回，不被滾動摩擦邏輯影響 |
+| test_apply_does_not_touch_ball_when_only_vertical_residual_remains | core/tests/test_rolling_resistance_service.py | 水平與自旋都在雜訊量級、但 `vz` 仍有明顯殘留（實測 0.0687）時，`set_velocities` 不應被呼叫（第三次事後修正的迴歸測試） |
+| test_apply_does_not_touch_ball_with_only_settling_noise_on_horizontal_and_spin | core/tests/test_rolling_resistance_service.py | 水平線速度與殘留自旋都在 `_SETTLING_NOISE_CEILING` 以下但非精確 0 時，同樣完全不寫入 |
 | test_apply_clamps_to_zero_when_delta_exceeds_speed | core/tests/test_rolling_resistance_service.py | 速度很小、`Δv >= v_h` 時，驗證線速度水平分量歸零，不會變成負值/反向 |
 | test_apply_clamps_linear_velocity_to_exact_zero_below_negligible_threshold | core/tests/test_rolling_resistance_service.py | 速度低於視覺門檻時，驗證確實被夾到精確 0（而非放著不管） |
-| test_apply_skips_ball_already_fully_at_rest | core/tests/test_rolling_resistance_service.py | 線速度與殘留自旋都已經精確為 0 時，`set_velocities` 不應被呼叫 |
+| test_apply_skips_ball_already_fully_at_rest | core/tests/test_rolling_resistance_service.py | 線速度與殘留自旋都已經靜止時，`set_velocities` 不應被呼叫 |
 | test_apply_decays_residual_angular_velocity_by_spin_decay_rate | core/tests/test_rolling_resistance_service.py | 給定一個有「額外自旋分量」（模擬加塞）的球，驗證這個殘留分量依 `SPIN_DECAY_RATE` 衰減，衰減量等於 `spin_decay_rate * PHYSICS_DT` |
 | test_apply_clamps_residual_angular_velocity_to_zero_below_negligible_threshold | core/tests/test_rolling_resistance_service.py | 殘留自旋幅度低於視覺門檻時，驗證確實被夾到精確 0 |
 | test_apply_scales_rolling_angular_component_with_linear_velocity | core/tests/test_rolling_resistance_service.py | 驗證滾動分量的衰減比例跟線速度的衰減比例一致（同一個 `linear_scale`） |
-| test_step_calls_rolling_resistance_before_state_dispatch | core/tests/test_table_orchestrator.py | 驗證 `TableOrchestrator.step()` 不論 `should_execute_action` / `current_state` 為何，都會呼叫 `rolling_resistance_service.apply()`，且在 state dispatch 之前 |
+| test_step_calls_rolling_resistance_regardless_of_should_execute_action | core/tests/test_table_orchestrator.py | 驗證 `should_execute_action` 為 False 時 `rolling_resistance_service.apply()` 仍被呼叫一次 |
+| test_step_calls_rolling_resistance_before_state_dispatch | core/tests/test_table_orchestrator.py | 用 `manager.attach_mock` 驗證 `apply()` 的呼叫順序在 state dispatch 之前 |
 
 ---
 
 ## 8. 待決定事項
 
-- [ ] 無（設計討論已在四階段流程中確認完畢；2026-07-25 依實測回報追加「精確歸零」與「自旋衰減」兩項修正，已同步更新本文件）
+- [ ] 無（設計討論已在四階段流程中確認完畢；2026-07-25 依實測回報追加「精確歸零」與「自旋衰減」兩項修正，2026-07-26 依 GUI 實測回報追加 `_SETTLING_NOISE_CEILING`，均已同步更新本文件）
 
 ---
 
