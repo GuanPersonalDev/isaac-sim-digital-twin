@@ -15,13 +15,28 @@
 # 先試跑不真的關機：
 #   DRY_RUN=1 IDLE_LIMIT=2 ./gpu_watchdog.sh
 #
+# 前置需求：
+#   WATCHDOG_API_KEY  RunPod API key，scope 必須含 Pods 讀寫（相容舊名
+#                     WATCH_DOG_API_KEY）。填在 Pod 的環境變數即可，不要寫進
+#                     任何檔案 —— 本 repo 是 public。
+#
+#   ⚠️ 不可使用 RUNPOD_API_KEY。那是平台保留並自動注入的 pod-scoped key，
+#      權限不含管理 Pod 生命週期（實測 GraphQL Unauthorized、REST 403），
+#      而且會覆蓋你在 Pod 設定裡填的同名值。
+#
+#   停機改走 REST API（見同目錄 runpod_api.py），不再依賴 runpodctl——
+#   它只打 GraphQL，且與 curl 都不在基礎映像內，每次開機都要重裝。
+#
 # 可調參數（皆為環境變數）：
 #   IDLE_LIMIT      連續閒置幾分鐘後停機（預設 30）
 #   UTIL_THRESHOLD  GPU 使用率低於多少視為閒置（%，預設 5）
 #   POLL_INTERVAL   取樣間隔（秒，預設 60）
-#   HOURLY_RATE     GPU 時價，僅用於 log 顯示累計花費（預設 0.25）
+#   HOURLY_RATE     GPU 時價，僅用於 log 顯示累計花費（預設 0.25，為 RTX A4500
+#                   的價格；換卡後請依 RunPod Billing 頁的實際時價調整）
 #   LOG             log 路徑（預設 /workspace/watchdog.log）
 #   DRY_RUN         設為 1 則只記錄不真的停機
+#   PYTHON_BIN      指定 python（預設依序找 venv、/workspace/venv、python3）
+#   API_SCRIPT      指定 runpod_api.py 路徑（預設為本腳本同目錄）
 
 set -uo pipefail
 
@@ -45,18 +60,34 @@ if [ -z "${RUNPOD_POD_ID:-}" ]; then
     exit 1
 fi
 
-if [ "$DRY_RUN" != "1" ] && ! command -v runpodctl >/dev/null 2>&1; then
-    log "[FATAL] 找不到 runpodctl。安裝：bash <(wget -qO- cli.runpod.io)"
-    log "        並設定金鑰：runpodctl config --apiKey \"\$RUNPOD_API_KEY\""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+API_SCRIPT="${API_SCRIPT:-$SCRIPT_DIR/runpod_api.py}"
+
+if [ ! -f "$API_SCRIPT" ]; then
+    log "[FATAL] 找不到 $API_SCRIPT，無法停機。"
     exit 1
 fi
 
-# RunPod 兩種指令形式在文件中都出現過，兩種都試。
+# venv 在 network volume 上持久化，優先用它；系統 python3 是 apt 裝的，
+# container disk 停機清空後不保證還在。
+if [ -z "${PYTHON_BIN:-}" ]; then
+    for candidate in "${VIRTUAL_ENV:-/nonexistent}/bin/python" \
+                     /workspace/venv/bin/python \
+                     python3; do
+        if [ -x "$candidate" ] || command -v "$candidate" >/dev/null 2>&1; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -z "${PYTHON_BIN:-}" ]; then
+    log "[FATAL] 找不到可用的 python，無法停機。"
+    exit 1
+fi
+
 stop_pod() {
-    if runpodctl stop pod "$RUNPOD_POD_ID" >>"$LOG" 2>&1; then return 0; fi
-    log "[WARN] 'runpodctl stop pod' 失敗，改試 'runpodctl pod stop'。"
-    if runpodctl pod stop "$RUNPOD_POD_ID" >>"$LOG" 2>&1; then return 0; fi
-    return 1
+    "$PYTHON_BIN" "$API_SCRIPT" stop >>"$LOG" 2>&1
 }
 
 # 取所有 GPU 中的最高使用率（單卡時等同該卡數值）。
@@ -66,6 +97,19 @@ gpu_util() {
 }
 
 log "=== watchdog 啟動 pod=$RUNPOD_POD_ID idle_limit=${IDLE_LIMIT}min threshold=${UTIL_THRESHOLD}% dry_run=${DRY_RUN} ==="
+log "python=$PYTHON_BIN api_script=$API_SCRIPT"
+
+# 啟動當下就驗證金鑰，不要等閒置滿 30 分鐘才發現停不了機——那正是
+# watchdog 要防的情境，靜默失效等於沒裝。
+if [ "$DRY_RUN" != "1" ]; then
+    if ! "$PYTHON_BIN" "$API_SCRIPT" check >>"$LOG" 2>&1; then
+        log "[FATAL] API 金鑰驗證失敗，watchdog 無法在需要時停機，直接退出。"
+        log "        手動重現：$PYTHON_BIN $API_SCRIPT check"
+        exit 1
+    fi
+    log "API 金鑰驗證通過，停機路徑可用。"
+fi
+
 log "尚未偵測到 GPU 活動，處於未武裝狀態——看到 GPU 忙碌後才會開始倒數。"
 
 # 內部一律以「秒」累計，最後才換算成分鐘。
@@ -106,12 +150,12 @@ while true; do
             log "[DRY_RUN] 略過實際停機。"
             exit 0
         fi
-        log "執行停機：runpodctl stop pod $RUNPOD_POD_ID"
+        log "執行停機：$API_SCRIPT stop（pod=$RUNPOD_POD_ID）"
         if stop_pod; then
             log "停機指令已送出。"
             exit 0
         fi
-        log "[ERROR] 停機失敗。請手動至 RunPod 網頁停止 Pod，並檢查 runpodctl 金鑰設定。"
+        log "[ERROR] 停機失敗。請手動至 RunPod 網頁停止 Pod，並檢查 API 金鑰權限。"
         exit 1
     fi
 

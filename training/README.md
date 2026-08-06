@@ -142,15 +142,46 @@ tmux new -s train
 DRY_RUN=1 IDLE_LIMIT=2 ./gpu_watchdog.sh
 ```
 
-**前置需求**（`runpodctl` 不在自訂映像內，container disk 停機清空，需每次開機重裝）：
+**前置需求：只要一個環境變數。** 停機走 REST API（`scripts/runpod_api.py`，只用
+Python 標準庫），不需要安裝任何東西。
+
+在 Pod 的 Environment Variables 加一筆 `WATCHDOG_API_KEY`，值是 RunPod
+**Settings → API Keys** 建立的金鑰，scope 必須勾選 **Pods 的讀與寫**。
+
+⚠️ **不可使用 `RUNPOD_API_KEY` 這個名稱。** 它是平台保留字，每顆 Pod 啟動時都會
+被自動注入一把 **pod-scoped key**，權限不含管理 Pod 生命週期（實測 GraphQL 回
+Unauthorized、REST 回 403），而且會覆蓋你在 Pod 設定裡填的同名值——症狀是
+「金鑰格式完全正確卻一直 403」，極難追查。
+
+⚠️ 金鑰**不可寫進任何檔案**，本 repo 是 public。直接填在 Pod 設定即可（Pod 設定
+不在 git 裡）。RunPod 的 Secret 功能只影響它在 RunPod UI 上是否明文顯示——注入
+容器後兩者都是普通環境變數，`env` 一打就看得到，在 Pod 內完全等價。
+
+改設定後**必須重啟 Pod**，環境變數只在啟動時注入。
+
+驗證金鑰（唯讀，不會動到 Pod）：
 
 ```bash
-command -v runpodctl >/dev/null || bash <(wget -qO- cli.runpod.io)
-runpodctl config --apiKey "$RUNPOD_API_KEY"
+python /workspace/isaac-sim-digital-twin/training/scripts/runpod_api.py check
 ```
 
-⚠️ **`RUNPOD_API_KEY` 必須用 RunPod Template 的 Secret 注入，不可寫進任何檔案**——
-本 repo 是 public。RunPod 環境變數頁面的 🔑 圖示就是建立 Secret 的入口。
+watchdog 啟動時也會自動跑這個檢查，**驗不過就直接退出**——不會讓你以為有保險，
+卻在閒置滿 30 分鐘後才發現停不了機。
+
+### 為什麼不用 runpodctl
+
+1. 每顆 Pod 都預裝了 runpodctl，但它配的是那把 pod-scoped key，連唯讀的
+   `get pod` 都回 Unauthorized。
+2. runpodctl 只打 GraphQL endpoint；新版 scoped key 的 GraphQL 與 REST 權限是
+   分開勾選的，可以出現「GraphQL 無權、REST 可用」的組合（實測就是如此）。
+3. `runpodctl config` 在 `/root/.runpod/` 不存在時不會自建目錄，直接報
+   「Config File not found」；就算存檔成功，它還會順手同步 SSH key 到雲端，
+   那需要帳號層級權限，失敗會讓整個指令回傳非零 exit code——用 `&&` 串後續
+   指令時會被靜默吃掉。
+4. runpodctl 與 curl 都不在基礎映像內，container disk 停機即清空，等於每次開機
+   都要重裝；而 apt 會跟 Pod 的 start command 搶 dpkg lock。
+
+venv 在 network volume 上持久化，用它的 python 打 REST 沒有任何安裝成本。
 
 log 寫在 `/workspace/watchdog.log`（volume 上，停機後仍在，可事後查為什麼被關）。
 
@@ -312,9 +343,12 @@ wc -l /workspace/IsaacLab/logs/docker_tutorial/log.txt   # 行數持續增加 = 
   `obs_dim` / `action_dim` 兩欄應刪除——Isaac Lab 從 env 的 space 定義推導，留在 yaml
   會變成第二個事實來源。observation 規格是 **21 維**（見 #222/#225），現有
   `core/services/rl_observation_encoder.py` 是 20 維，尚未對齊。
-- **`gpu_watchdog.sh` 尚未在真實 Pod 上驗證**：邏輯已用假 `nvidia-smi`／`runpodctl` 測過
-  兩條路徑（觸發停機、未武裝不誤觸發），但 `runpodctl` 是否裝得起來、`$RUNPOD_POD_ID`
-  是否真的被注入、`stop pod` 與 `pod stop` 何者為正確子指令，都要下次開機實測。
+- **`gpu_watchdog.sh` 的停機動作尚未在真實 Pod 上驗證**（2026-08-06 更新）。
+  已確認：`$RUNPOD_POD_ID` 有被注入；自建金鑰對 REST `GET /v1/pods` 回 **200**；
+  腳本邏輯用假 `nvidia-smi`／假 python 測過四條路徑（金鑰驗證失敗即退出、
+  找不到 API script 即退出、未武裝不誤觸發、先忙後閒觸發停機且參數正確）。
+  待實測：`POST /v1/pods/<id>/stop` 是否真的停得了機（write 權限）。
+  這一項沒過之前**不要開整週的訓練**——那正是 watchdog 要防的情境。
 - **CUDA 13 孤兒套件清理**（#224 未完項，選配）。
 
 ## 注意事項
