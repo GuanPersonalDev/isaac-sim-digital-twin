@@ -8,8 +8,12 @@
 
 > **2026-08-02 大幅修訂。** 先前版本記載的「直接使用官方映像
 > `nvcr.io/nvidia/isaac-lab:3.0.0-beta2`＋每次開機跑 `bootstrap_runpod.sh`」路線
-> **已實測失敗並廢棄**，原因見下方〈為什麼不用官方映像〉。`scripts/bootstrap_runpod.sh`
-> 與 `docker/docker-compose.yml` 是舊路線的產物，**尚未改寫，目前不要使用**。
+> **已實測失敗並廢棄**，原因見下方〈為什麼不用官方映像〉。
+>
+> **2026-08-06 收尾。** 舊路線的兩個產物已處理：`docker/docker-compose.yml`
+> 已刪除（它綁在那個 ENTRYPOINT 蓋不掉的官方映像上，沒有可改寫的餘地）；
+> `scripts/bootstrap_runpod.sh` 已改寫成 **Volume 從零建置**腳本，不再是開機腳本
+> ——開機的工作由 `/workspace/setup.sh` 負責。
 
 ## 環境現況（2026-08-02 建置完成並驗證）
 
@@ -17,16 +21,33 @@
 |---|---|
 | 平台 | RunPod **Secure Cloud**（Network Volume 僅 Secure Cloud 支援）|
 | Datacenter | **EU-RO-1**（Volume 綁死區域，建立後不可更改）|
-| GPU | **RTX A4500** $0.25/hr（20GB VRAM / 62GB RAM / 12 vCPU）|
+| GPU | **不固定**——EU-RO-1 的庫存很不穩，每次開機挑當下有的同級卡。已實測可用：RTX A4500（20GB，$0.25/hr）、**RTX PRO 4500 Blackwell（32GB，sm_120）**。挑選條件只有兩個：在 EU-RO-1、VRAM ≥ 20GB |
 | Network Volume | `billiard-isaac-training` **100GB**，掛載 `/workspace`（原 50GB，2026-08-03 擴容；只能加不能減）|
 | Container Disk | 60GB，**停機即清空** |
 | 基礎映像 | `nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04` |
 | Python | **3.12**（Isaac Lab 硬限制 `>=3.12,<3.13`；Ubuntu 24.04 系統 Python 剛好命中）|
 | isaacsim | 6.0.1.0（pip 安裝）|
-| torch | 2.10.0+cu128 / CUDA 12.8 / 驅動 570.195.03 |
-| Isaac Sim 冷啟動 | 約 **58 秒**（實測兩次相同，與 shader 快取無關）|
+| torch | 2.10.0+cu128 / CUDA 12.8（驅動視配到的卡而定，實測 570.195.03 與 580.173.02 皆可）|
+| Isaac Sim 冷啟動 | 約 **58 秒**（A4500 實測兩次相同，與 shader 快取無關）|
 
-原定 RTX 4000 Ada（$0.28/hr）在 EU-RO-1 缺貨，改用 A4500 反而 RAM 與 vCPU 更多且更便宜。
+### ⚠️ 換卡後必做：驗證 compute capability
+
+停機會把 GPU 釋放回池子，重開時原型號常常已被別人佔走（訊息是
+`Your Pod's GPUs are no longer available`）。RunPod **沒有**「更改既有 Pod 的
+GPU 型號」功能，只能從 Storage 頁的 volume 直接部署新 Pod（區域自動鎖定），
+舊 Pod 再 Terminate。**Network Volume 絕對不要刪。**
+
+換到不同世代的卡（例如 Ampere → Blackwell）之後，**`torch.cuda.is_available()`
+回 True 完全不足以證明能用**。torch 若沒為那張卡的 compute capability 編 kernel，
+會在實際運算時才炸，或更糟——靜默算出錯誤結果。
+
+```bash
+python -c "import torch; print(torch.cuda.get_device_capability()); print(torch.cuda.get_arch_list()); x=torch.randn(4096,4096,device='cuda'); print((x@x).sum().item())"
+```
+
+`get_arch_list()` 必須包含該卡的 `sm_XXX`，且 matmul 要跑得出**量級合理**的數字
+（4096² 標準常態相乘求和，理論 σ≈262k，落在 ±1σ 內才正常）。2026-08-06 在
+RTX PRO 4500 Blackwell 上實測通過：`sm_120` 在 arch list 內，matmul 正確。
 
 ### Pod 環境變數（四個都必要）
 
@@ -54,6 +75,26 @@ bash -c 'apt update; DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-s
 
 **venv 在 Network Volume 上，所以 Python 套件停機後仍在，不需要每次重裝。**
 這是與舊路線最大的差別。
+
+`setup.sh` 放在 volume 上而不是 repo 裡，是因為它要在「repo 還沒 clone 下來」
+的時候就能用。它的內容由 `scripts/bootstrap_runpod.sh` 產生——**改了 volume 上的
+`setup.sh` 記得同步回那支腳本**，否則重建 volume 時改動會失傳。
+
+## Volume 重建
+
+Volume 被回收（餘額不足時真的會發生，checkpoint 會一起消失）、或要換區重來時：
+
+```bash
+bash /path/to/bootstrap_runpod.sh
+```
+
+它會依序做完系統套件 → venv → isaacsim → Isaac Lab → 專案 repo → 產生
+`setup.sh` → 存回退點與驗證，每個階段都會先檢查是否已完成，可以安全重跑。
+
+**安裝順序寫死在腳本裡是有原因的**：isaacsim 必須在 `isaaclab.sh --install`
+之前，顛倒的話 isaacsim 會把 torch 換成 CUDA 13 版本（見〈踩過的坑〉第 2 點）。
+
+⚠️ 這支腳本尚未在真實的空 volume 上驗證過，首次使用請逐段確認輸出。
 
 ## 為什麼不用官方映像
 
@@ -313,6 +354,19 @@ reward 曲線建議**下載 event 檔回本機自己畫圖**，不要螢幕錄�
 8. **RunPod proxy SSH 會忽略遠端指令參數**，只給互動 shell；帶指令需 `-t`（要求 PTY）。
 9. **Web Terminal 打不開**是因為自訂映像沒有 sshd/RunPod agent——用 SSH（start command
    已處理 sshd 安裝）。
+10. **開機後太快 source `setup.sh` 會整個壞掉**：Pod 的 start command 正在
+    `apt-get install openssh-server`，與 `setup.sh` 的 apt 搶同一把 dpkg lock
+    （`Could not get lock /var/lib/dpkg/lock-frontend`）。連鎖反應是 `git` 與
+    `python3-dev` 沒裝回來 → **系統 python3.12 不存在** → venv 的 `bin/python`
+    變成斷掉的 symlink，症狀是 `(venv)` 前綴有出來但 `python: command not found`。
+    等 `pgrep apt-get` 消失再 source 即可（`setup.sh` 已內建這個等待）。
+    **不要 kill 對方，也不要刪 lock 檔**——中斷 dpkg 會留下半裝狀態，之後每個
+    apt 指令都得先 `dpkg --configure -a`。
+11. **`curl` 不在基礎映像內**（container disk 停機清空後更是如此）。臨時要打 HTTP
+    用 `wget -S ... 2>&1 | grep HTTP/`，或用 venv python 的 `urllib`。所以停機腳本
+    刻意不依賴 curl——見〈為什麼不用 runpodctl〉。
+12. **`RUNPOD_API_KEY` 是平台保留字**，每顆 Pod 都會被自動注入一把權限不足的
+    pod-scoped key，且會覆蓋你在 Pod 設定填的同名值。詳見上方 watchdog 的前置需求。
 
 ## Smoke test
 
@@ -335,8 +389,9 @@ wc -l /workspace/IsaacLab/logs/docker_tutorial/log.txt   # 行數持續增加 = 
 
 ## 尚未完成
 
-- **`scripts/bootstrap_runpod.sh` 與 `docker/docker-compose.yml` 需改寫或刪除**——
-  兩者都是官方映像路線的產物，與現行環境不相容。
+- **`bootstrap_runpod.sh` 尚未在真實的空 volume 上跑過**（2026-08-06 改寫）。
+  內容是把〈踩過的坑〉逐條可執行化，但整條建置流程沒有重跑驗證過——真正需要它的
+  時候（volume 被回收）風險最高，首次使用請逐段確認輸出。
 - **`run_train.sh` 的真正訓練呼叫**：`BilliardEnv` 完成後（#121/#122）才有可用的
   `--task`。
 - **`configs/ppo_billiard.yaml`**：數值為佔位值，格式要改成 rsl_rl 期望的 agent cfg。

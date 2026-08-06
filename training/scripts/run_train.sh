@@ -2,26 +2,29 @@
 # 容器進入點。此檔必須是 LF 換行（見 training/.gitattributes）。
 set -euo pipefail
 
-# 實測 nvcr.io/nvidia/isaac-lab:3.0.0-beta2：
-#   - Isaac Lab 在 /workspace/isaaclab（小寫，#224 寫的 /workspace/IsaacLab 是錯的）
-#   - 容器內沒有 python 也沒有 python3，只有 /isaac-sim/python.sh
-#     （isaaclab.sh 自己也是解析到 $ISAACLAB_PATH/_isaac_sim/python.sh 這個 symlink）
-ISAACLAB_ROOT="${ISAACLAB_ROOT:-/workspace/isaaclab}"
-PROJECT_ROOT="${PROJECT_ROOT:-/workspace/billiard}"
+# 路徑對應現行環境（自訂 CUDA 映像 + volume 上的 venv，見 training/README.md）。
+# 先前的預設值 /workspace/billiard 與小寫 /workspace/isaaclab 是官方映像路線的
+# 遺留，該路線已於 2026-08-02 廢棄。
+ISAACLAB_ROOT="${ISAACLAB_ROOT:-/workspace/IsaacLab}"
+PROJECT_ROOT="${PROJECT_ROOT:-/workspace/isaac-sim-digital-twin}"
 CONFIG="${TRAIN_CONFIG:-${PROJECT_ROOT}/training/configs/ppo_billiard.yaml}"
-OUTPUT_DIR="${TRAIN_OUTPUT:-${PROJECT_ROOT}/outputs}"
+# 必須與 .gitignore 的 training/outputs/ 一致，否則 checkpoint 會掉進 git
+# 工作區。也必須在 /workspace 底下，否則停機就沒了。
+OUTPUT_DIR="${TRAIN_OUTPUT:-${PROJECT_ROOT}/training/outputs}"
 TRAIN_TASK="${TRAIN_TASK:-}"
 
+# venv 在 network volume 上持久化，優先用它；系統 python3 是 apt 裝的，
+# container disk 停機清空後不保證還在。
 if [[ -n "${PYTHON_EXE:-}" ]]; then
     :
-elif [[ -x "${ISAACLAB_ROOT}/_isaac_sim/python.sh" ]]; then
-    PYTHON_EXE="${ISAACLAB_ROOT}/_isaac_sim/python.sh"
-elif [[ -x /isaac-sim/python.sh ]]; then
-    PYTHON_EXE=/isaac-sim/python.sh
+elif [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    PYTHON_EXE="${VIRTUAL_ENV}/bin/python"
+elif [[ -x /workspace/venv/bin/python ]]; then
+    PYTHON_EXE=/workspace/venv/bin/python
 elif command -v python3 >/dev/null 2>&1; then
     PYTHON_EXE="$(command -v python3)"
 else
-    echo "[run_train] 找不到可用的 Python" >&2
+    echo "[run_train] 找不到可用的 Python。先執行 source /workspace/setup.sh" >&2
     exit 1
 fi
 

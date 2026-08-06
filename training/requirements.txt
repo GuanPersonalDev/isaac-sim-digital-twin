@@ -1,9 +1,11 @@
-# 訓練專用依賴。Isaac Sim 映像已內含 torch / numpy / Isaac Sim runtime，
-# 這裡只列額外需要的套件，不要重複釘住 torch 版本（會跟映像內的 CUDA build 打架）。
+# 訓練專用的額外依賴。
 #
-# TODO: RL 框架尚未定案，確定後補上並釘版本。
-#   - Isaac Lab 走 source 安裝，不是 pip package，需另在 Dockerfile 加 clone 步驟
-#   - 若用 skrl / rl_games / stable-baselines3，在此列出
+# torch / numpy / isaacsim / isaaclab 由 training/scripts/bootstrap_runpod.sh
+# 裝進 /workspace/venv，**不要**在這裡重複釘住版本——尤其是 torch，釘錯會把
+# 已驗證的 cu128 堆疊換掉（見 training/README.md〈踩過的坑〉）。
+#
+# TODO: RL 框架尚未定案，確定後補上並釘版本（rsl_rl 走 Isaac Lab 的安裝流程，
+#       不是 pip package；若改用 skrl / rl_games / stable-baselines3 則列在此）。
 
 pyyaml>=6.0
 tensorboard>=2.16
