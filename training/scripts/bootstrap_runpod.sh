@@ -189,6 +189,15 @@ export PIP_CACHE_DIR=/tmp/pipcache
 # venv 在 volume 上，Python 套件停機後仍在，不需要重裝任何東西
 source /workspace/venv/bin/activate
 
+# rl_task 用 pip install -e 安裝，但 Isaac Lab 模板的 setup.py 只把 task package
+# 列進 packages，不含 core。repo root 不進 PYTHONPATH 的話，BilliardEnv 的
+# `from core.services...` 會在 isaaclab.sh train 起動時炸 ModuleNotFoundError。
+#
+# 用 ${PYTHONPATH:+:...} 而不是 :${PYTHONPATH}：後者在 PYTHONPATH 未設時會產生
+# 結尾冒號，Python 把空路徑元素當成當前目錄。train 的 CWD 不固定（見 #121 E-2），
+# 讓 CWD 混進 import path 之後很難查。
+export PYTHONPATH=/workspace/isaac-sim-digital-twin${PYTHONPATH:+:${PYTHONPATH}}
+
 if git -C /workspace/isaac-sim-digital-twin pull --ff-only; then
     cd /workspace/isaac-sim-digital-twin || return
 else
