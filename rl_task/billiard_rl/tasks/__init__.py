@@ -15,3 +15,9 @@ from isaaclab_tasks.utils import import_packages
 _BLACKLIST_PKGS = ["utils", ".mdp"]
 # Import all configs in this package
 import_packages(__name__, _BLACKLIST_PKGS)
+
+def register_external_tasks() -> None:
+    """ --external_callback 的掛載點
+    真正註冊發生在本模組被 import 時上方的 import_packages() 會走遍子 package, 觸發各自的 gym.register()
+    """
+    return None

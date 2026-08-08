@@ -1,9 +1,0 @@
-pyproject.toml
-setup.py
-billiard_rl/__init__.py
-billiard_rl.egg-info/PKG-INFO
-billiard_rl.egg-info/SOURCES.txt
-billiard_rl.egg-info/dependency_links.txt
-billiard_rl.egg-info/not-zip-safe
-billiard_rl.egg-info/requires.txt
-billiard_rl.egg-info/top_level.txt

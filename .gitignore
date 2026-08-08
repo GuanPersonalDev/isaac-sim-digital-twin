@@ -32,3 +32,5 @@ training/outputs/
 !.env.example
 *.key
 secrets/
+
+*.egg-info/
