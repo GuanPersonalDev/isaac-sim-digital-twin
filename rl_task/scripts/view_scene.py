@@ -42,6 +42,35 @@ from isaaclab.sim import SimulationContext  # noqa: E402
 from billiard_rl.tasks.manager_based.billiard_rl.billiard_rl_env_cfg import (  # noqa: E402
     BilliardRlSceneCfg,
 )
+from core.models.table_ball_set import TableBallSet  # noqa: E402
+
+
+def _report_scene(scene: InteractiveScene) -> None:
+    """印出 A-3 的四項檢查所需的數值。
+
+    RunPod 的 proxy SSH（``<id>@ssh.runpod.io``）不支援 port forwarding，
+    在沒有 public IP 的 pod 上連不到 viser 的 web 介面。這裡改用數值驗證——
+    而且比肉眼可靠：擺位差幾公釐看不出來，數字看得出來。
+
+    （要用 viser 的話，把 8080 加進 pod 的 Expose HTTP Ports，
+    RunPod 會給 https://<pod-id>-8080.proxy.runpod.net，不需要 tunnel。）
+    """
+    balls = scene["balls"]
+
+    # body_link_pos_w 形狀 (num_envs, 10, 3)，world frame。
+    # object_pos_w 是 deprecated 名稱，Isaac Lab 4.0 移除，不要用。
+    pos = balls.data.body_link_pos_w.torch
+
+    # A-2 的核心換算：env_origins 是 (num_envs, 3)，要 unsqueeze(1) 補出
+    # object 維度才廣播得到 10 顆球。B-1 讀 observation 時照抄這一行。
+    rel = pos - scene.env_origins.unsqueeze(1)
+
+    print(f"[view_scene] env_origins =\n{scene.env_origins}")
+    print(f"[view_scene] 球心 z（應全為 {TableBallSet.DEFAULT_BALL_RADIUS}）=\n{pos[:, :, 2]}")
+    print(f"[view_scene] env 0 的桌台相對座標（對照 BREAK_SHOT_POSITIONS）=\n{rel[0]}")
+    # 各環境的相對座標應該完全一致——不一致就代表有球跑到別的環境的桌上，
+    # 或 cloner 沒有正確套用 env origin。這是 A-2 唯一的實質驗收。
+    print(f"[view_scene] 各 env 相對座標最大差異（應接近 0）= {(rel - rel[0]).abs().max()}")
 
 
 def main() -> None:
@@ -59,8 +88,7 @@ def main() -> None:
 
     sim.reset()
     print("[view_scene] 場景建立完成")
-    # A-2 的換算對照表全靠這個張量，先看一眼實際數值。形狀是 (num_envs, 3)。
-    print(f"[view_scene] env_origins =\n{scene.env_origins}")
+    _report_scene(scene)
 
     # 開球擺位的球本來就是靜止的，不需要施加動作或做 reset——單純讓物理跑著，
     # 反而更能看出「球會不會自己滑動」這類物理設定問題。
