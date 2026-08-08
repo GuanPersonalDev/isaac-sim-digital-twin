@@ -83,8 +83,9 @@ fi
 
 # 多帶的參數原樣傳給 Isaac Lab，交由 Hydra 解析，例如
 #   agent.max_iterations=500 env.scene.num_envs=64
-# 這也是取代 training/configs/ppo_billiard.yaml 的調參方式——超參數的單一來源是
-# rsl_rl_cfg_entry_point 指向的 agents/rsl_rl_ppo_cfg.py:PPORunnerCfg。
+# 超參數的單一來源是 rsl_rl_cfg_entry_point 指向的
+# agents/rsl_rl_ppo_cfg.py:PPORunnerCfg，本專案不再有第二份 yaml 設定檔
+# （原 training/configs/ppo_billiard.yaml 已於 #121 E-3 刪除，沒有任何程式讀它）。
 #
 # E-1：scripts/reinforcement_learning/rsl_rl/train.py 已 deprecated（該檔第 10-16
 # 行即 DeprecationWarning），改用統一進入點 `isaaclab.sh train`。

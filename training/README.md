@@ -299,7 +299,8 @@ Block 12 的影片要呈現「訓練過程」，但雲端 headless、沒有訓�
 
 ### 2. checkpoint 要保留多個，且必須在 volume 上
 
-- `configs/ppo_billiard.yaml` 的 `save_interval: 100` 已設定
+- checkpoint 週期由 `rl_task/billiard_rl/tasks/manager_based/billiard_rl/agents/rsl_rl_ppo_cfg.py`
+  的 `save_interval` 決定（目前 50，是 Isaac Lab 模板的預設值；目標值 100 待 #123 定案）
 - **需確認所選框架不會自動 rotate 掉舊 checkpoint**（很多框架預設只留最近 N 個）
 - 輸出目錄必須在 `/workspace` 底下，否則停機就沒了
 
@@ -392,12 +393,9 @@ wc -l /workspace/IsaacLab/logs/docker_tutorial/log.txt   # 行數持續增加 = 
 - **`bootstrap_runpod.sh` 尚未在真實的空 volume 上跑過**（2026-08-06 改寫）。
   內容是把〈踩過的坑〉逐條可執行化，但整條建置流程沒有重跑驗證過——真正需要它的
   時候（volume 被回收）風險最高，首次使用請逐段確認輸出。
-- **`run_train.sh` 的真正訓練呼叫**：`BilliardEnv` 完成後（#121/#122）才有可用的
-  `--task`。
-- **`configs/ppo_billiard.yaml`**：數值為佔位值，格式要改成 rsl_rl 期望的 agent cfg。
-  `obs_dim` / `action_dim` 兩欄應刪除——Isaac Lab 從 env 的 space 定義推導，留在 yaml
-  會變成第二個事實來源。observation 規格是 **21 維**（見 #222/#225），現有
-  `core/services/rl_observation_encoder.py` 是 20 維，尚未對齊。
+- **`BilliardEnv` 的場景與 MDP 內容**（#121 A／B 組）：`run_train.sh` 已接上真正的
+  訓練呼叫並跑通，但 `billiard_rl_env_cfg.py` 仍是 Isaac Lab 模板帶來的 cartpole
+  內容，還不是撞球場景。
 - **`gpu_watchdog.sh` 的停機動作尚未在真實 Pod 上驗證**（2026-08-06 更新）。
   已確認：`$RUNPOD_POD_ID` 有被注入；自建金鑰對 REST `GET /v1/pods` 回 **200**；
   腳本邏輯用假 `nvidia-smi`／假 python 測過四條路徑（金鑰驗證失敗即退出、
