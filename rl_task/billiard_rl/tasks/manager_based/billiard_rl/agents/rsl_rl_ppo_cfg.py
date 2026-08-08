@@ -13,7 +13,9 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
     max_iterations = 150
     save_interval = 50
-    experiment_name = "cartpole_direct"
+    # log 落點是 <CWD>/logs/rsl_rl/<experiment_name>/<timestamp>（見 #121 E-2）。
+    # 改名會讓新舊 run 分家，訂下來就不要再動。
+    experiment_name = "billiard"
     actor = RslRlMLPModelCfg(
         hidden_dims=[32, 32],
         activation="elu",
