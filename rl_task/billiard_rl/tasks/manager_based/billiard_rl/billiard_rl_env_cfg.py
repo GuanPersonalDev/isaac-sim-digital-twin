@@ -22,7 +22,7 @@ from . import mdp
 ##
 # /workspace/setup.sh 的 export PYTHONPATH 才能上 core 匯入成立
 from core.models.table_ball_set import TableBallSet
-from core.services.asset_utility import BALL_TEMPLATE_PATH, TABLE_PATH
+from core.services.asset_utility import BALL_TEMPLATE_PATH, TRAINING_TABLE_PATH
 from core.services.break_shot_position_provider import BreakShotPositionProvider
 
 ##
@@ -78,9 +78,12 @@ class BilliardRlSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
     )
 
+    # 用 TRAINING_TABLE_PATH（去掉 SimpleRoom 的版本）而非 Demo 的 TABLE_PATH：
+    # 房間會被複製到每個 env，碰撞體全部進 broadphase，而 policy 根本看不到它。
+    # 兩份資產的階層完全相同，POCKET_RELATIVE_PATH 不受影響。
     table = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Table",
-        spawn=sim_utils.UsdFileCfg(usd_path=TABLE_PATH)
+        spawn=sim_utils.UsdFileCfg(usd_path=TRAINING_TABLE_PATH)
     )
     
     balls = RigidObjectCollectionCfg(rigid_objects=_make_ball_cfgs())
@@ -192,6 +195,8 @@ class BilliardRlEnvCfg(ManagerBasedRLEnvCfg):
     # env_spacing：grid cloner 擺放各子環境原點的間距，必須大於單一環境在
     # X／Y 上的最大延伸量。9-ball 檯面 2.54 × 1.27 m，USD 含邊框桌腳更大；
     # 球的 y 範圍從母球 -0.9525 到 8 號球約 +1.03。4.0 有充裕餘裕。
+    # （若改用含 SimpleRoom 的 TABLE_PATH，房間約 9.5 × 8 m，這個值要提到 10.0
+    #  以上才不會互相穿插——2026-08-08 從 USD 的 Floor2/Floor3 位置量得。）
     # ⚠️ 不要為了省空間調到 3.0 以下——filter_collisions=True 只保證物理上
     #    不互撞，視覺上重疊會讓 A-3 目視與 viser 檢視完全無法判讀。
     scene: BilliardRlSceneCfg = BilliardRlSceneCfg(num_envs=64, env_spacing=4.0)

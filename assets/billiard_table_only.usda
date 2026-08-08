@@ -1,0 +1,472 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    upAxis = "Z"
+)
+
+def Xform "Root"
+{
+    def Xform "billiard_env_unit"
+    {
+        token ui:displayGroup = "Material Graphs"
+        token ui:displayName = "billiard_env_unit"
+        int ui:order = 1024
+        float3 xformOp:rotateXYZ = (0, -0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        def Xform "BilliardEnv"
+        {
+            token ui:displayGroup = "Material Graphs"
+            token ui:displayName = "BilliardEnv"
+            int ui:order = 1024
+            float3 xformOp:rotateXYZ = (0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+            def Xform "BilliardTable" (
+                apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                custom color3f displayColor = (0, 0, 0)
+                rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/TableSurface> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token purpose = "default"
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Mesh "Surface" (
+                    apiSchemas = ["NewtonCollisionAPI", "PhysicsCollisionAPI", "PhysxCollisionAPI", "PhysxTriangleMeshCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                    int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 6, 2, 3, 7, 4, 5, 1, 0, 4, 0, 2, 6, 5, 7, 3, 1]
+                    rel material:binding:physics = </Root/billiard_env_unit/BilliardEnv/Looks/PhysicsMaterial_TableSurface> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token physics:approximation = "none"
+                    bool physics:collisionEnabled = 1
+                    float physxCollision:restOffset = 0
+                    point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)]
+                    texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0), (0, 1), (0, 0), (1, 0), (1, 1), (0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token purpose = "default"
+                    bool singleSided = 0
+                    uniform token subdivisionScheme = "none"
+                    token visibility = "inherited"
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1.27, 2.54, 0.05)
+                    double3 xformOp:translate = (0, 0, -0.025)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Mesh "Cushion_Left" (
+                    apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI", "PhysxTriangleMeshCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                    int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 6, 2, 3, 7, 4, 5, 1, 0, 4, 0, 2, 6, 5, 7, 3, 1]
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Cushion> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    rel material:binding:physics = </Root/billiard_env_unit/BilliardEnv/Looks/PhysicsMaterial_Cusion> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token physics:approximation = "none"
+                    bool physics:collisionEnabled = 1
+                    point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)]
+                    texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0), (0, 1), (0, 0), (1, 0), (1, 1), (0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token subdivisionScheme = "none"
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (0.05, 2.54, 0.04)
+                    double3 xformOp:translate = (-0.66, 0, 0.02)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Mesh "Cushion_Right" (
+                    apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI", "PhysxTriangleMeshCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                    int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 6, 2, 3, 7, 4, 5, 1, 0, 4, 0, 2, 6, 5, 7, 3, 1]
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Cushion> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    rel material:binding:physics = </Root/billiard_env_unit/BilliardEnv/Looks/PhysicsMaterial_Cusion> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token physics:approximation = "none"
+                    bool physics:collisionEnabled = 1
+                    point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)]
+                    texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0), (0, 1), (0, 0), (1, 0), (1, 1), (0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token subdivisionScheme = "none"
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (0.05, 2.54, 0.04)
+                    double3 xformOp:translate = (0.66, 0, 0.02)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Mesh "Cushion_Head" (
+                    apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI", "PhysxTriangleMeshCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                    int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 6, 2, 3, 7, 4, 5, 1, 0, 4, 0, 2, 6, 5, 7, 3, 1]
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Cushion> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    rel material:binding:physics = </Root/billiard_env_unit/BilliardEnv/Looks/PhysicsMaterial_Cusion> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token physics:approximation = "none"
+                    bool physics:collisionEnabled = 1
+                    point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)]
+                    texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0), (0, 1), (0, 0), (1, 0), (1, 1), (0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token subdivisionScheme = "none"
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1.27, 0.05, 0.04)
+                    double3 xformOp:translate = (0, -1.295, 0.02)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Mesh "Cushion_Foot" (
+                    apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI", "PhysxTriangleMeshCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                    int[] faceVertexIndices = [0, 1, 3, 2, 4, 6, 7, 5, 6, 2, 3, 7, 4, 5, 1, 0, 4, 0, 2, 6, 5, 7, 3, 1]
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Cushion> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    rel material:binding:physics = </Root/billiard_env_unit/BilliardEnv/Looks/PhysicsMaterial_Cusion> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 0, -1), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token physics:approximation = "none"
+                    bool physics:collisionEnabled = 1
+                    point3f[] points = [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)]
+                    texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0), (0, 1), (0, 0), (1, 0), (1, 1), (0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (1, 1), (0, 1), (0, 0)] (
+                        interpolation = "faceVarying"
+                    )
+                    uniform token subdivisionScheme = "none"
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1.27, 0.05, 0.04)
+                    double3 xformOp:translate = (0, 1.295, 0.02)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Cylinder "Pocket_HeadLeft" (
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.057, -0.057, -0.05), (0.057, 0.057, 0.05)]
+                    double height = 0.1
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    double radius = 0.057
+                    custom bool refinementEnableOverride = 1
+                    custom int refinementLevel = 2
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (-0.635, -1.27, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Cylinder "Pocket_HeadRight" (
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.057, -0.057, -0.05), (0.057, 0.057, 0.05)]
+                    double height = 0.1
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    double radius = 0.057
+                    custom bool refinementEnableOverride = 1
+                    custom int refinementLevel = 2
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.635, -1.27, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Cylinder "Pocket_SideLeft" (
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.057, -0.057, -0.05), (0.057, 0.057, 0.05)]
+                    double height = 0.1
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    double radius = 0.057
+                    custom bool refinementEnableOverride = 1
+                    custom int refinementLevel = 2
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (-0.635, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Cylinder "Pocket_SideRight" (
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.057, -0.057, -0.05), (0.057, 0.057, 0.05)]
+                    double height = 0.1
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    double radius = 0.057
+                    custom bool refinementEnableOverride = 1
+                    custom int refinementLevel = 2
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.635, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Cylinder "Pocket_FootLeft" (
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.057, -0.057, -0.05), (0.057, 0.057, 0.05)]
+                    double height = 0.1
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    double radius = 0.057
+                    custom bool refinementEnableOverride = 1
+                    custom int refinementLevel = 2
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (-0.635, 1.27, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Cylinder "Pocket_FootRight" (
+                    apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.057, -0.057, -0.05), (0.057, 0.057, 0.05)]
+                    double height = 0.1
+                    rel material:binding = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    double radius = 0.057
+                    custom bool refinementEnableOverride = 1
+                    custom int refinementLevel = 2
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.635, 1.27, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+
+            def Scope "Looks"
+            {
+                def Material "TableSurface" (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 0
+                            }
+                        }
+                    }
+                )
+                {
+                    token outputs:displacement (
+                        customData = {
+                            dictionary omni = {
+                                dictionary kit = {
+                                    bool locked = 0
+                                }
+                            }
+                        }
+                    )
+                    token outputs:mdl:displacement (
+                        customData = {
+                            dictionary omni = {
+                                dictionary kit = {
+                                    bool locked = 0
+                                }
+                            }
+                        }
+                    )
+                    token outputs:mdl:displacement.connect = </Root/billiard_env_unit/BilliardEnv/Looks/TableSurface/Shader.outputs:out>
+                    token outputs:mdl:surface (
+                        customData = {
+                            dictionary omni = {
+                                dictionary kit = {
+                                    bool locked = 0
+                                }
+                            }
+                        }
+                    )
+                    token outputs:mdl:surface.connect = </Root/billiard_env_unit/BilliardEnv/Looks/TableSurface/Shader.outputs:out>
+                    token outputs:mdl:volume (
+                        customData = {
+                            dictionary omni = {
+                                dictionary kit = {
+                                    bool locked = 0
+                                }
+                            }
+                        }
+                    )
+                    token outputs:mdl:volume.connect = </Root/billiard_env_unit/BilliardEnv/Looks/TableSurface/Shader.outputs:out>
+                    token outputs:surface (
+                        customData = {
+                            dictionary omni = {
+                                dictionary kit = {
+                                    bool locked = 0
+                                }
+                            }
+                        }
+                    )
+                    token outputs:volume (
+                        customData = {
+                            dictionary omni = {
+                                dictionary kit = {
+                                    bool locked = 0
+                                }
+                            }
+                        }
+                    )
+                    custom uniform bool paused (
+                        customData = {
+                            dictionary omni = {
+                                dictionary kit = {
+                                    bool locked = 0
+                                }
+                            }
+                        }
+                    )
+
+                    def Shader "Shader"
+                    {
+                        uniform token info:implementationSource = "sourceAsset"
+                        uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                        uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                        color3f inputs:diffuse_color_constant = (0.099999994, 0.29999998, 0.099999994)
+                        color3f inputs:diffuse_tint = (1, 1, 1)
+                        token outputs:out (
+                            renderType = "material"
+                        )
+                    }
+                }
+
+                def Material "Cushion"
+                {
+                    token outputs:mdl:displacement.connect = </Root/billiard_env_unit/BilliardEnv/Looks/Cushion/Shader.outputs:out>
+                    token outputs:mdl:surface.connect = </Root/billiard_env_unit/BilliardEnv/Looks/Cushion/Shader.outputs:out>
+                    token outputs:mdl:volume.connect = </Root/billiard_env_unit/BilliardEnv/Looks/Cushion/Shader.outputs:out>
+
+                    def Shader "Shader"
+                    {
+                        uniform token info:implementationSource = "sourceAsset"
+                        uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                        uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                        color3f inputs:diffuse_color_constant = (0.34, 0.19999999, 0.049999997)
+                        token outputs:out (
+                            renderType = "material"
+                        )
+                    }
+                }
+
+                def Material "Pocket"
+                {
+                    token outputs:mdl:displacement.connect = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket/Shader.outputs:out>
+                    token outputs:mdl:surface.connect = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket/Shader.outputs:out>
+                    token outputs:mdl:volume.connect = </Root/billiard_env_unit/BilliardEnv/Looks/Pocket/Shader.outputs:out>
+                    custom uniform bool paused = 0 (
+                        customData = {
+                            bool nonpersistant = 1
+                        }
+                        hidden = true
+                    )
+
+                    def Shader "Shader"
+                    {
+                        uniform token info:implementationSource = "sourceAsset"
+                        uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                        uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                        color3f inputs:diffuse_color_constant = (0.049999997, 0.049999997, 0.049999997)
+                        token outputs:out (
+                            renderType = "material"
+                        )
+                    }
+                }
+
+                def Material "PhysicsMaterial_TableSurface" (
+                    apiSchemas = ["PhysicsMaterialAPI"]
+                )
+                {
+                    custom uniform bool paused = 0 (
+                        customData = {
+                            bool nonpersistant = 1
+                        }
+                        hidden = true
+                    )
+                    float physics:dynamicFriction = 0.2
+                    float physics:restitution = 0.5
+                    float physics:staticFriction = 0.2
+                }
+
+                def Material "PhysicsMaterial_Cusion" (
+                    apiSchemas = ["PhysicsMaterialAPI"]
+                )
+                {
+                    custom uniform bool paused = 0 (
+                        customData = {
+                            bool nonpersistant = 1
+                        }
+                        hidden = true
+                    )
+                    float physics:dynamicFriction = 0.1
+                    float physics:restitution = 0.75
+                    float physics:staticFriction = 0.1
+                }
+            }
+
+        }
+    }
+}
+
