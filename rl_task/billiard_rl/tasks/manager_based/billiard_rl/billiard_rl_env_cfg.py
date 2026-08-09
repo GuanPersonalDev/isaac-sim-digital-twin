@@ -117,14 +117,23 @@ class BilliardRlSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class ActionsCfg:
-    """Action 內容 
-    自訂的 ActionTerm 接收 policy 的 6 維正規化輸出
-    
+    """動作規格：單一 ActionTerm，6 維（母球擺位 XY / 方向角 / 初速 / 上下左右偏移）。
+
+    實作在 mdp/actions.py。與 B-1 相反，那裡**直接呼叫 core 的單筆函式**
+    （`decode_rl_action()` + `compute_cue_ball_velocities()`），沒有 torch 重寫——
+    撞球一局只擊一次，decode 每個 episode 每個 env 只跑一次，不是每步一次。
+
     注意
-    1. 直接對球做 impulse 力道參數的訓練
-    2. 母球擺位是相對座標
-    3. 正規化, 反正規化都在 core 實作，這邊不做實質定義
+    1. 直接對球做 impulse，訓練環境沒有手臂（手臂 RL 屬 Milestone B / #180）
+    2. 母球擺位是桌台相對座標，寫進模擬要加 env_origins（見上方換算表第 4 列）
+    3. 正規化／反正規化與圓形裁切都在 core 實作（#225），這邊只負責接線與寫入
     """
+
+    strike: mdp.BilliardStrikeActionCfg = mdp.BilliardStrikeActionCfg(
+        # 與 B-1 ObsTerm 的 max_offset 引用同一個常數。兩者必須一致——
+        # 不一致會讓 policy 看到的條件值跟實際生效的裁切半徑不同，且不報錯。
+        max_offset=TRAINING_MAX_OFFSET,
+    )
 
 
 
@@ -240,10 +249,36 @@ class BilliardRlEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self) -> None:
         """Post initialization."""
         # general settings
-        self.decimation = 2
-        self.episode_length_s = 5
+        #
+        # decimation：一個 env step 涵蓋幾個 physics tick。60 → 1 個 env step
+        # 恰好是 1 秒物理。模板預設的 2（1/30 秒）在這個任務是錯的——撞球一局
+        # 只擊一次，policy 卻會被要求輸出 150 次動作，其中 149 次沒有任何效果，
+        # rollout buffer 99% 是零均值噪音。
+        #
+        # 也不能反過來把 decimation 開到「一步就是一局」（單步 bandit）：球未
+        # 落定就結算 reward 是**系統性偏誤**——calculate_spread_score 取到飛行
+        # 途中的隨機構型，而「還在飛」與出桿力道正相關，policy 會學成「打到
+        # 時限還沒停」而不是「打出好的散開」；B-3 的進袋判定更是直接判錯。
+        #
+        # 所以走多步 + B-4 的球靜止提前終止：實際步數 ≈ 落定秒數（預期 6~12），
+        # 而不是固定 20。這同時比單步安全版更省——沒有 rendering 時物理解算是
+        # 絕對主導項，固定跑滿 20 秒是 3 倍物理成本只為省下 6 筆 buffer。
+        self.decimation = 60
+        #
+        # episode_length_s：純安全網，不是預期長度。20 秒是估算值不是實測值
+        # （純摩擦從 2 m/s 減到夾停門檻要 20 秒，靠顆星碰撞洩能才會縮短）。
+        # 開跑後看 TensorBoard 的 Episode_Termination/time_out 比例再調：
+        # 穩定在 0 附近可以往下調省成本，明顯 > 0 代表有一部分 episode 的
+        # reward 是在球還在動的時候結算的。
+        self.episode_length_s = 20
         # viewer settings
         self.viewer.eye = (8.0, 0.0, 5.0)
         # simulation settings
+        #
+        # ⚠️ sim.dt 必須是 1/60，不可改：core/services/rolling_resistance_service.py
+        #    把 PHYSICS_DT = 1.0/60.0 寫死成模組常數、不透過參數傳入，B-6 會 import
+        #    它。用模板預設的 1/120 衰減量會差一倍，而且不會報錯。
         self.sim.dt = 1 / 60
-        self.sim.render_interval = self.decimation
+        # render_interval 不能再寫成 = self.decimation：decimation 現在是 60，
+        # 那樣會變成 1 秒才畫一格，viser 目視與影片錄製全毀。
+        self.sim.render_interval = 2
