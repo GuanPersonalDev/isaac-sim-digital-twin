@@ -114,9 +114,24 @@ def _reference(lin: torch.Tensor, ang: torch.Tensor) -> tuple[torch.Tensor, torc
 
 
 def _rolling(speed: float, spin_z: float) -> tuple[list[float], list[float]]:
-    """造一顆「純滾動 + 指定側旋」的球：角速度 = n̂×v/R 再加上 z 軸殘留。"""
+    """造一顆「純滾動 + 指定側旋」的球：角速度 = n̂×v/R 再加上 z 軸殘留。
+
+    這樣造出來的球，`residual_magnitude` 恰好等於 `spin_z`——殘留自旋的定義是
+    「角速度扣掉由線速度反推的滾動分量」。
+
+    ⚠️ 不要用「線速度小、角速度也小」直接當雜訊球：球半徑 0.028575 會把線速度
+    放大 35 倍（roll_w = v / R），v = 5e-4 的球其滾動角速度就有 0.0175，遠高於
+    SETTLING_NOISE_CEILING。那描述的是一顆「慢慢滑行但完全沒在轉」的球，物理上
+    不是靜止，core 也會照樣寫入。
+    """
     vx, vy = speed, 0.0
     return [vx, vy, 0.0], [-vy / _RADIUS, vx / _RADIUS, spin_z]
+
+
+# 沉降/接觸解算殘留雜訊的實測量級，取自 rolling_resistance_service.py 的常數註解
+# （線速度 1e-7~1e-5 m/s、角速度 1e-4~1e-3 rad/s）。取各自的上界，最接近門檻。
+_NOISE_SPEED = 1e-5
+_NOISE_SPIN = 1e-3
 
 
 def test_normal_rolling_matches_core():
@@ -155,9 +170,18 @@ def test_horizontal_clamp_matches_core():
 
 
 def test_spin_clamp_matches_core():
-    """分支 3：殘留自旋落在 delta_w 與視覺門檻之間，兩邊都夾到 0。"""
-    spin = (_DELTA_W + NEGLIGIBLE_SPIN_THRESHOLD) / 2.0
-    assert _DELTA_W < spin < NEGLIGIBLE_SPIN_THRESHOLD
+    """分支 3：殘留自旋低到該被夾停，兩邊都夾到 0。
+
+    ⚠️ `delta_w`（10/60 = 0.1667）目前**大於** `NEGLIGIBLE_SPIN_THRESHOLD`（0.1），
+    所以 core 的 `residual < 門檻 or delta_w >= residual` 裡，第一個條件永遠被
+    第二個涵蓋——實際生效的自旋夾停門檻是 0.1667 而不是 0.1。取兩者中間值，
+    測到的就是 `delta_w >= residual` 這一支（真正會跑到的那支）。
+
+    `NEGLIGIBLE_SPIN_THRESHOLD` 在目前參數下是防禦性的死條件，不是 bug——
+    `SPIN_DECAY_RATE` 若降到 6.0 rad/s² 以下，delta_w 會小於 0.1，它就活過來了。
+    """
+    spin = (NEGLIGIBLE_SPIN_THRESHOLD + _DELTA_W) / 2.0
+    assert NEGLIGIBLE_SPIN_THRESHOLD < spin < _DELTA_W
     lin_row, ang_row = _rolling(speed=1.5, spin_z=spin)  # 水平夠快，只測自旋分支
     lin = torch.tensor([[lin_row]], dtype=torch.float64)
     ang = torch.tensor([[ang_row]], dtype=torch.float64)
@@ -184,9 +208,13 @@ def test_settling_noise_is_flagged_and_core_skips_write():
        持續寫入會讓球永遠 sleep 不了，vz 被反覆重新注入，B-4 的球靜止終止
        就永遠不成立。
     """
-    tiny = SETTLING_NOISE_CEILING / 10.0
-    lin = torch.tensor([[[tiny, 0.0, 0.0]]], dtype=torch.float64)
-    ang = torch.tensor([[[0.0, 0.0, tiny]]], dtype=torch.float64)
+    lin_row, ang_row = _rolling(speed=_NOISE_SPEED, spin_z=_NOISE_SPIN)
+    # 先確認這筆資料真的落在雜訊區間，而不是靠實作剛好判對
+    assert _NOISE_SPEED < SETTLING_NOISE_CEILING
+    assert _NOISE_SPIN < SETTLING_NOISE_CEILING
+
+    lin = torch.tensor([[lin_row]], dtype=torch.float64)
+    ang = torch.tensor([[ang_row]], dtype=torch.float64)
 
     _, _, is_noise = decay_velocities(lin, ang, _RADIUS)
     _, _, written = _reference(lin, ang)
@@ -201,9 +229,7 @@ def test_noise_flag_drives_per_env_skip_decision():
     這是 _apply_rolling_resistance() 的 `~is_noise.all(dim=1)` 那一行的規格。
     env 0 全部是雜訊 → 應跳過；env 1 有一顆還在滾 → 整個 env 都要寫。
     """
-    tiny = SETTLING_NOISE_CEILING / 10.0
-    quiet_lin = [tiny, 0.0, 0.0]
-    quiet_ang = [0.0, 0.0, tiny]
+    quiet_lin, quiet_ang = _rolling(speed=_NOISE_SPEED, spin_z=_NOISE_SPIN)
     rolling_lin, rolling_ang = _rolling(speed=1.5, spin_z=5.0)
 
     lin = torch.tensor(
