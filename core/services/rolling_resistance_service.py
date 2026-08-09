@@ -13,7 +13,16 @@ SPIN_DECAY_RATE = 10.0  # rad/s²，取 Dr. Dave Pool Info 記載的球-呢絨�
 # 到 0」的視覺門檻，這個是用來分辨「這是真的、需要主動夾停的殘留速度（例如
 # #203 回報的門檻附近低速蠕動）」還是「單純的接觸解算數值雜訊（該交給 PhysX
 # 自己的 sleep 機制處理，不能再被 set_velocities() 寫入打斷）」。
-_SETTLING_NOISE_CEILING = 0.005
+#
+# 公開（非底線開頭）是因為 RL 訓練環境要用同一個門檻。訓練端不能重用本類別——
+# 1024 env × 10 球 = 每個 physics tick 一萬次 Python 呼叫，量級上不可能——所以
+# 改用 torch 向量化重寫，但物理常數必須全部 import 自本模組（#121 B-6）。
+#
+# ⚠️ 訓練端在這個門檻內的行為與本類別**刻意不同**：本類別完全跳過寫入，把收斂
+#    交還給 PhysX sleep；訓練端的張量 API 是整塊寫入，沒辦法逐球跳過，因此改為
+#    主動把三軸速度寫成精確的 0（含 vz，本類別是原封不動傳遞）。訓練端不需要
+#    sleep，只需要 BallMotionMonitor.SPEED_THRESHOLD 讀得到 0。詳見 #121 B-6。
+SETTLING_NOISE_CEILING = 0.005
 
 
 class RollingResistanceService:
@@ -71,8 +80,8 @@ class RollingResistanceService:
             spin_at_rest = residual_magnitude < NEGLIGIBLE_SPIN_THRESHOLD or delta_w >= residual_magnitude
 
             if (
-                v_h < _SETTLING_NOISE_CEILING
-                and residual_magnitude < _SETTLING_NOISE_CEILING
+                v_h < SETTLING_NOISE_CEILING
+                and residual_magnitude < SETTLING_NOISE_CEILING
             ):
                 # 水平跟自旋都只是沉降/多球接觸解算的數值雜訊量級，根本不是真的
                 # 在滾動或自旋。實測發現：即使只是要把這種雜訊「夾到 0」，只要

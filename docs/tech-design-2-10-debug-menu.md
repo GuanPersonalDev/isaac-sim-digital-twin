@@ -124,7 +124,7 @@ Extension 主類別
 
 ### 狀態機／球體運動除錯資訊顯示區塊
 
-**背景：** 2026-07-26 排查「加上 RollingResistanceService 衰減後按下 Play 母球不會被擊出」的 bug 時，最終靠著在 `ScriptController.get_action()`、`ImpulseStrikingService.strike()`、`TrainingTableOrchestrator._execute_strike()` 三處加臨時 `print()` 才逐步定位到真正根因（見 `core/services/rolling_resistance_service.py` 的 `_SETTLING_NOISE_CEILING` 設計說明）。這些臨時輸出在確認修正後已移除，但排查過程證實了以下幾項資訊是診斷「球不會動」「狀態機卡住不轉換」類問題的關鍵訊號：
+**背景：** 2026-07-26 排查「加上 RollingResistanceService 衰減後按下 Play 母球不會被擊出」的 bug 時，最終靠著在 `ScriptController.get_action()`、`ImpulseStrikingService.strike()`、`TrainingTableOrchestrator._execute_strike()` 三處加臨時 `print()` 才逐步定位到真正根因（見 `core/services/rolling_resistance_service.py` 的 `SETTLING_NOISE_CEILING` 設計說明）。這些臨時輸出在確認修正後已移除，但排查過程證實了以下幾項資訊是診斷「球不會動」「狀態機卡住不轉換」類問題的關鍵訊號：
 
 1. 目前狀態機狀態（`BilliardStatus`：RESET/IDLE/AIMING/STRIKING/WAITING/ERROR）
 2. `Observation` 的 `is_ball_moving`、`is_motion_complete`、`has_error`

@@ -3,7 +3,13 @@ from .numeric_validation import validate_finite_number, validate_max_offset, val
 
 
 _EXPECTED_BALL_COUNT = 10
-_RL_BALL_ORDER = tuple(range(1, 10)) + (0,)
+# 21 維向量的球序：1~9 號球在前，母球（0）排最後。
+#
+# 公開（非底線開頭）是因為訓練端不能重用本函式——ObsTerm 每個 env step 都會被
+# 呼叫，1024 環境跑 Python 迴圈的量級是每步數十毫秒。訓練端改用 torch 向量化
+# 實作，但**必須** import 這個常數當索引，不得自己寫 [1,…,9,0]（#121 B-1）。
+# 兩份實作由對拍測試綁死；這個常數保證的是欄位順序這一層。
+RL_BALL_ORDER = tuple(range(1, 10)) + (0,)
 
 
 def encode_rl_observation(
@@ -22,7 +28,7 @@ def encode_rl_observation(
         )
 
     encoded: list[float] = []
-    for ball_id in _RL_BALL_ORDER:
+    for ball_id in RL_BALL_ORDER:
         world_x, world_y = validate_2d_value(
             ball_positions[ball_id],
             field_name=f"ball_positions[{ball_id}]",
