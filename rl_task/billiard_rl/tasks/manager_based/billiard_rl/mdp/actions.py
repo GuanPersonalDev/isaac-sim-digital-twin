@@ -27,6 +27,8 @@ from core.models.action_bounds import ACTION_DIM
 from core.services.impulse_striking_service import compute_cue_ball_velocities
 from core.services.rl_action_decoder import decode_rl_action
 
+from .physics import decay_velocities
+
 if TYPE_CHECKING:
     from isaaclab.assets import RigidObjectCollection
     from isaaclab.envs import ManagerBasedRLEnv
@@ -34,26 +36,20 @@ if TYPE_CHECKING:
     from .actions_cfg import BilliardStrikeActionCfg
 
 
-def _resolve_attr(obj: object, candidates: Sequence[str], purpose: str) -> str:
-    """回傳 candidates 中第一個存在於 obj 的屬性名。
-
-    Isaac Lab 3.0 把 `RigidObjectCollection` 的 `object_*` 系列讀取 property
-    rename 成 `body_*`（`object_pos_w` → `body_link_pos_w`，4.0 移除舊名）。
-    **寫入方法與 `object_names` 有沒有跟著改名，尚未在 pod 上確認**（#121 D 組）。
-
-    在建構期解析而不是直接寫死名字：猜錯的話會在 `gym.make()` 當下就炸並印出
-    找過哪些名字，而不是訓練跑了三分鐘才在 `apply_actions()` 裡 AttributeError。
-
-    D-2 確認實際名稱後，這個 helper 與三處呼叫都可以收斂成直接存取。
-    """
-    for name in candidates:
-        if hasattr(obj, name):
-            return name
-    raise AttributeError(
-        f"找不到{purpose}的屬性。已嘗試：{list(candidates)}。"
-        f"Isaac Lab 3.0 可能又改了名稱，用下列指令查出實際名字後更新 candidates："
-        f"  print([m for m in dir(type(obj)) if 'write' in m or 'name' in m])"
-    )
+# ⚠️ RigidObjectCollection 的寫入 API 在 Isaac Lab 3.0 有**三層**並存
+#    （2026-08-09 於 pod 上實測 dir() + inspect.signature 確認）：
+#
+#      write_object_*_to_sim         最舊，object_* 系列，4.0 移除
+#      write_body_*_to_sim           docstring 明寫 "Deprecated, same as ..._index"
+#      write_body_*_to_sim_index     ← 現行版，本模組使用
+#
+#    現行版是**關鍵字專用**（簽章有 `*`），且參數名是 body_ids 不是 object_ids：
+#
+#      write_body_link_pose_to_sim_index(*, body_poses, body_ids=None, env_ids=None)
+#      write_body_com_velocity_to_sim_index(*, body_velocities, body_ids=None, env_ids=None)
+#
+#    形狀都是 (len(env_ids), len(body_ids), ...)，位姿 7、速度 6。
+#    讀取端同理：用 body_link_pos_w / body_link_state_w，不要用 object_pos_w。
 
 
 class BilliardStrikeAction(ActionTerm):
@@ -85,27 +81,13 @@ class BilliardStrikeAction(ActionTerm):
 
         # 用名字查 index，不要寫死 0。_make_ball_cfgs() 的 sorted() 保證了順序，
         # 但那是 A-1 的實作細節，本模組不該依賴它。
-        names_attr = _resolve_attr(
-            self._asset, ("object_names", "body_names"), "collection 的物件名稱清單"
-        )
-        object_names = list(getattr(self._asset, names_attr))
-        if cfg.cue_ball_name not in object_names:
+        # body_names 是現行名稱；object_names 仍在但屬 deprecated 系列。
+        body_names = list(self._asset.body_names)
+        if cfg.cue_ball_name not in body_names:
             raise ValueError(
-                f"collection 裡沒有母球 '{cfg.cue_ball_name}'，實際有：{object_names}"
+                f"collection 裡沒有母球 '{cfg.cue_ball_name}'，實際有：{body_names}"
             )
-        self._cue_index = object_names.index(cfg.cue_ball_name)
-
-        # 寫入方法在建構期就解析掉，理由見 _resolve_attr 的 docstring。
-        self._write_pose = _resolve_attr(
-            self._asset,
-            ("write_object_link_pose_to_sim", "write_object_pose_to_sim"),
-            "位姿寫入方法",
-        )
-        self._write_velocity = _resolve_attr(
-            self._asset,
-            ("write_object_com_velocity_to_sim", "write_object_velocity_to_sim"),
-            "速度寫入方法",
-        )
+        self._cue_index = body_names.index(cfg.cue_ball_name)
 
     """
     Properties.
@@ -155,12 +137,21 @@ class BilliardStrikeAction(ActionTerm):
     def apply_actions(self) -> None:
         """每個 physics tick 呼叫（decimation 次）。
 
-        只有尚未擊球的 env 會做事；擊完之後整個 episode 剩下的 tick 都是
-        直接 return，讓物理自己跑。
+        兩件事，順序不可調換——**先衰減、後擊球**，否則剛寫入的母球初速會在
+        同一個 tick 就被扣掉一次滾動摩擦。
 
-        ⚠️ B-6（滾動阻力）之後會加在這個方法的**最前面**，排在擊球寫入之前——
-           先衰減、後擊球，避免剛寫入的初速在同一個 tick 就被扣掉。
-           `apply_actions()` 是 manager-based 唯一每個 physics tick 觸發的 hook。
+        `apply_actions()` 是 manager-based 唯一每個 physics tick 觸發的 hook，
+        所以滾動阻力（B-6）只能放這裡。語意上它不是「動作」，掛在 ActionTerm
+        裡是框架限制而非設計選擇；`mode="interval"` 的 EventTerm 是每個 env
+        step 觸發，粒度差 60 倍。
+        """
+        self._apply_rolling_resistance()
+        self._apply_strike()
+
+    def _apply_strike(self) -> None:
+        """把尚未擊球的 env 的母球賦予擺位與初速度。
+
+        擊完之後整個 episode 剩下的 tick 都是直接 return，讓物理自己跑。
         """
         pending = (~self._struck).nonzero(as_tuple=False).flatten()
         if pending.numel() == 0:
@@ -205,6 +196,52 @@ class BilliardStrikeAction(ActionTerm):
     Internal helpers.
     """
 
+    def _apply_rolling_resistance(self) -> None:
+        """B-6：對所有球施加滾動摩擦與自旋衰減。
+
+        **已經整個安靜下來的 env 完全不寫入**，這是本方法唯一的技巧，也是
+        `core` 那個 `continue`（`rolling_resistance_service.py:90`）在張量 API
+        下能保留多少就保留多少的做法：
+
+        持續每個 tick 呼叫寫入，PhysX 就沒機會把球放進 sleep——接觸解算會在
+        雜訊量級持續重新產生殘留（永遠不是精確的 0），球會永遠卡在那個殘留值
+        上不消失（GUI 實測：9 顆 rack 球卡在 vz≈0.0687 永久不動）。而 vz 在
+        衰減公式裡是原封不動傳遞的，每個 tick 寫入等於每個 tick 把舊的 vz
+        重新注入，B-4 的球靜止判定（檢查完整 3D 速度）就永遠不會成立。
+
+        張量 API 的粒度限制：`write_body_com_velocity_to_sim_mask` 的 `body_mask`
+        形狀是 `(num_bodies,)`、`env_mask` 是 `(num_instances,)`，兩個是各自
+        獨立的一維遮罩，選出來的是矩形區域——表達不出「env 3 的第 7 顆球跳過、
+        第 2 顆球寫入」。所以逐球跳過做不到，只能做到**逐 env 跳過**。
+
+        用 `_index` 而不是 `_mask`：兩者行為相同（都只寫選中的 env），但
+        `env_ids` 明確接受 `torch.Tensor`，而 `env_mask` 的型別標註只有
+        `wp.array`，得多一層 warp 轉換。若之後 profiling 顯示這裡的 gather
+        是熱點，再換成 `_mask` 版（那個吃完整資料，省掉 gather）。
+
+        殘留差異：一個 env 裡「9 顆已停、1 顆還在滾」的過渡期，core 會跳過那
+        9 顆、這裡會照寫。但過渡期結束時整個 env 就關掉寫入了，PhysX 會在
+        約 0.4 秒內收斂並 sleep——`decimation=60` 之下不到一個 env step。
+        """
+        lin_vel = self._asset.data.body_com_lin_vel_w.torch
+        ang_vel = self._asset.data.body_com_ang_vel_w.torch
+
+        new_lin, new_ang, is_noise = decay_velocities(
+            lin_vel, ang_vel, self.cfg.ball_radius
+        )
+
+        # 這個 env 的 10 顆球全都只剩雜訊 → 完全不寫入，交還給 PhysX 的 sleep。
+        active = (~is_noise.all(dim=1)).nonzero(as_tuple=False).flatten()
+        if active.numel() == 0:
+            return
+
+        velocity = torch.cat((new_lin[active], new_ang[active]), dim=-1)  # (A, B, 6)
+        # body_ids 省略 = 全部球。寫的是質心速度；球是均質球體，質心與 link
+        # 原點重合，所以與 core 走 RigidBodyAPI.set_velocities() 等價。
+        self._asset.write_body_com_velocity_to_sim_index(
+            body_velocities=velocity, env_ids=active
+        )
+
     def _strike(
         self,
         env_ids: torch.Tensor,
@@ -243,11 +280,13 @@ class BilliardStrikeAction(ActionTerm):
 
         velocity = torch.tensor(velocities, device=pose.device, dtype=pose.dtype)  # (P, 6)
 
-        # 張量 API 的形狀是 (len(env_ids), len(object_ids), ...)，
-        # 只動母球一顆所以中間維是 1。
-        getattr(self._asset, self._write_pose)(
-            pose.unsqueeze(1), env_ids=env_ids, object_ids=[self._cue_index]
+        # 形狀是 (len(env_ids), len(body_ids), ...)，只動母球一顆所以中間維是 1。
+        # 這兩個方法是關鍵字專用（簽章有 `*`），不能用位置參數；
+        # 沒有 _index 後綴的版本已 deprecated（見檔案上方的 API 三層說明）。
+        body_ids = [self._cue_index]
+        self._asset.write_body_link_pose_to_sim_index(
+            body_poses=pose.unsqueeze(1), body_ids=body_ids, env_ids=env_ids
         )
-        getattr(self._asset, self._write_velocity)(
-            velocity.unsqueeze(1), env_ids=env_ids, object_ids=[self._cue_index]
+        self._asset.write_body_com_velocity_to_sim_index(
+            body_velocities=velocity.unsqueeze(1), body_ids=body_ids, env_ids=env_ids
         )

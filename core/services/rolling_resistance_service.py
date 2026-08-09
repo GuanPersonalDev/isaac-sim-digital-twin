@@ -7,6 +7,11 @@ NEGLIGIBLE_SPEED_THRESHOLD = 0.02  # m/s，低於此值視覺上等同停止，�
 NEGLIGIBLE_SPIN_THRESHOLD = 0.1  # rad/s，殘留自旋（側旋）低於此值視覺上等同停止，直接夾到 0
 PHYSICS_DT = 1.0 / 60.0  # 跟 SimulationManager.setup_simulation(dt=1/60) 一致的固定常數，不作為 apply() 參數傳入
 SPIN_DECAY_RATE = 10.0  # rad/s²，取 Dr. Dave Pool Info 記載的球-呢絨自旋衰減率 5–15 rad/s² 中間值
+# 球-呢絨滾動摩擦係數。原本只是 __init__ 的預設引數，提到模組層級是為了讓 RL
+# 訓練端的 torch 重寫 import 得到（#121 B-6）——留在簽章裡的話訓練端只能重打
+# 一次 0.01，那正是「兩份實作靜默漂移」的入口。Demo 端建構本類別時沒有傳這個
+# 參數（billiard_digital_twin.py:112），吃的就是這個值。
+ROLLING_FRICTION_COEFF = 0.01
 # 沉降/多球接觸解算殘留雜訊的量級上限（實測線速度雜訊約 1e-7~1e-5 m/s、角速度
 # 殘留雜訊約 1e-4~1e-3 rad/s，兩者都遠低於這裡設的門檻）。跟 NEGLIGIBLE_SPEED_
 # THRESHOLD／NEGLIGIBLE_SPIN_THRESHOLD 是不同用途：那兩個是「已經停止，直接夾
@@ -37,7 +42,7 @@ class RollingResistanceService:
         self,
         rigid_body_api: RigidBodyAPI,
         ball_radius: float,
-        rolling_friction_coeff: float = 0.01,
+        rolling_friction_coeff: float = ROLLING_FRICTION_COEFF,
         spin_decay_rate: float = SPIN_DECAY_RATE,
     ) -> None:
         self._rigid_body_api = rigid_body_api
