@@ -134,7 +134,7 @@
 | 5-9f-test | Block 5 | RollingResistanceService Unit Test | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-07-26 | 2026-08-08 | #204 |
 | 9-1 | Block 9 | 研究 Isaac Lab 環境設計規範（改用本機 IsaacLab 3.0.0 原始碼查證，未開 pod；gym.Env / ManagerBasedRLEnv 介面與環境註冊） | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-07 | 2026-08-08 | #120 |
 | 9-2 | Block 9 | 實作 BilliardEnv：繼承 Isaac Lab 環境介面整合 core/ 邏輯（21 維 observation_space、含 early termination）【平日草擬 1h（08-07，本機無法驗證）+ 週末驗證跑通 0.5h】【實際約 6h：原拆分未涵蓋 B-6 滾動阻力 torch 重寫與 B-3a 進袋/接觸偵測，兩者都因 Demo 端走 physx 事件訂閱、向量化環境用不了而必須重寫】 | 1.5h | M5: RL 訓練與多環境 | TRUE | 2026-08-09 | 2026-08-08 | #121 |
-| 9-3 | Block 9 | 確認 BilliardEnv 的 reset() step() observation_space(21維) action_space 正確 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #122 |
+| 9-3 | Block 9 | 確認 BilliardEnv 的 reset() step() observation_space(21維) action_space 正確【實際超出原估：#121 交付時 max_offset 未做逐 episode 取樣（第 21 維為定值 1.0，條件變數退化成常數），本項含補實作、權威 buffer 歸屬重新設計（移至 ActionTerm，ObsTerm 讀同一份）、pod 端到端驗證腳本 verify_max_offset.py】 | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-09 | 2026-08-09 | #122 |
 | 9-4 | Block 9 | 選定 RL 演算法（PPO）設定超參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #123 |
 | 9-5 | Block 9 | 單環境訓練跑通確認（確認 reward 有在變化）→ 啟動雲端背景訓練 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-09 | #124 |
 | 9-6 | Block 9 | 確認訓練過程中 reward 曲線有上升趨勢（訓練跑背景，此為監控判讀） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #125 |
