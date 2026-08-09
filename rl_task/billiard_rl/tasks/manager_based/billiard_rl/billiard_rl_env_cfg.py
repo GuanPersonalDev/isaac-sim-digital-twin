@@ -203,9 +203,27 @@ class RewardsCfg:
 
 @configclass
 class TerminationsCfg:
+    """終止條件：局面已定就結束，不要為了湊滿 episode 長度而空轉。
+
+    兩個 term 的語意不同且**都需要**：
+
+      balls_at_rest  10 顆球全停 + 已擊球 → 局面已定，回報完整，不 bootstrap
+      time_out       時間用完球還在動 → 結果未知，交給 value function bootstrap
+
+    不能把 balls_at_rest 也標成 time_out——那會讓已經確定的回報被 value
+    function 覆蓋掉。反過來拿掉 time_out 也不行：球沒停的那些 episode 會被當成
+    「真的結束了」，reward 就是在飛行途中結算的垃圾。
+
+    TerminationManager 會自動把每個 term 的觸發率寫進
+    extras["log"]["Episode_Termination/<name>"]，rsl_rl 直接吐到 TensorBoard。
+    所以 time_out 的比例是免費的診斷指標——穩定在 0 附近代表
+    episode_length_s 綽綽有餘可以往下調，明顯 > 0 代表有一部分 episode 的
+    reward 不可信。
     """
-    終止條件
-    """
+
+    balls_at_rest: DoneTerm = DoneTerm(func=mdp.all_balls_at_rest)
+
+    time_out: DoneTerm = DoneTerm(func=mdp.time_out, time_out=True)
 
 ##
 # Environment configuration
@@ -265,8 +283,14 @@ class BilliardRlEnvCfg(ManagerBasedRLEnvCfg):
         # 絕對主導項，固定跑滿 20 秒是 3 倍物理成本只為省下 6 筆 buffer。
         self.decimation = 60
         #
-        # episode_length_s：純安全網，不是預期長度。20 秒是估算值不是實測值
-        # （純摩擦從 2 m/s 減到夾停門檻要 20 秒，靠顆星碰撞洩能才會縮短）。
+        # episode_length_s：純安全網，不是預期長度——實際步數由 B-4 的球靜止
+        # 提前終止決定。
+        #
+        # 2026-08-09 pod 實測（中等力道，正規化動作全 0 → 初速 1.92 m/s ＝
+        # CUE_BALL_SPEED 中點）：最大球速 1.280 → 0.455 → 0.352 → 0.249 →
+        # 0.148 → 0.049 → 0.00000，四個 env 在**第 6~7 秒**全部落定。
+        # 滿速 3.34 m/s 約 1.74 倍，推估 11~13 秒，20 仍有餘裕。
+        #
         # 開跑後看 TensorBoard 的 Episode_Termination/time_out 比例再調：
         # 穩定在 0 附近可以往下調省成本，明顯 > 0 代表有一部分 episode 的
         # reward 是在球還在動的時候結算的。

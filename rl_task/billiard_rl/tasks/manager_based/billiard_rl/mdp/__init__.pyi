@@ -9,6 +9,8 @@ __all__ = [
     "BilliardStrikeAction",
     "BilliardStrikeActionCfg",
     "decay_velocities",
+    "all_balls_at_rest",
+    "balls_at_rest_mask",
 ]
 
 # Forward stable MDP terms lazily, then override with environment-specific terms below.
@@ -19,3 +21,4 @@ from .actions_cfg import BilliardStrikeActionCfg
 from .observations import ball_positions
 from .physics import decay_velocities
 from .rewards import joint_pos_target_l2
+from .terminations import all_balls_at_rest, balls_at_rest_mask
