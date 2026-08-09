@@ -144,16 +144,30 @@ def _check_strike_uses_buffer(env, term):
 
     驗法：送一個偏移量遠超上限的動作（正規化域 `(1, 1)`，模長 √2 > 任何
     `max_offset`），圓形裁切後的模長會**精確等於**該 env 的 `max_offset`。
-    母球角速度正比於物理域偏移量，所以
+    母球角速度正比於物理域偏移量，所以 `|角速度|` 對 `max_offset` 做線性
+    回歸應該得到高 R²。前四維全給 0（正規化域中點）確保除了偏移量以外的
+    條件完全相同。
 
-        |角速度| / max_offset
+    ⚠️ 判準是**線性回歸**，不是比值 `|角速度| / max_offset` 為常數。後者是
+    這支腳本第一版的寫法，2026-08-09 在 pod 上實測失敗（相對離散度 1.49），
+    但那是判準錯，不是接線錯：
 
-    在各 env 之間應為同一個常數。前四維全給 0（正規化域中點）確保除了偏移量
-    以外的條件完全相同。
+        斜率 64.23   截距 2.98 rad/s   R² 0.9972
+
+    截距來自母球被賦速的那一個 tick 內、桌面摩擦誘導的自旋——母球寫入時
+    沒有滾動自旋，滑動摩擦把它往純滾動拖，角加速度 `α = 2.5·μ·g/r`，
+    μ≈0.2 時一個 tick 恰好產生 2.86 rad/s，與量到的截距吻合。這一項與
+    `max_offset` **無關，是加性的**，比值判準因此在小 `max_offset` 上失效：
+    `max_offset=0.0192` 的 env 偏移自旋只有 ~1.2 rad/s，摩擦貢獻比訊號本身
+    還大，比值飆到 201。
+
+    真正要抓的錯誤長得完全不同：`_apply_strike()` 若退回用單一 cfg 半徑，
+    角速度會與 `max_offset` **無關**——各 env 幾乎同值，R² ≈ 0。線性回歸
+    對加性偏移免疫，又抓得住這個，所以是對的判準。
 
     `decimation` 暫時改成 1：擊球寫在 `apply_actions()` 的最後一步（先衰減、
     後擊球），所以一個 tick 之後讀到的就是剛寫入的速度。維持 60 的話中間 59
-    個 tick 的滾動阻力衰減會破壞比例關係。
+    個 tick 的滾動阻力衰減會破壞線性關係。
     """
     balls = env.scene["balls"]
     cue_index = list(balls.body_names).index("ball_0")
@@ -172,27 +186,50 @@ def _check_strike_uses_buffer(env, term):
     ang_vel = balls.data.body_com_ang_vel_w.torch[:, cue_index]
     magnitude = torch.linalg.vector_norm(ang_vel, dim=-1)
 
-    # max_offset 取樣到 0 的 env 沒有自旋，比例算不出來，排除掉。
-    usable = buffer > 1e-3
-    if int(usable.sum()) < 2:
-        print("[6] 跳過：可用的 env 少於 2 個（max_offset 幾乎都抽到 0），請重跑")
-        return
-
-    ratio = magnitude[usable] / buffer[usable]
-    relative_spread = float((ratio.max() - ratio.min()) / ratio.mean())
-
     print(f"[6] max_offset = {buffer}")
     print(f"[6] 母球角速度 = {magnitude}")
-    print(f"[6] 比值 = {ratio}（相對離散度 {relative_spread:.4f}）")
 
-    # 容差寬鬆：球與桌面在這一個 tick 內有接觸摩擦，比例不會位元精確。
-    # 真正要抓的是「全部 env 用同一個半徑」——那會讓比值與 max_offset 成
-    # 反比，離散度是數量級的差距，不是幾個百分點。
-    if relative_spread > 0.05:
+    # 回歸需要 x 有足夠分散度才有意義。取樣是隨機的，極端情況下八個 env
+    # 可能全擠在一起——那時候什麼都證明不了，直接要求重跑。
+    x = buffer.double()
+    y = magnitude.double()
+    if float(x.max() - x.min()) < 0.3:
+        print("[6] 跳過：這批 max_offset 分散度不足，回歸沒有意義，請重跑")
+        return
+
+    mean_x, mean_y = x.mean(), y.mean()
+    sxx = ((x - mean_x) ** 2).sum()
+    syy = ((y - mean_y) ** 2).sum()
+    sxy = ((x - mean_x) * (y - mean_y)).sum()
+
+    # syy ≈ 0 就是「全部 env 用同一個半徑」的徵狀：角速度根本不隨條件變動。
+    # 這一支要在算 R² 之前擋，否則除零。
+    if float(syy) < 1e-6:
         raise AssertionError(
-            "各 env 的 |角速度| / max_offset 不一致——擊球路徑可能沒有使用"
-            f"逐 env 的裁切半徑（相對離散度 {relative_spread:.4f}）"
+            f"母球角速度在各 env 之間幾乎不變（{magnitude}）——擊球路徑沒有"
+            "使用逐 env 的裁切半徑"
         )
+
+    slope = float(sxy / sxx)
+    intercept = float(mean_y - sxy / sxx * mean_x)
+    r_squared = float(sxy * sxy / (sxx * syy))
+
+    print(
+        f"[6] 線性回歸：斜率 {slope:.3f}，截距 {intercept:.4f} rad/s，"
+        f"R² {r_squared:.6f}"
+    )
+
+    if slope <= 0.0:
+        raise AssertionError(f"角速度未隨 max_offset 上升（斜率 {slope:.3f}）")
+    if r_squared < 0.98:
+        raise AssertionError(
+            f"角速度與 max_offset 的線性關係不成立（R² {r_squared:.6f}）——"
+            "擊球路徑可能沒有使用逐 env 的裁切半徑"
+        )
+
+    # 截距只報告不設限：它是那一個 tick 的桌面摩擦誘導自旋（docstring 有推導），
+    # 大小隨 μ 與 dt 而定，不是正確性指標。明顯偏離 ~3 rad/s 時值得看一眼
+    # 物理參數有沒有被動過，但不該擋下這項檢查。
     print("[6] 擊球路徑使用逐 env 裁切半徑 OK")
 
 
