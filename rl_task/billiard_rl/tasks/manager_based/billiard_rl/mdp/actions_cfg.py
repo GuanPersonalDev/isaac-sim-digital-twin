@@ -27,13 +27,23 @@ class BilliardStrikeActionCfg(ActionTermCfg):
     cue_ball_name: str = "ball_0"
     """母球在 collection 裡的 key，對應 `_make_ball_cfgs()` 產生的 `ball_{id}`。"""
 
-    max_offset: float = 1.0
-    """可用偏移能力比例，`decode_rl_action()` 圓形裁切的半徑。
+    max_offset_range: tuple[float, float] = (0.0, 1.0)
+    """`max_offset` 的取樣範圍 `(low, high)`，兩端都必須落在 `[0.0, 1.0]`。
 
-    ⚠️ 必須與 B-1 ObsTerm 的同名參數一致——那是 policy 看到的第 21 維條件值。
-    不一致的話 policy 會學到一個「以為自己有 1.0 偏移能力、其實只有 0.6」的
-    策略，完全不報錯。`BilliardRlEnvCfg` 兩處都用 `TRAINING_MAX_OFFSET`，
-    這裡的預設值只是讓本類別單獨拿出來用時仍有合理行為。
+    `max_offset` 是可用偏移能力比例，同時是 `decode_rl_action()` 圓形裁切的
+    半徑與 21 維 observation 的最後一格（#222）。**每個 episode 每個 env 重新
+    取樣一次**（`BilliardStrikeAction.reset()`），整局固定。
+
+    ⚠️ 它是**條件變數**不是超參數——policy 要學的是「給定這個偏移能力上限，
+    該怎麼打」。取樣範圍塌成單點（例如 `(1.0, 1.0)`）的話第 21 維在整個訓練
+    期間都是常數，policy 學不到任何條件依賴，#180 量到手臂實際能力後接上去
+    就是分布外輸入——不會報錯，只會打不準。
+
+    退化成定值是刻意保留的用法，但只用於評估與 debug：
+    `(0.6, 0.6)` ＝ 固定在該能力下重現行為。訓練請維持完整的 `(0.0, 1.0)`。
+
+    B-1 的 ObsTerm 不再有自己的 `max_offset` 參數——它從本 term 的
+    `max_offset` property 讀同一份 buffer，兩端不可能不一致（見 `actions.py`）。
     """
 
     ball_radius: float = TableBallSet.DEFAULT_BALL_RADIUS

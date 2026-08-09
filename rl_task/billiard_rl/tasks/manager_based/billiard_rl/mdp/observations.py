@@ -39,7 +39,7 @@ _BALL_INDEX = list(RL_BALL_ORDER)
 def encode_ball_positions(
     ball_pos_w: torch.Tensor,
     env_origins: torch.Tensor,
-    max_offset: float,
+    max_offset: torch.Tensor | float,
 ) -> torch.Tensor:
     """純張量版的 21 維編碼，對應 `core` 的 `encode_rl_observation()`。
 
@@ -48,7 +48,10 @@ def encode_ball_positions(
 
     ball_pos_w: `(num_envs, 10, 3)` 球心世界座標，object 維度順序為 ball_0…ball_9
     env_origins: `(num_envs, 3)` 各子環境原點的世界座標
-    max_offset: 可用偏移能力比例 `[0.0, 1.0]`，21 維的最後一格
+    max_offset: 可用偏移能力比例 `[0.0, 1.0]`，21 維的最後一格。訓練期是
+        `(num_envs,)` 張量——每個 env 這一局的取樣值各不相同（#122）；也接受
+        單一 float，那是 `core` 純 Python 版的形式（單筆編碼），對拍測試與
+        Demo 端走這條路徑。
 
     回傳 `(num_envs, 21)`：9 顆號碼球的 XY（1→9）+ 母球 XY + `max_offset`。
     """
@@ -79,15 +82,23 @@ def encode_ball_positions(
 
     # ④ 尾端接上 max_offset，補滿第 21 維。
     #    device / dtype 跟著 flat 走，不要寫死 cuda 或 float32。
-    limit = torch.full(
-        (flat.shape[0], 1), max_offset, device=flat.device, dtype=flat.dtype
-    )
+    #
+    #    張量路徑（訓練期）：逐 env 的取樣值，reshape 成 (N, 1) 對齊 cat 的
+    #    形狀。⚠️ 用 reshape(-1, 1) 而不是 unsqueeze(-1)，這樣 (N,) 與 (N, 1)
+    #    兩種傳入形狀都吃得下；形狀錯了 cat 會直接報錯，不是靜默算錯。
+    #    float 路徑（單筆 / 對拍）：全部 env 同值，與 core 的純 Python 版一致。
+    if isinstance(max_offset, torch.Tensor):
+        limit = max_offset.to(device=flat.device, dtype=flat.dtype).reshape(-1, 1)
+    else:
+        limit = torch.full(
+            (flat.shape[0], 1), max_offset, device=flat.device, dtype=flat.dtype
+        )
     return torch.cat((flat, limit), dim=-1)  # (N, 21)
 
 
 def ball_positions(
     env: ManagerBasedRLEnv,
-    max_offset: float,
+    action_term_name: str = "strike",
     asset_name: str = "balls",
 ) -> torch.Tensor:
     """ObsTerm 的進入點：從場景取值後交給 `encode_ball_positions()`。
@@ -95,14 +106,25 @@ def ball_positions(
     只做「取值」這件事，換算全在 `encode_ball_positions()` 裡，這樣對拍測試
     涵蓋得到全部邏輯。
 
-    `max_offset` 刻意不給預設值，強迫在 `ObservationsCfg` 明寫——它必須與 B-2
-    的 ActionTerm 用同一個值（見 `billiard_rl_env_cfg.TRAINING_MAX_OFFSET`）。
+    `max_offset` 不再是本函式的參數（#122）。它每個 episode 每個 env 重新
+    取樣，權威 buffer 在 B-2 的 ActionTerm 上，這裡**讀同一份**——原本兩端
+    各自引用模組常數的做法在改成隨機之後不管用了，兩邊各取樣一次會得到不同
+    的值，而 policy 看到的條件值與實際生效的裁切半徑不同是完全不報錯的錯誤。
+
+    `action_term_name` 必須對得上 `ActionsCfg` 的欄位名（目前是 `strike`）。
+    名字打錯會在 `get_term()` 立刻 KeyError，不會靜默降級。
+
+    ⚠️ 建構順序是安全的：`ManagerBasedEnv.load_managers()` 先建 ActionManager
+    再建 ObservationManager（`manager_based_env.py:368-371`），本函式執行時
+    ActionTerm 一定已經存在且已取樣過。
 
     `asset_name` 用 `str` 而不是 `SceneEntityCfg`：後者要在執行期 import
     isaaclab，本模組就不再是「純 torch + core」，對拍測試會被迫拉進整個 Kit
     相依。這裡只需要一個 key，用不到 SceneEntityCfg 的 body / joint 篩選。
     """
     balls = env.scene[asset_name]
+    # (num_envs,) 逐 env 的條件值。get_term() 是 dict 查找，每步呼叫不心疼。
+    max_offset = env.action_manager.get_term(action_term_name).max_offset
 
     # .torch 不可省：Isaac Lab 3.0 的 data property 回傳的是 warp array 的包裝
     # 物件，不是 tensor（A-3 實測）。忘了會在減法運算子上炸掉。

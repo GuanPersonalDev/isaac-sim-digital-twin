@@ -25,6 +25,7 @@ from isaaclab.managers.action_manager import ActionTerm
 
 from core.models.action_bounds import ACTION_DIM
 from core.services.impulse_striking_service import compute_cue_ball_velocities
+from core.services.numeric_validation import validate_max_offset
 from core.services.rl_action_decoder import decode_rl_action
 
 from .physics import decay_velocities
@@ -84,6 +85,31 @@ class BilliardStrikeAction(ActionTerm):
         # 開球前就會被判定為靜止，episode 長度變成 1 步。
         self._struck = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
+        # 條件變數 max_offset 的**唯一權威 buffer**（#122）。
+        #
+        # 每個 episode 每個 env 重新取樣（見 reset()），整局固定。B-1 的
+        # ObsTerm 不自己存一份，而是透過 `max_offset` property 讀這個 tensor——
+        # 只有一份 buffer，兩端就不可能不一致。原本兩端各自引用模組常數
+        # TRAINING_MAX_OFFSET 的做法在改成隨機之後不管用了：兩邊各取樣一次
+        # 會得到不同的值，而 policy 看到的條件值與實際生效的裁切半徑不同是
+        # **完全不報錯**的錯誤。
+        #
+        # 範圍在建構時就驗，壞值不會拖到訓練跑完才發現。validate_max_offset()
+        # 檢查 [0.0, 1.0]，額外再檢查 low <= high——low > high 會讓下面的
+        # 取樣公式安靜產出負的區間長度，torch.rand 不會抱怨。
+        low, high = cfg.max_offset_range
+        self._offset_low = validate_max_offset(low)
+        self._offset_high = validate_max_offset(high)
+        if self._offset_low > self._offset_high:
+            raise ValueError(
+                f"max_offset_range 的下界不得大於上界，收到 {cfg.max_offset_range}"
+            )
+        self._max_offset = torch.zeros(self.num_envs, device=self.device)
+        # 建構時先取樣一次。ManagerBasedEnv.reset() 會再取樣一遍，但在那之前
+        # ObsTerm 就可能被讀到（例如 D-2 的 space 檢查），全 0 是合法值卻不是
+        # 我們要的語意——「偏移能力為零」而不是「尚未取樣」。
+        self._resample_max_offset(slice(None))
+
         # 用名字查 index，不要寫死 0。_make_ball_cfgs() 的 sorted() 保證了順序，
         # 但那是 A-1 的實作細節，本模組不該依賴它。
         # body_names 是現行名稱；object_names 仍在但屬 deprecated 系列。
@@ -142,6 +168,16 @@ class BilliardStrikeAction(ActionTerm):
         就會判定所有球靜止而立刻終止。
         """
         return self._struck
+
+    @property
+    def max_offset(self) -> torch.Tensor:
+        """`(num_envs,)` float：該 env 這一局的可用偏移能力比例 `[0, 1]`（#122）。
+
+        B-1 的 ObsTerm 讀這個當 21 維的最後一格，本 term 自己拿它當
+        `decode_rl_action()` 的圓形裁切半徑——**同一份 buffer**，這是兩端一致
+        的唯一保證。回傳的是內部 tensor 不是副本，呼叫端不要就地改寫。
+        """
+        return self._max_offset
 
     @property
     def pocket_index(self) -> torch.Tensor:
@@ -206,17 +242,19 @@ class BilliardStrikeAction(ActionTerm):
         # 只把需要的那幾筆搬到 CPU。第一個 tick 是全部 num_envs 筆，
         # 之後就是空的，所以這個同步每個 episode 只發生一次。
         raw_rows = self._raw_actions[pending].cpu().tolist()
+        # 逐 env 的裁切半徑。不可退回用單一 cfg 值——每個 env 這一局的
+        # max_offset 都不同（#122），拿錯的半徑去裁切，policy 看到的條件
+        # 與實際生效的偏移就對不上，而且不報錯。
+        offsets = self._max_offset[pending].cpu().tolist()
 
         placements: list[list[float]] = []
         velocities: list[list[float]] = []
-        for row in raw_rows:
+        for row, offset in zip(raw_rows, offsets):
             # should_execute_action 寫死 True：它是 Demo 端狀態機的控制旗標
             # （ScriptController 的 IDLE→AIMING→STRIKING），**不是第 7 維模型
             # 輸出**——多送一維會在 decode 的長度檢查被擋下。訓練端只在真的要
             # 擊球時才走到這裡，所以恆為 True。
-            action = decode_rl_action(
-                row, self.cfg.max_offset, should_execute_action=True
-            )
+            action = decode_rl_action(row, offset, should_execute_action=True)
             linear, angular = compute_cue_ball_velocities(
                 action, self.cfg.ball_radius, self.cfg.spin_efficiency
             )
@@ -227,10 +265,16 @@ class BilliardStrikeAction(ActionTerm):
         self._struck[pending] = True
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
-        """episode 重置：清掉擊球旗標，下一局才擊得了球。
+        """episode 重置：清掉擊球旗標並重新取樣條件變數。
 
-        沒有這個的話 env 重置後 `_struck` 仍為 True，母球永遠不會再被賦速，
+        沒有清 `_struck` 的話 env 重置後它仍為 True，母球永遠不會再被賦速，
         訓練從第二局起全部是靜止畫面——而且不會報錯。
+
+        時序（`manager_based_rl_env.py`）：`_reset_idx()` 在
+        `action_manager.reset()` 這一步呼叫本方法，而 observation 是在 `step()`
+        的尾端才 compute，**在 `_reset_idx()` 之後**。所以這裡取樣的新值會出現
+        在該 episode 的第一筆 observation 上，policy 從第一步就看得到自己這局
+        的偏移能力。順序反過來的話 policy 每一局看到的都是上一局的條件值。
         """
         # env_ids=None 代表全部。不要就地改寫 env_ids——型別會從 Sequence[int]
         # 變成 slice，靜態檢查會擋。
@@ -242,10 +286,30 @@ class BilliardStrikeAction(ActionTerm):
         self._pocket_index[index] = -1
         self._rail_contacted[index] = False
         self._first_contact[index] = -1
+        # 條件變數重新取樣。這是 #122 的核心——第 21 維必須逐局變動，policy
+        # 才學得到「偏移能力上限 → 該怎麼打」的條件依賴。
+        self._resample_max_offset(index)
 
     """
     Internal helpers.
     """
+
+    def _resample_max_offset(self, index: Sequence[int] | slice) -> None:
+        """對指定的 env 重新取樣 `max_offset`，均勻分布於 `max_offset_range`。
+
+        `torch.rand_like(self._max_offset[index])` 而不是自己算長度：
+        `index` 可能是 slice（全部）也可能是索引張量（部分 env），兩種形狀都
+        由 `rand_like` 自動處理，device 與 dtype 也跟著 buffer 走，不會寫死
+        cuda 或 float32。
+
+        均勻分布是刻意的：條件變數要讓 policy 在**整個範圍**都學得動，不是
+        偏重某個常見值。`rand` 的值域是 `[0, 1)`，乘上區間長度再加下界後
+        取不到上界——在連續分布上是零測度集，不影響學習；需要精確取到端點
+        的場合（評估固定在 1.0）請用 `(1.0, 1.0)` 這種塌成單點的範圍。
+        """
+        span = self._offset_high - self._offset_low
+        sampled = torch.rand_like(self._max_offset[index])
+        self._max_offset[index] = sampled * span + self._offset_low
 
     def _update_shot_tracking(self) -> None:
         """B-3a：累積這一局的進袋／顆星接觸／首次接觸。

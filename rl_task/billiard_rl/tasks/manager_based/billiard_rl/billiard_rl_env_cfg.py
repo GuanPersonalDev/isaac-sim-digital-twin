@@ -27,18 +27,29 @@ from core.services.break_shot_position_provider import BreakShotPositionProvider
 from core.services.numeric_validation import validate_max_offset
 
 ##
-# 共用條件常數
+# 條件變數 max_offset 的取樣範圍（#122）
 ##
-# 21 維 observation 的最後一格（B-1），同時也是 B-2 動作偏移量的裁切半徑。
-# 訓練環境沒有手臂（本 issue 的決定），偏移能力視為滿載。
+# `max_offset` 是 21 維 observation 的最後一格（B-1），同時也是 B-2 動作偏移量
+# 的圓形裁切半徑。它是**條件變數**：policy 要學的不是「怎麼打」，而是「給定
+# 這個偏移能力上限，該怎麼打」——這正是 #121／#222 用單一 policy 取代「訓練
+# 兩個 policy」的 fallback 方案所依賴的機制。
 #
-# 定成模組常數而不是在兩處各寫 1.0：B-1 的 ObsTerm 與 B-2 的 ActionTermCfg
-# 必須是同一個值。不一致的話 policy 看到的條件值跟實際生效的裁切半徑不同——
-# 會學到一個「以為自己有 1.0 偏移能力、其實只有 0.6」的策略，完全不報錯。
+# 因此它必須**每個 episode 每個 env 重新取樣**，取樣點在
+# `BilliardStrikeAction.reset()`，整局固定。
+#
+# ⚠️ 2026-08-09 修正：本常數原本是定值 `1.0`（「訓練環境沒有手臂，偏移能力視為
+# 滿載」）。那樣第 21 維在整個訓練期間都是常數，policy 學不到任何條件依賴，
+# Milestone B（#180）量出手臂實際偏移能力後接上去就是分布外輸入——不報錯，
+# 只是打不準。要固定值請改成塌成單點的範圍（例如 `(0.6, 0.6)`），且只用於
+# 評估與 debug，不要用於訓練。
+#
+# 兩端一致性不再靠「共用同一個常數」保證——改成隨機之後那不管用了，兩邊各
+# 取樣一次會得到不同的值。現在 ObsTerm 直接讀 ActionTerm 的 buffer，**只有
+# 一份**，見 `mdp/actions.py` 的 `max_offset` property。
 #
 # validate_max_offset() 在 import 時就檢查 [0.0, 1.0]，改壞了立刻炸，而不是
-# 訓練跑完才發現。Milestone B（#180，量出手臂實際偏移能力）接上時只改這一行。
-TRAINING_MAX_OFFSET = validate_max_offset(1.0)
+# 訓練跑完才發現。
+TRAINING_MAX_OFFSET_RANGE = (validate_max_offset(0.0), validate_max_offset(1.0))
 
 ##
 # 座標系與 env_origins 換算（A-2）
@@ -127,12 +138,13 @@ class ActionsCfg:
     1. 直接對球做 impulse，訓練環境沒有手臂（手臂 RL 屬 Milestone B / #180）
     2. 母球擺位是桌台相對座標，寫進模擬要加 env_origins（見上方換算表第 4 列）
     3. 正規化／反正規化與圓形裁切都在 core 實作（#225），這邊只負責接線與寫入
+    4. 條件變數 `max_offset` 的權威 buffer 也在這個 term 上（#122），B-1 的
+       ObsTerm 讀它——**欄位名 `strike` 是 ObsTerm 的 `action_term_name` 參數
+       指向的目標**，改名兩處要一起改（改錯會 KeyError，不會靜默降級）
     """
 
     strike: mdp.BilliardStrikeActionCfg = mdp.BilliardStrikeActionCfg(
-        # 與 B-1 ObsTerm 的 max_offset 引用同一個常數。兩者必須一致——
-        # 不一致會讓 policy 看到的條件值跟實際生效的裁切半徑不同，且不報錯。
-        max_offset=TRAINING_MAX_OFFSET,
+        max_offset_range=TRAINING_MAX_OFFSET_RANGE,
     )
 
 
@@ -169,9 +181,13 @@ class ObservationsCfg:
         """
 
         # func 拿到的第一個參數固定是 env，其餘由 params 以關鍵字傳入。
+        #
+        # 不再傳 max_offset（#122）——它每局取樣一次，權威 buffer 在 B-2 的
+        # ActionTerm 上，ObsTerm 執行期直接讀那一份。這裡只指名要讀哪個
+        # action term，名字對應 `ActionsCfg.strike` 的欄位名。
         ball_positions = ObsTerm(
             func=mdp.ball_positions,
-            params={"max_offset": TRAINING_MAX_OFFSET},
+            params={"action_term_name": "strike"},
         )
 
         def __post_init__(self) -> None:

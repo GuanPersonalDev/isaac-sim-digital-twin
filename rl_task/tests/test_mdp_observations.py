@@ -56,9 +56,18 @@ _BALL_COUNT = 10
 
 
 def _reference(
-    pos_w: torch.Tensor, origins: torch.Tensor, max_offset: float
+    pos_w: torch.Tensor, origins: torch.Tensor, max_offset: float | list[float]
 ) -> torch.Tensor:
-    """逐 env 呼叫 core 的純 Python 版，組成 (N, 21) 的 golden reference。"""
+    """逐 env 呼叫 core 的純 Python 版，組成 (N, 21) 的 golden reference。
+
+    `max_offset` 給 list 時是逐 env 的值——core 的純 Python 版本來就是單筆
+    介面，per-env 條件值（#122）在這裡天然表達得出來。
+    """
+    offsets: list[float] = (
+        list(max_offset)
+        if isinstance(max_offset, list)
+        else [float(max_offset)] * int(pos_w.shape[0])
+    )
     rows = []
     for env_idx in range(pos_w.shape[0]):
         ball_positions = [
@@ -77,7 +86,9 @@ def _reference(
         # core 減的是桌台世界 XY；訓練場景裡桌台就落在子環境原點上（A-1 的
         # table 沒有給 init_state），所以這裡代入 env_origins。
         table_position = (float(origins[env_idx, 0]), float(origins[env_idx, 1]))
-        rows.append(encode_rl_observation(observation, table_position, max_offset))
+        rows.append(
+            encode_rl_observation(observation, table_position, offsets[env_idx])
+        )
     return torch.tensor(rows, dtype=torch.float64)
 
 
@@ -168,3 +179,82 @@ def test_preserves_device_and_dtype():
 
     assert encoded.dtype == torch.float64
     assert encoded.device == pos_w.device
+
+
+##
+# per-env 條件變數（#122）
+##
+# 以下四項驗的是「第 21 維可以逐 env 不同」這件事本身。取樣行為（每 episode
+# 重新抽、整局固定）在 `BilliardStrikeAction.reset()`，需要 ManagerBasedRLEnv
+# 實例才驗得了，屬 pod 上的 D-2 範圍，不在本檔。
+
+
+def test_accepts_per_env_max_offset_tensor():
+    """逐 env 的 max_offset：第 21 格必須是各 env 自己的值，與 core 對拍。
+
+    #122 之前這裡是全場同一個常數。改成逐局取樣後，若哪天不小心退回
+    `max_offset[0]` 之類的寫法，全部 env 會共用第 0 個 env 的條件值——
+    policy 看到的條件與實際生效的裁切半徑對不上，而且完全不報錯。
+    """
+    torch.manual_seed(2)
+    pos_w = torch.rand(4, _BALL_COUNT, 3, dtype=torch.float32) * 2.0 - 1.0
+    origins = torch.rand(4, 3, dtype=torch.float32) * 10.0 - 5.0
+    offsets = [0.0, 0.25, 0.75, 1.0]
+
+    actual = encode_ball_positions(
+        pos_w, origins, torch.tensor(offsets, dtype=torch.float32)
+    )
+
+    assert actual.shape == (4, 21)
+    assert [float(actual[i, 20]) for i in range(4)] == offsets
+    assert torch.allclose(actual.double(), _reference(pos_w, origins, offsets), atol=_ATOL)
+
+
+def test_tensor_path_matches_float_path():
+    """同一個值走張量路徑與 float 路徑，結果必須完全相同。
+
+    兩條路徑是刻意並存的（訓練端逐 env、Demo 端與對拍單值），並存就會漂移。
+    """
+    torch.manual_seed(3)
+    pos_w = torch.rand(3, _BALL_COUNT, 3, dtype=torch.float32)
+    origins = torch.zeros(3, 3, dtype=torch.float32)
+
+    via_float = encode_ball_positions(pos_w, origins, 0.4)
+    via_tensor = encode_ball_positions(
+        pos_w, origins, torch.full((3,), 0.4, dtype=torch.float32)
+    )
+
+    assert torch.equal(via_float, via_tensor)
+
+
+def test_max_offset_tensor_is_cast_to_flat_dtype():
+    """條件值的 dtype 由球位決定，不是由 buffer 決定。
+
+    ActionTerm 的 buffer 是 float32，球位在 `--device cpu` 或未來改精度時
+    可能是 float64。`torch.cat` 要求兩者一致，不轉會直接丟例外。
+    """
+    pos_w = torch.zeros(2, _BALL_COUNT, 3, dtype=torch.float64)
+    origins = torch.zeros(2, 3, dtype=torch.float64)
+
+    encoded = encode_ball_positions(
+        pos_w, origins, torch.tensor([0.3, 0.6], dtype=torch.float32)
+    )
+
+    assert encoded.dtype == torch.float64
+    assert float(encoded[1, 20]) == pytest.approx(0.6)
+
+
+def test_accepts_column_shaped_max_offset():
+    """(N, 1) 與 (N,) 兩種形狀都要吃得下。
+
+    `reshape(-1, 1)` 而不是 `unsqueeze(-1)` 就是為了這個——呼叫端若先做過
+    一次 unsqueeze，unsqueeze 版會變成 (N, 1, 1)，cat 報維度錯。
+    """
+    pos_w = torch.zeros(2, _BALL_COUNT, 3, dtype=torch.float32)
+    origins = torch.zeros(2, 3, dtype=torch.float32)
+    offsets = torch.tensor([0.2, 0.8], dtype=torch.float32)
+
+    flat = encode_ball_positions(pos_w, origins, offsets)
+    column = encode_ball_positions(pos_w, origins, offsets.reshape(-1, 1))
+
+    assert torch.equal(flat, column)
