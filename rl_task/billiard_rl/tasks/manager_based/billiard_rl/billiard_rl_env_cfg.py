@@ -188,10 +188,21 @@ class ObservationsCfg:
 
 @configclass
 class EventCfg:
-    """事件設定
-    
-    完成後會有一個 mode="reset" 的 EventTerm, 每次 episode 重置時把 10 顆球套回 BREAK_SHOT_POSITIONS 的固定擺位
+    """事件設定：每次 episode 重置時把 10 顆球套回 BREAK_SHOT_POSITIONS 固定擺位。
+
+    ⚠️ 這一項不是選配。Isaac Lab 的 `_reset_idx()` **不會**自己把 asset 寫回
+    default state，沒有這個 term 的話第二個 episode 起球會維持在上一局散開的
+    位置——訓練照跑、reward 照算，只是每一局的初始盤面都不同，policy 學到的
+    東西沒有意義，而且完全不報錯。
+
+    評估場景必須完全固定（`training/README.md`〈Demo 素材〉），所以這裡不加任何
+    隨機擾動。要做 domain randomization 請另開 EventTerm，不要污染這一個。
     """
+
+    reset_break_shot: EventTerm = EventTerm(
+        func=mdp.reset_break_shot_layout,
+        mode="reset",
+    )
 
 
 @configclass
