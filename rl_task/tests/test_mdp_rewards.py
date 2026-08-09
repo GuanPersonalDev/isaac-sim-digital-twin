@@ -115,28 +115,42 @@ def test_break_shot_layout_has_no_rail_contact():
     assert not bool(detect_rail_contact(ball_xy, _RADIUS).any())
 
 
+def _layout(near_cue: dict[int, float] | None = None) -> torch.Tensor:
+    """以開球擺位為底，把指定的球移到母球正前方指定距離處。
+
+    ⚠️ 不要用 `torch.zeros((1, 10, 2))` 當底——那會讓 9 顆號碼球全部疊在母球
+    身上（球心距離 0 < 2r），每一顆都被判定為接觸中。距離判定的測試必須從
+    「球彼此分開」的局面出發。
+    """
+    xy = torch.tensor(
+        [[BREAK_SHOT_POSITIONS[b] for b in sorted(BREAK_SHOT_POSITIONS)]],
+        dtype=torch.float64,
+    )
+    cue = xy[0, 0].clone()
+    for ball_id, distance in (near_cue or {}).items():
+        xy[0, ball_id] = cue + torch.tensor([distance, 0.0], dtype=torch.float64)
+    return xy
+
+
 def test_detect_cue_contact_excludes_cue_ball_itself():
-    ball_xy = torch.zeros(1, _BALL_COUNT, 2, dtype=torch.float64)
-    ball_xy[0, 5, 0] = 2.0 * _RADIUS  # 剛好接觸
+    ball_xy = _layout({5: 2.0 * _RADIUS})  # 剛好接觸
 
     touching = detect_cue_contact(ball_xy, _RADIUS)
 
     assert not bool(touching[0, 0]), "母球不能算成自己碰到自己"
     assert bool(touching[0, 5])
-    assert int(touching.sum()) == 1
+    assert int(touching.sum()) == 1, "球堆裡的球離母球 1.5 m 以上，不該被算進來"
 
 
 def test_update_first_contact_is_sticky_and_picks_nearest():
-    ball_xy = torch.zeros(1, _BALL_COUNT, 2, dtype=torch.float64)
-    ball_xy[0, 7, 0] = 2.0 * _RADIUS
-    ball_xy[0, 2, 0] = 1.5 * _RADIUS  # 更近
+    ball_xy = _layout({7: 2.0 * _RADIUS, 2: 1.5 * _RADIUS})  # 2 號球更近
 
     first = torch.full((1,), -1, dtype=torch.long)
     first = update_first_contact(first, ball_xy, _RADIUS)
     assert int(first[0]) == 2
 
-    # 之後 1 號球也碰到了，記錄不得被覆寫
-    ball_xy[0, 1, 0] = 0.5 * _RADIUS
+    # 之後 1 號球也碰到了，而且更近——記錄不得被覆寫
+    ball_xy = _layout({7: 2.0 * _RADIUS, 2: 1.5 * _RADIUS, 1: 0.5 * _RADIUS})
     first = update_first_contact(first, ball_xy, _RADIUS)
     assert int(first[0]) == 2
 
