@@ -313,14 +313,49 @@ Block 12 的影片要呈現「訓練過程」，但雲端 headless、沒有訓�
 
 rsl_rl 存的 `model_<iter>.pt` 是含 optimizer state 的訓練檔，要靠 rsl_rl 才載得動。
 但本機 Isaac Sim **沒有裝 rsl_rl**——#227 的設計是用 Isaac Sim 內建 PyTorch 載
-**TorchScript** 格式的 `exported/policy.pt`（normalizer 已打包進模型，餵原始觀測即可）。
+**TorchScript** 格式的 `exported/policy.pt`。
 
-`play.py` 每跑一次就會自動匯出 `exported/policy.pt` 與 `policy.onnx`。所以每一個要拿來
-回放的中間 checkpoint，都必須**趁 pod 還活著時就跑一次 `play.py` 產生 TorchScript**。
+`play` 每跑一次就會自動匯出 `<run>/exported/policy.pt` 與 `<run>/exported/policy.onnx`。
+所以每一個要拿來回放的中間 checkpoint，都必須**趁 pod 還活著時就各跑一次 `play`**。
 等訓練結束、只下載了最終 policy 才想起來，就得重開 pod、重跑 export。
 
-> ONNX 版匯出時 `dynamic_axes={}`，**batch size 固定為 1**。單機器人 Demo 夠用，
-> 但要批次推論就得重新匯出。
+> 實證：`2026-08-08` 的兩輪訓練目錄底下只有 `model_*.pt`，**沒有 `exported/`**——
+> 那幾個 checkpoint 現在要回放就得重跑 export。
+
+#### 匯出檔的實際性質（2026-08-09 於 pod 實測，rsl_rl 5.x）
+
+⚠️ 以下三項是打開檔案量出來的，不是從 isaaclab 舊版原始碼推論的。改動 rsl_rl 版本
+或 `agents/rsl_rl_ppo_cfg.py` 的 `obs_normalization` 後**必須重驗**。
+
+**① 目前沒有任何正規化，但「餵原始觀測即可」這個結論成立。**
+
+TorchScript 的 `forward` 裡確實有 `obs_normalizer`，但 `rsl_rl_ppo_cfg.py` 的
+`obs_normalization=False`，所以它是 `Identity()`——`named_buffers()` 是空的，
+沒有 `running_mean` / `running_var`。ONNX 圖裡也只有 `Gemm ×3 + Elu ×2`，
+沒有任何正規化 op。
+
+> 舊版本文寫的是「normalizer 已打包進模型」——結論碰巧對，理由是錯的：
+> 現在能餵原始觀測是因為**根本沒有正規化**。#123 調參若把 `obs_normalization`
+> 打開，匯出的模型才會真的包一個有作用的 normalizer（屆時仍餵原始觀測，
+> 但**不同 checkpoint 的 normalizer 統計量不同**，回放對照要留意）。
+
+**② 匯出的動作是無界的，而且是 deterministic。**
+
+`forward` 是 `obs_normalizer → mlp → deterministic_output`，回傳高斯分布的**平均值**
+而不是取樣，也**沒有 tanh 或 clip**。實測全 50 的輸入會得到
+`[-4.6, -1.9, -4.8, 5.3, 10.9, -1.7]`——遠超出正規化域 `[-1, 1]`。
+
+**所以回放端不能自己解讀 policy 的輸出**，一定要走
+`core.services.rl_action_decoder.decode_rl_action()`：前四維的 clip 與偏移兩維的
+圓形裁切都在那裡（#225），繞過它會把越界值直接反正規化成越界的物理量。
+
+**③ ONNX 的 batch size 固定為 1。**
+
+輸入 `obs` 形狀 `[1, 21]`、輸出 `actions` 形狀 `[1, 6]`，都是固定值不是動態軸。
+onnxruntime 實測：`batch=1` OK，`batch=4` 與 `batch=64` 都是
+`INVALID_ARGUMENT: Got invalid dimensions for input: obs`。
+
+單機器人 Demo 夠用，要批次推論就得重新匯出。TorchScript 版沒有這個限制。
 
 ### 4. TensorBoard event 檔要一起帶回來
 
