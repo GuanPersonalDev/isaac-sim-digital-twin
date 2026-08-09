@@ -24,6 +24,21 @@ from . import mdp
 from core.models.table_ball_set import TableBallSet
 from core.services.asset_utility import BALL_TEMPLATE_PATH, TRAINING_TABLE_PATH
 from core.services.break_shot_position_provider import BreakShotPositionProvider
+from core.services.numeric_validation import validate_max_offset
+
+##
+# 共用條件常數
+##
+# 21 維 observation 的最後一格（B-1），同時也是 B-2 動作偏移量的裁切半徑。
+# 訓練環境沒有手臂（本 issue 的決定），偏移能力視為滿載。
+#
+# 定成模組常數而不是在兩處各寫 1.0：B-1 的 ObsTerm 與 B-2 的 ActionTermCfg
+# 必須是同一個值。不一致的話 policy 看到的條件值跟實際生效的裁切半徑不同——
+# 會學到一個「以為自己有 1.0 偏移能力、其實只有 0.6」的策略，完全不報錯。
+#
+# validate_max_offset() 在 import 時就檢查 [0.0, 1.0]，改壞了立刻炸，而不是
+# 訓練跑完才發現。Milestone B（#180，量出手臂實際偏移能力）接上時只改這一行。
+TRAINING_MAX_OFFSET = validate_max_offset(1.0)
 
 ##
 # 座標系與 env_origins 換算（A-2）
@@ -115,11 +130,14 @@ class ActionsCfg:
 
 @configclass
 class ObservationsCfg:
-    """觀測規格
-    完成後 PolicyCfg 底下會有單一 ObsTerm, 包住 core.services.rl_observation_encoder.encode_rl_observation()
+    """觀測規格：單一 ObsTerm，21 維（18 球位 + 2 母球 XY + 1 max_offset）。
 
-    注意從 Collection 讀出的球位是 world frame, 要減掉 env_origins 計算相對座標
-    （換算方向見檔案上方〈座標系與 env_origins 換算〉）
+    實作在 mdp/observations.py。那裡是 torch 向量化版而非直接包住 core 的
+    encode_rl_observation()——ObsTerm 每個 env step 都會被觸發，1024 環境跑
+    Python 迴圈是每步數十毫秒。兩份實作由 rl_task/tests/ 的對拍測試綁死。
+
+    從 Collection 讀出的球位是 world frame，要減掉 env_origins 換成桌台相對
+    座標（換算方向見檔案上方〈座標系與 env_origins 換算〉）。
 
     ⚠️ 屬性名稱：object_pos_w / object_quat_w / object_lin_vel_w / object_ang_vel_w /
        object_state_w / default_object_state 在 Isaac Lab 3.0 全部標記 deprecated，
@@ -137,12 +155,22 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         """送進 policy 網路的觀測群組
-        
+
         Manager-based 支援多個 observation group, 但本專案 actor 與 critic 用同一份觀測，因此只有 policy 一組
         """
 
+        # func 拿到的第一個參數固定是 env，其餘由 params 以關鍵字傳入。
+        ball_positions = ObsTerm(
+            func=mdp.ball_positions,
+            params={"max_offset": TRAINING_MAX_OFFSET},
+        )
+
         def __post_init__(self) -> None:
+            # 觀測噪音關閉：21 維的最後一格是條件變數不是感測值，
+            # enable_corruption 會連它一起加噪音。
             self.enable_corruption = False
+            # 串接成單一向量。目前只有一個 term，但 concatenate_terms=False
+            # 會讓 observation_space 變成 dict，D-2 的維度檢查對不上。
             self.concatenate_terms = True
 
     # observation groups

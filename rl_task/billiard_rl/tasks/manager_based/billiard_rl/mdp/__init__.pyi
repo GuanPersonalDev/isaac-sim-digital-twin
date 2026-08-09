@@ -5,9 +5,11 @@
 
 __all__ = [
     "joint_pos_target_l2",
+    "ball_positions",
 ]
 
 # Forward stable MDP terms lazily, then override with environment-specific terms below.
 from isaaclab.envs.mdp import *  # noqa: F401, F403
 
+from .observations import ball_positions
 from .rewards import joint_pos_target_l2
