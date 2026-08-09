@@ -28,6 +28,11 @@ from core.services.impulse_striking_service import compute_cue_ball_velocities
 from core.services.rl_action_decoder import decode_rl_action
 
 from .physics import decay_velocities
+from .shot_tracking import (
+    detect_pocketed,
+    detect_rail_contact,
+    update_first_contact,
+)
 
 if TYPE_CHECKING:
     from isaaclab.assets import RigidObjectCollection
@@ -89,6 +94,23 @@ class BilliardStrikeAction(ActionTerm):
             )
         self._cue_index = body_names.index(cfg.cue_ball_name)
 
+        # B-3a 的三個「整局黏著」事件記錄。三者都是**歷史事件**，落定時的狀態
+        # 看不出來（袋口是 trigger 不是洞、球滾過去會繼續滾；顆星接觸是瞬間；
+        # 首次接觸依定義就是歷史），所以每個 physics tick 更新一次並累積。
+        num_balls = len(body_names)
+        # 每顆球進了哪個袋（袋口索引），-1 = 沒進袋。存索引而不只是布林，是因為
+        # calculate_spread_score() 要求呼叫端替進袋球代入**袋口座標**。
+        self._pocket_index = torch.full(
+            (self.num_envs, num_balls), -1, dtype=torch.long, device=self.device
+        )
+        self._rail_contacted = torch.zeros(
+            (self.num_envs, num_balls), dtype=torch.bool, device=self.device
+        )
+        # 母球第一顆碰到的球（collection 索引），-1 = 尚未接觸。
+        self._first_contact = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+
     """
     Properties.
     """
@@ -121,6 +143,29 @@ class BilliardStrikeAction(ActionTerm):
         """
         return self._struck
 
+    @property
+    def pocket_index(self) -> torch.Tensor:
+        """`(num_envs, num_balls)` long：該球進了哪個袋，-1 = 沒進袋（B-3a）。"""
+        return self._pocket_index
+
+    @property
+    def pocketed(self) -> torch.Tensor:
+        """`(num_envs, num_balls)` bool：該球這一局是否曾經進袋。"""
+        return self._pocket_index >= 0
+
+    @property
+    def rail_contacted(self) -> torch.Tensor:
+        """`(num_envs, num_balls)` bool：該球這一局是否碰過顆星。"""
+        return self._rail_contacted
+
+    @property
+    def first_contact(self) -> torch.Tensor:
+        """`(num_envs,)` long：母球第一顆碰到的球，-1 = 整局沒碰到任何球。
+
+        `evaluate_break_foul()` 要求首次接觸必須是 1 號球，否則判 -1.5 並重置。
+        """
+        return self._first_contact
+
     """
     Operations.
     """
@@ -145,6 +190,7 @@ class BilliardStrikeAction(ActionTerm):
         裡是框架限制而非設計選擇；`mode="interval"` 的 EventTerm 是每個 env
         step 觸發，粒度差 60 倍。
         """
+        self._update_shot_tracking()
         self._apply_rolling_resistance()
         self._apply_strike()
 
@@ -191,10 +237,49 @@ class BilliardStrikeAction(ActionTerm):
         index: Sequence[int] | slice = slice(None) if env_ids is None else env_ids
         self._struck[index] = False
         self._raw_actions[index] = 0.0
+        # B-3a 的事件記錄同樣是 per-episode 的，不清會把上一局的進袋、顆星接觸
+        # 帶到下一局，reward 全部算錯而且不報錯。
+        self._pocket_index[index] = -1
+        self._rail_contacted[index] = False
+        self._first_contact[index] = -1
 
     """
     Internal helpers.
     """
+
+    def _update_shot_tracking(self) -> None:
+        """B-3a：累積這一局的進袋／顆星接觸／首次接觸。
+
+        純讀取 + 更新旗標，**不對球做任何物理干預**。進袋的球在模擬裡會繼續
+        滾（袋口是 trigger 體積不是洞），但 reward 端不看它的實際位置——
+        `calculate_spread_score()` 的 docstring 明文要求呼叫端替進袋球代入
+        袋口座標，B-3b 就是那樣做的。
+
+        不搬球的理由：袋口 Cylinder 是有碰撞的（Demo 靠它做 contact reporting），
+        把球吸附到袋口中心會造成穿透、被 PhysX 推開，而那個行為我沒辦法在本機
+        驗證。已知差異：Demo 端進袋後會把球移出檯面，訓練端不會——影響的是
+        進袋球之後還會不會撞到別的球。列為 #121 的已知落差。
+        """
+        if not bool(self._struck.any()):
+            # 還沒擊球，不可能有任何事件。省掉整組距離計算。
+            return
+
+        ball_xy = (
+            self._asset.data.body_link_pos_w.torch[..., :2]
+            - self._env.scene.env_origins[:, None, :2]
+        )
+
+        is_pocketed, nearest_pocket = detect_pocketed(ball_xy)
+        # 只寫「這個 tick 新進袋」的球：已記錄過的保留原本的袋口索引，
+        # 免得球滾出袋口範圍後又被判進另一個袋。
+        newly = is_pocketed & (self._pocket_index < 0)
+        self._pocket_index = torch.where(newly, nearest_pocket, self._pocket_index)
+
+        self._rail_contacted |= detect_rail_contact(ball_xy, self.cfg.ball_radius)
+
+        self._first_contact = update_first_contact(
+            self._first_contact, ball_xy, self.cfg.ball_radius
+        )
 
     def _apply_rolling_resistance(self) -> None:
         """B-6：對所有球施加滾動摩擦與自旋衰減。

@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 __all__ = [
-    "joint_pos_target_l2",
     "ball_positions",
     "BilliardStrikeAction",
     "BilliardStrikeActionCfg",
@@ -13,6 +12,16 @@ __all__ = [
     "balls_at_rest_mask",
     "break_shot_positions",
     "reset_break_shot_layout",
+    "decompose_reward",
+    "evaluate_shot",
+    "spread",
+    "nine_ball",
+    "cue_scratch",
+    "foul",
+    "detect_pocketed",
+    "detect_rail_contact",
+    "detect_cue_contact",
+    "update_first_contact",
 ]
 
 # Forward stable MDP terms lazily, then override with environment-specific terms below.
@@ -23,5 +32,11 @@ from .actions_cfg import BilliardStrikeActionCfg
 from .events import break_shot_positions, reset_break_shot_layout
 from .observations import ball_positions
 from .physics import decay_velocities
-from .rewards import joint_pos_target_l2
+from .rewards import cue_scratch, decompose_reward, evaluate_shot, foul, nine_ball, spread
+from .shot_tracking import (
+    detect_cue_contact,
+    detect_pocketed,
+    detect_rail_contact,
+    update_first_contact,
+)
 from .terminations import all_balls_at_rest, balls_at_rest_mask

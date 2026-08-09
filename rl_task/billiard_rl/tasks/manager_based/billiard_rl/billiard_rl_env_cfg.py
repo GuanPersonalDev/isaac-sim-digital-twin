@@ -207,10 +207,27 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    """獎勵
-    
-    四個獨立的 RewTerm
+    """獎勵：四個獨立的 RewTerm，分項進 TensorBoard。
+
+    數值權威在 `core.services.reward_service.calculate_reward()`——那裡的邏輯
+    不是單純相加（犯規重置時只回傳罰分、9 號球獎勵 gate 在沒犯規上），所以
+    `mdp/rewards.py` 的 `decompose_reward()` 負責拆解，並由對拍測試保證
+    **四項之和恆等於 `calculate_reward()`**。
+
+    ⚠️ `weight` 一律 1.0。權重調整屬 #123（PPO 超參數）的範圍，而且改權重會讓
+    分項總和不再等於 core 的 reward——要調請先確認那是刻意的。
+
+    四項都只在球落定的那一步給分（gate 在 `all_balls_at_rest`）。中間步回 0，
+    否則「飛越久分越高」。
     """
+
+    spread: RewTerm = RewTerm(func=mdp.spread, weight=1.0)
+
+    nine_ball: RewTerm = RewTerm(func=mdp.nine_ball, weight=1.0)
+
+    cue_scratch: RewTerm = RewTerm(func=mdp.cue_scratch, weight=1.0)
+
+    foul: RewTerm = RewTerm(func=mdp.foul, weight=1.0)
 
 @configclass
 class TerminationsCfg:
