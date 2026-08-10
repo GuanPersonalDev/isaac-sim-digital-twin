@@ -209,9 +209,9 @@ def _compute_breakdown(
 def spread(env: ManagerBasedRLEnv, action_term_name: str = "strike") -> torch.Tensor:
     """散開程度，只在落定的那一步給分。
 
-    數值已經過 `spread_score_to_reward()` 重新正規化（rack = 0.0、散滿全桌 =
-    +2.5），**不是** `calculate_spread_score()` 的 0~1 原始分數。RewTerm 的
-    weight 必須維持 1.0，理由見該函式的 docstring。
+    數值已經過 `spread_score_to_reward()` 重新正規化（rack = 0.0、RunPod
+    控制式最大速度開球平均 = +1.0），**不是** `calculate_spread_score()` 的
+    0~1 原始分數。RewTerm 的 weight 必須維持 1.0，理由見該函式的 docstring。
     """
     return _breakdown(env, action_term_name)["spread"]
 

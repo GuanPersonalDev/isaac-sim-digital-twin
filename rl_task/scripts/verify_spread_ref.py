@@ -69,12 +69,15 @@ from core.services.break_shot_position_provider import (  # noqa: E402
 from core.services.pocket_geometry import POCKET_POSITIONS  # noqa: E402
 from core.services.spread_score_calculator import (  # noqa: E402
     SPREAD_REF,
+    SPREAD_REWARD_SCALE,
     calculate_spread_score,
+    spread_score_to_reward,
 )
 
 _OBJECT_BALL_IDS = tuple(range(1, 10))
 _POCKET_XY = list(POCKET_POSITIONS.values())
 _REFERENCE_TOLERANCE = 0.20
+_CUE_SCRATCH_PENALTY_MAGNITUDE = 3.5
 _ANGLE_INDEX = 2
 _SPEED_INDEX = 3
 
@@ -245,6 +248,7 @@ def _write_result(
             "legal_breaks": len(legal),
         },
         "current_spread_ref": SPREAD_REF,
+        "current_spread_reward_scale": SPREAD_REWARD_SCALE,
         "tolerance_fraction": _REFERENCE_TOLERANCE,
     }
 
@@ -264,9 +268,30 @@ def _write_result(
         measured_mean = float(primary_summary["mean"])
         relative_deviation = (measured_mean - SPREAD_REF) / SPREAD_REF
         within_tolerance = abs(relative_deviation) <= _REFERENCE_TOLERANCE
+        observed_max_reward = spread_score_to_reward(
+            float(primary_summary["max"])
+        )
+        safety_pass = observed_max_reward < _CUE_SCRATCH_PENALTY_MAGNITUDE
+        if not safety_pass:
+            status = "UNSAFE_SCALE"
+            recommendation = (
+                "降低 SPREAD_REWARD_SCALE；實測最大 spread reward 已蓋過 scratch"
+            )
+            exit_code = 3
+        elif within_tolerance:
+            status = "PASS"
+            recommendation = (
+                f"保留 SPREAD_REF={SPREAD_REF}、SPREAD_REWARD_SCALE="
+                f"{SPREAD_REWARD_SCALE}"
+            )
+            exit_code = 0
+        else:
+            status = "REMEASURE"
+            recommendation = "換一個 seed 重測；兩輪都超出 ±20% 才重新校準"
+            exit_code = 2
         result.update(
             {
-                "status": "PASS" if within_tolerance else "REMEASURE",
+                "status": status,
                 "primary_sample_definition": "settled and first_contact == 1",
                 "primary_statistics": primary_summary,
                 "legal_break_statistics": legal_summary,
@@ -275,14 +300,12 @@ def _write_result(
                     SPREAD_REF * (1.0 - _REFERENCE_TOLERANCE),
                     SPREAD_REF * (1.0 + _REFERENCE_TOLERANCE),
                 ],
-                "recommendation": (
-                    f"保留 SPREAD_REF={SPREAD_REF}"
-                    if within_tolerance
-                    else "換一個 seed 重測；兩輪都超出 ±20% 才更新 SPREAD_REF"
-                ),
+                "observed_max_reward": observed_max_reward,
+                "cue_scratch_penalty_magnitude": _CUE_SCRATCH_PENALTY_MAGNITUDE,
+                "safety_pass": safety_pass,
+                "recommendation": recommendation,
             }
         )
-        exit_code = 0 if within_tolerance else 2
 
     output_path = Path(args_cli.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

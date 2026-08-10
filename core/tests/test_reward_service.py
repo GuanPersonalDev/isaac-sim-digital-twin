@@ -7,9 +7,8 @@ from core.models.shot_result import ShotResult
 from core.services.reward_service import calculate_reward
 from core.services.spread_score_calculator import spread_score_to_reward
 
-# 期望值一律用 spread_score_to_reward() 表示，不寫死數字：#123 明文要求
-# SPREAD_REF 開跑後要用實際 rollout 重新量一次，寫死的話那次重新校準會變成
-# 「順手改測試」而不是「改定義」。
+# 期望值一律用 spread_score_to_reward() 表示，不寫死數字：#123 已依 RunPod
+# rollout 校準 SPREAD_REF，未來若再校準，測試應跟著正式定義而不是複製常數。
 _SPREAD_04 = spread_score_to_reward(0.4)
 
 

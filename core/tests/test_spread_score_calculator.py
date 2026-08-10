@@ -191,6 +191,13 @@ class TestCalculateSpreadScoreValidation:
 class TestSpreadScoreToReward:
     """#123：reward 用的重新正規化。"""
 
+    def test_calibration_matches_two_runpod_controlled_break_runs(self):
+        # 2026-08-11，RunPod 真實 PhysX、最大速度控制式開球：seed 123 / 456
+        # 各 508 筆 first_contact == 1，pooled mean = 0.0420084。錨點取 0.0420；
+        # scale 取 1.0，讓平均控制式開球約 +1 reward，並為極端值保留安全空間。
+        assert SPREAD_REF == pytest.approx(0.0420)
+        assert SPREAD_REWARD_SCALE == pytest.approx(1.0)
+
     def test_spread_rack_constant_matches_the_actual_rack_layout(self):
         # SPREAD_RACK 是硬寫的數值（避免 calculator 反向依賴 provider），這條
         # 對拍是它唯一的防線：開球擺位或桌台尺寸一改，常數就會失準，而失準
@@ -209,14 +216,14 @@ class TestSpreadScoreToReward:
         # Assert
         assert spread_score_to_reward(SPREAD_RACK) == pytest.approx(0.0)
 
-    def test_fully_spread_table_earns_the_reward_scale(self):
-        # 另一個錨點：散滿全桌 = SPREAD_REWARD_SCALE。
+    def test_reference_anchor_earns_the_reward_scale(self):
+        # 另一個錨點：RunPod 控制式開球平均 = SPREAD_REWARD_SCALE。
         # Assert
         assert spread_score_to_reward(SPREAD_REF) == pytest.approx(SPREAD_REWARD_SCALE)
 
     def test_reward_is_strictly_increasing_in_spread_score(self):
         # Arrange
-        ascending = [0.0, SPREAD_RACK, 0.1, SPREAD_REF, 0.5, 1.0]
+        ascending = [0.0, SPREAD_RACK, SPREAD_REF, 0.1, 0.5, 1.0]
 
         # Act
         rewards = [spread_score_to_reward(score) for score in ascending]
@@ -226,11 +233,11 @@ class TestSpreadScoreToReward:
         assert len(set(rewards)) == len(rewards)
 
     def test_best_reachable_break_stays_below_the_cue_scratch_penalty(self):
-        # SPREAD_REWARD_SCALE 取 2.5 的理由：#123 模擬出的最佳開球（原始分數
-        # 0.342）換算後不得蓋過母球落袋的 -3.5，否則 policy 會學成「打得夠散
-        # 就可以順便 scratch」。這條測試把那個理由釘住。
+        # 兩輪 RunPod 實測最大值是 0.10395。上修到 0.11 作為護欄後，reward
+        # 仍不得蓋過母球落袋的 -3.5，否則 policy 會學成「打得夠散就可以順便
+        # scratch」。這條測試把校準後的安全餘裕釘住。
         # Arrange
-        best_reachable_spread_score = 0.342
+        best_reachable_spread_score = 0.11
         cue_scratch_penalty_magnitude = 3.5
 
         # Act

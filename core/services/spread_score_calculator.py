@@ -7,13 +7,12 @@ TABLE_WIDTH = 1.27
 _TABLE_AREA = TABLE_LENGTH * TABLE_WIDTH
 _TABLE_DIAGONAL = math.sqrt(TABLE_LENGTH**2 + TABLE_WIDTH**2)
 
-# --- reward 用的重新正規化（#123，2026-08-10）---------------------------------
+# --- reward 用的重新正規化（#123，2026-08-10；RunPod 校準 2026-08-11）----------
 #
 # `calculate_spread_score()` 的除數是整張桌（面積 3.2258、對角線 2.8398），
-# 但物理上真正可達的區間只有 0.012 ~ 0.34 —— 整個 reward 項被壓在 1/3 個單位
-# 裡，而對面是 `cue_scratch = -3.5` / `nine_ball = +3.0`。policy 會收斂到
-# 「不犯規、不母球落袋」然後對散開程度完全無感（#123 的實測：800 局的
-# spread 全部落在 0.012~0.026）。
+# 先前 2D 模型估計可達 0.012~0.34；RunPod 真實 PhysX 的兩輪控制式開球實測
+# 卻只有 0.0181~0.1040、平均 0.0420。原始訊號遠小於 `cue_scratch = -3.5` /
+# `nine_ball = +3.0`，policy 會收斂到「不犯規、不母球落袋」而對散開程度無感。
 #
 # ⚠️ 只做「減掉 rack 基準」是**無效的**：`mdp/events.py` 的 reset 完全決定性，
 #    每局都套同一組 BREAK_SHOT_POSITIONS，`SPREAD_RACK` 因此是常數。減常數不
@@ -24,30 +23,27 @@ _TABLE_DIAGONAL = math.sqrt(TABLE_LENGTH**2 + TABLE_WIDTH**2)
 # break_shot_position_provider 是為了不讓 calculator 反向依賴 provider；
 # `test_spread_score_calculator.py` 有一條對拍測試釘住這個值，擺位改了會被擋下。
 SPREAD_RACK = 0.01181600734141254
-# 「9 顆球均勻散滿全桌」的期望分數，作為 reward = SPREAD_REWARD_SCALE 的錨點。
-# 來源：#123 的 Monte Carlo（3000 組合法隨機擺位平均 0.2516）。
-#
-# ⚠️ 這個數是用**不含袋口**的模擬算的。實際訓練環境會把進袋球代入袋口座標
-#    （袋口在四角與長邊中點，會把凸包撐大），分布可能偏移。開跑後請用實際
-#    rollout 重新量一次；偏移超過 ±20% 就以實測值取代（#123 第 6 節）。
-SPREAD_REF = 0.2516
-# 縮放後「散滿全桌」值多少 reward。取 2.5 的理由：物理上可達的最佳開球
-# （#123 模擬的 0.342）換算後是 +3.44，**剛好不超過母球落袋的 -3.5**——
-# 再好的散開也不該蓋過一次 scratch。
-SPREAD_REWARD_SCALE = 2.5
+# 真實 Isaac Lab／PhysX 下，最大速度控制式開球的平均分數，作為 reward 的錨點。
+# 來源（#123，2026-08-11）：seed 123 / 456 各 508 筆 first_contact == 1，
+# pooled mean = 0.0420084；取四位有效數字 0.0420。先前不含袋口的 2D Monte
+# Carlo 得到 0.2516，但高估真實環境約 6 倍，已由 RunPod 實測取代。
+SPREAD_REF = 0.0420
+# 錨點對應 +1 reward。兩輪實測最大 raw spread = 0.10395，換算約 +3.05；
+# 即使把上緣護欄提高到 0.11 也只有 +3.25，仍低於 scratch 的 -3.5。
+# 因此平均好球有可見訊號，極端散開又不會蓋過母球落袋懲罰。
+SPREAD_REWARD_SCALE = 1.0
 
 
 def spread_score_to_reward(spread_score: float) -> float:
     """`calculate_spread_score()` 的 0~1 分數 → reward 項的實際數值。
 
-    對應關係（`SPREAD_REWARD_SCALE = 2.5`）：
+    對應關係（`SPREAD_REWARD_SCALE = 1.0`）：
 
-        rack（球完全沒動）      0.0118 →  0.00
-        中等散開（約 1/4 桌面） 0.0775 → +0.68
-        良好散開（約 1/2 桌面） 0.1420 → +1.36
-        滿速開球（模擬平均）    0.2160 → +2.13
-        散滿全桌（錨點）        0.2516 → +2.50
-        模擬中的最佳開球        0.3420 → +3.44
+        rack（球完全沒動）        0.0118 →  0.00
+        RunPod 控制式開球平均     0.0420 → +1.00
+        RunPod 控制式開球 p90     0.0541 → +1.40
+        RunPod 兩輪實測最大值      0.1040 → +3.05
+        實測上緣護欄               0.1100 → +3.25
 
     這是 reward 的定義本身，不是 `RewTerm.weight`——四個 RewTerm 的 weight 一律
     維持 1.0。權重若寫在 RewTerm 上，`core.services.reward_service.calculate_reward()`

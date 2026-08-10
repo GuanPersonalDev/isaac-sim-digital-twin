@@ -39,9 +39,9 @@ def calculate_reward(
         break_foul_result,
     )
 
-    # ⚠️ 不是直接加 spread_score。原始分數的除數是整張桌，實際可達區間只有
-    #    0.012~0.34，跟 ±3.5 的其他項差 25~175 倍（#123）。轉換的定義與理由見
-    #    spread_score_calculator.spread_score_to_reward()。
+    # ⚠️ 不是直接加 spread_score。RunPod 實測控制式開球相對 rack 的原始增量
+    #    平均只有約 0.030，跟 0.5~3.5 的其他項差 17~116 倍（#123）。轉換的
+    #    定義與理由見 spread_score_calculator.spread_score_to_reward()。
     return (
         spread_score_to_reward(shot_result.spread_score)
         + cue_ball_penalty
