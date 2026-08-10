@@ -5,6 +5,12 @@ import pytest
 from core.models.break_foul_result import BreakFoulResult
 from core.models.shot_result import ShotResult
 from core.services.reward_service import calculate_reward
+from core.services.spread_score_calculator import spread_score_to_reward
+
+# 期望值一律用 spread_score_to_reward() 表示，不寫死數字：#123 明文要求
+# SPREAD_REF 開跑後要用實際 rollout 重新量一次，寫死的話那次重新校準會變成
+# 「順手改測試」而不是「改定義」。
+_SPREAD_04 = spread_score_to_reward(0.4)
 
 
 @pytest.fixture
@@ -137,7 +143,7 @@ class TestCalculateReward:
     ):
         reward = calculate_reward(legal_shot_result, no_break_foul_result)
 
-        assert reward == pytest.approx(0.4)
+        assert reward == pytest.approx(_SPREAD_04)
 
     def test_adds_nine_ball_bonus_for_foul_free_shot(
         self,
@@ -149,7 +155,7 @@ class TestCalculateReward:
             no_break_foul_result,
         )
 
-        assert reward == pytest.approx(3.4)
+        assert reward == pytest.approx(_SPREAD_04 + 3.0)
 
     def test_applies_cue_ball_penalty(
         self,
@@ -161,7 +167,7 @@ class TestCalculateReward:
             no_break_foul_result,
         )
 
-        assert reward == pytest.approx(-3.1)
+        assert reward == pytest.approx(_SPREAD_04 - 3.5)
 
     def test_cue_ball_pocketed_cancels_nine_ball_bonus(
         self,
@@ -173,7 +179,7 @@ class TestCalculateReward:
             no_break_foul_result,
         )
 
-        assert reward == pytest.approx(-3.1)
+        assert reward == pytest.approx(_SPREAD_04 - 3.5)
 
     def test_applies_insufficient_rail_penalty(
         self,
@@ -185,7 +191,7 @@ class TestCalculateReward:
             insufficient_rail_foul_result,
         )
 
-        assert reward == pytest.approx(-0.1)
+        assert reward == pytest.approx(_SPREAD_04 - 0.5)
 
     def test_accumulates_cue_ball_and_rail_penalties(
         self,
@@ -197,7 +203,7 @@ class TestCalculateReward:
             insufficient_rail_foul_result,
         )
 
-        assert reward == pytest.approx(-3.6)
+        assert reward == pytest.approx(_SPREAD_04 - 3.5 - 0.5)
 
     def test_break_foul_cancels_nine_ball_bonus(
         self,
@@ -209,7 +215,7 @@ class TestCalculateReward:
             insufficient_rail_foul_result,
         )
 
-        assert reward == pytest.approx(-0.1)
+        assert reward == pytest.approx(_SPREAD_04 - 0.5)
 
     def test_first_contact_foul_returns_only_terminal_penalty(
         self,
@@ -233,7 +239,9 @@ class TestCalculateReward:
             no_break_foul_result,
         )
 
-        assert reward == pytest.approx(boundary_spread_shot_result.spread_score)
+        assert reward == pytest.approx(
+            spread_score_to_reward(boundary_spread_shot_result.spread_score)
+        )
 
     def test_rejects_invalid_spread_score(
         self,

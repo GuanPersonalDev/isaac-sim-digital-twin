@@ -17,6 +17,9 @@ from core.models.action_bounds import (
 )
 from core.models.billiard_state import BilliardStatus
 from core.models.observation import Observation
+from core.models.table_ball_set import TableBallSet
+from core.services.break_shot_position_provider import BREAK_SHOT_POSITIONS
+from core.services.rolling_resistance_service import GRAVITY, ROLLING_FRICTION_COEFF
 
 
 # #110 的 6 維索引表。索引、欄位與數值都是對外契約：policy 依索引依序取值，
@@ -26,7 +29,7 @@ _ISSUE_110_INDEX_TABLE = (
     ("placement_x", 0, "cue_ball_placement[0]", (-0.606425, 0.606425)),
     ("placement_y", 1, "cue_ball_placement[1]", (-1.241425, -0.635)),
     ("shot_angle", 2, "shot_angle", (0.0, 360.0)),
-    ("cue_ball_speed", 3, "cue_ball_speed", (0.5, 3.3392)),
+    ("cue_ball_speed", 3, "cue_ball_speed", (0.65, 3.3392)),
     ("offset_vertical", 4, "position_offset[0]", (-0.5, 0.5)),
     ("offset_horizontal", 5, "position_offset[1]", (-0.5, 0.5)),
 )
@@ -125,10 +128,26 @@ class TestDimensionSemantics:
         assert CUE_BALL_PLACEMENT_Y[1] <= -0.635
 
     def test_cue_ball_speed_lower_bound_excludes_no_op(self):
-        # 執行期 no-op Action 用 0.0，RL 有效下限是 0.5（#110）。
+        # 執行期 no-op Action 用 0.0，RL 有效下限是 0.65（#110 定 0.5，#123 上調）。
         # Assert
-        assert CUE_BALL_SPEED[0] == 0.5
+        assert CUE_BALL_SPEED[0] == 0.65
         assert CUE_BALL_SPEED[0] > 0.0
+
+    def test_cue_ball_speed_lower_bound_reaches_the_rack(self):
+        # #123：下限必須讓母球從**任何**合法擺位都滾得到 1 號球，否則正規化域
+        # 低端是死區。行程 = 最遠 kitchen 擺位到 1 號球的距離扣掉接觸時的 2R；
+        # 減速度取純滾動的 μg（rolling_resistance_service 強制純滾動）。
+        # Arrange
+        rolling_deceleration = ROLLING_FRICTION_COEFF * GRAVITY
+        ball_diameter = 2 * TableBallSet.DEFAULT_BALL_RADIUS
+        one_ball_y = BREAK_SHOT_POSITIONS[1][1]
+        travel = (one_ball_y - CUE_BALL_PLACEMENT_Y[0]) - ball_diameter
+
+        # Act
+        minimum_speed = math.sqrt(2 * rolling_deceleration * travel)
+
+        # Assert
+        assert CUE_BALL_SPEED[0] > minimum_speed
 
 
 class TestSingleSourceOfTruth:

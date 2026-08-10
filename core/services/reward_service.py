@@ -8,6 +8,7 @@ from .cue_ball_pocketed_penalty_calculator import (
 from .nine_ball_pocketed_bonus_calculator import (
     calculate_nine_ball_pocketed_bonus,
 )
+from .spread_score_calculator import spread_score_to_reward
 
 
 _VALID_BREAK_FOUL_STATES = frozenset(
@@ -38,8 +39,11 @@ def calculate_reward(
         break_foul_result,
     )
 
+    # ⚠️ 不是直接加 spread_score。原始分數的除數是整張桌，實際可達區間只有
+    #    0.012~0.34，跟 ±3.5 的其他項差 25~175 倍（#123）。轉換的定義與理由見
+    #    spread_score_calculator.spread_score_to_reward()。
     return (
-        shot_result.spread_score
+        spread_score_to_reward(shot_result.spread_score)
         + cue_ball_penalty
         + break_foul_result.penalty
         + nine_ball_bonus

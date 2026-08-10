@@ -2,10 +2,15 @@ import math
 
 import pytest
 
+from core.services.break_shot_position_provider import BREAK_SHOT_POSITIONS
 from core.services.spread_score_calculator import (
+    SPREAD_RACK,
+    SPREAD_REF,
+    SPREAD_REWARD_SCALE,
     TABLE_LENGTH,
     TABLE_WIDTH,
     calculate_spread_score,
+    spread_score_to_reward,
 )
 
 _TABLE_AREA = TABLE_LENGTH * TABLE_WIDTH
@@ -181,3 +186,55 @@ class TestCalculateSpreadScoreValidation:
 
         with pytest.raises(ValueError):
             calculate_spread_score(positions_with_cue_ball, pocketed_ball_ids=set())
+
+
+class TestSpreadScoreToReward:
+    """#123：reward 用的重新正規化。"""
+
+    def test_spread_rack_constant_matches_the_actual_rack_layout(self):
+        # SPREAD_RACK 是硬寫的數值（避免 calculator 反向依賴 provider），這條
+        # 對拍是它唯一的防線：開球擺位或桌台尺寸一改，常數就會失準，而失準
+        # 不會報錯——只會讓「球沒動」的 reward 不再是 0。
+        # Arrange
+        rack = {ball_id: BREAK_SHOT_POSITIONS[ball_id] for ball_id in range(1, 10)}
+
+        # Act
+        score = calculate_spread_score(rack, pocketed_ball_ids=set())
+
+        # Assert
+        assert score == pytest.approx(SPREAD_RACK)
+
+    def test_rack_layout_earns_exactly_zero_reward(self):
+        # 球完全沒動 = 沒有任何貢獻。這是整個轉換的錨點之一。
+        # Assert
+        assert spread_score_to_reward(SPREAD_RACK) == pytest.approx(0.0)
+
+    def test_fully_spread_table_earns_the_reward_scale(self):
+        # 另一個錨點：散滿全桌 = SPREAD_REWARD_SCALE。
+        # Assert
+        assert spread_score_to_reward(SPREAD_REF) == pytest.approx(SPREAD_REWARD_SCALE)
+
+    def test_reward_is_strictly_increasing_in_spread_score(self):
+        # Arrange
+        ascending = [0.0, SPREAD_RACK, 0.1, SPREAD_REF, 0.5, 1.0]
+
+        # Act
+        rewards = [spread_score_to_reward(score) for score in ascending]
+
+        # Assert
+        assert rewards == sorted(rewards)
+        assert len(set(rewards)) == len(rewards)
+
+    def test_best_reachable_break_stays_below_the_cue_scratch_penalty(self):
+        # SPREAD_REWARD_SCALE 取 2.5 的理由：#123 模擬出的最佳開球（原始分數
+        # 0.342）換算後不得蓋過母球落袋的 -3.5，否則 policy 會學成「打得夠散
+        # 就可以順便 scratch」。這條測試把那個理由釘住。
+        # Arrange
+        best_reachable_spread_score = 0.342
+        cue_scratch_penalty_magnitude = 3.5
+
+        # Act
+        reward = spread_score_to_reward(best_reachable_spread_score)
+
+        # Assert
+        assert reward < cue_scratch_penalty_magnitude

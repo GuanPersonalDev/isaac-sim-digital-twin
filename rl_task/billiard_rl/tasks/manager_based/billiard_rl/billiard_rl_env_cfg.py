@@ -289,7 +289,20 @@ class BilliardRlEnvCfg(ManagerBasedRLEnvCfg):
     #   2. Hydra override：  ... env.scene.num_envs=1024
     #   3. 專用 CLI 參數：   ... --num_envs 1024
     # 第 3 種是 Isaac Lab 內建（common.py:180-181），有給就無條件蓋掉 cfg 值。
-    # 1024 環境屬 #223 [10-merge] 的範圍，本 issue 不需要跑到那個規模。
+    #
+    # 2026-08-10（#123）：預設值 64 → 1024。這個任務的**有效樣本 = 開球次數**，
+    # 不是 transition 數：episode 約 10 步但只有第 1 步的動作有物理效果，所以
+    # 64 env × 16 步 ÷ 10 ≈ 每個 iteration 只有 97 次真實開球，minibatch 內更是
+    # 只有約 24 次——用 24 個樣本估 6 維連續動作的梯度，雜訊遠大於訊號。
+    # 1024 env 把每個 iteration 的開球數拉到約 1560。
+    #
+    # ⚠️ num_envs 買的是「每個梯度步的樣本數」，不是梯度步數
+    #    （= num_mini_batches × num_learning_epochs，與 num_envs 無關）。
+    #    所以 max_iterations 必須一起提高，見 agents/rsl_rl_ppo_cfg.py。
+    # ⚠️ wall-clock 不是線性的：64 env 下 GPU PhysX 幾乎全是 kernel launch 開銷。
+    #    上 pod 後跑 64 / 256 / 1024 / 2048 各 10 個 iteration 記 it/s，找算力
+    #    飽和點再決定要不要往 2048 加。先確認 1024 建得起來（桌台碰撞網格是
+    #    主要記憶體項）。
     #
     # env_spacing：grid cloner 擺放各子環境原點的間距，必須大於單一環境在
     # X／Y 上的最大延伸量。9-ball 檯面 2.54 × 1.27 m，USD 含邊框桌腳更大；
@@ -298,7 +311,7 @@ class BilliardRlEnvCfg(ManagerBasedRLEnvCfg):
     #  以上才不會互相穿插——2026-08-08 從 USD 的 Floor2/Floor3 位置量得。）
     # ⚠️ 不要為了省空間調到 3.0 以下——filter_collisions=True 只保證物理上
     #    不互撞，視覺上重疊會讓 A-3 目視與 viser 檢視完全無法判讀。
-    scene: BilliardRlSceneCfg = BilliardRlSceneCfg(num_envs=64, env_spacing=4.0)
+    scene: BilliardRlSceneCfg = BilliardRlSceneCfg(num_envs=1024, env_spacing=4.0)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
@@ -331,7 +344,9 @@ class BilliardRlEnvCfg(ManagerBasedRLEnvCfg):
         # 提前終止決定。
         #
         # 2026-08-09 pod 實測（中等力道，正規化動作全 0 → 初速 1.92 m/s ＝
-        # CUE_BALL_SPEED 中點）：最大球速 1.280 → 0.455 → 0.352 → 0.249 →
+        # 當時的 CUE_BALL_SPEED 中點；#123 把下界 0.5 → 0.65 後中點是 1.9946，
+        # 這筆量測的數字仍以量測當下的 1.92 為準，落定秒數的結論不受影響）：
+        # 最大球速 1.280 → 0.455 → 0.352 → 0.249 →
         # 0.148 → 0.049 → 0.00000，四個 env 在**第 6~7 秒**全部落定。
         # 滿速 3.34 m/s 約 1.74 倍，推估 11~13 秒，20 仍有餘裕。
         #

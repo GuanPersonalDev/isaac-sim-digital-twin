@@ -32,7 +32,10 @@ from core.services.nine_ball_pocketed_bonus_calculator import (
     calculate_nine_ball_pocketed_bonus,
 )
 from core.services.pocket_geometry import POCKET_POSITIONS
-from core.services.spread_score_calculator import calculate_spread_score
+from core.services.spread_score_calculator import (
+    calculate_spread_score,
+    spread_score_to_reward,
+)
 
 from .shot_tracking import CUE_BALL_INDEX
 from .terminations import all_balls_at_rest
@@ -81,7 +84,9 @@ def decompose_reward(
         )
     )
     return {
-        "spread": shot_result.spread_score,
+        # 與 calculate_reward() 一樣走 spread_score_to_reward()——這裡若直接放
+        # 原始分數，四項之和就不再等於 core 的 reward，護欄測試會失效（#123）。
+        "spread": spread_score_to_reward(shot_result.spread_score),
         "cue_scratch": cue_scratch,
         "foul": break_foul_result.penalty,
         "nine_ball": nine_ball,
@@ -202,7 +207,12 @@ def _compute_breakdown(
 
 
 def spread(env: ManagerBasedRLEnv, action_term_name: str = "strike") -> torch.Tensor:
-    """散開程度（0.0~1.0），只在落定的那一步給分。"""
+    """散開程度，只在落定的那一步給分。
+
+    數值已經過 `spread_score_to_reward()` 重新正規化（rack = 0.0、散滿全桌 =
+    +2.5），**不是** `calculate_spread_score()` 的 0~1 原始分數。RewTerm 的
+    weight 必須維持 1.0，理由見該函式的 docstring。
+    """
     return _breakdown(env, action_term_name)["spread"]
 
 
