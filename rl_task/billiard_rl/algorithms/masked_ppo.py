@@ -51,6 +51,9 @@ main 分支寫的，**5.x 未必相同**：
 
 from __future__ import annotations
 
+import json
+import os
+
 import torch
 from rsl_rl.algorithms import PPO
 
@@ -68,6 +71,17 @@ class MaskedPPO(PPO):
         # reset 過環境，所以初值是全 True。跨 iteration 要保留——rollout 邊界
         # 不等於 episode 邊界。
         self._next_is_first: torch.Tensor | None = None
+        # RunPod 驗證用的唯讀診斷。預設完全關閉，正式訓練不會多印 log；
+        # training/scripts/verify_issue_123.sh 會在短訓練時才打開。
+        self._diagnostics_enabled = os.getenv("BILLIARD_PPO_DIAGNOSTICS") == "1"
+        self._diagnostics_count = 0
+        if self._diagnostics_enabled:
+            self._emit_diagnostics(
+                {
+                    "event": "algorithm",
+                    "class": f"{type(self).__module__}.{type(self).__name__}",
+                }
+            )
 
     def process_env_step(self, obs, rewards, dones, extras) -> None:
         dones_flat = dones.reshape(-1).bool()
@@ -92,6 +106,7 @@ class MaskedPPO(PPO):
             # 整個 rollout 沒有任何 episode 起點（num_steps_per_env 遠小於
             # episode 長度時可能發生）。這時遮罩會把所有梯度歸零，寧可原樣
             # 放行也不要讓整個 iteration 空轉。
+            self._emit_returns_diagnostics(advantages, valid, fallback=True)
             return
 
         # 正規化統計量只用有效樣本算——父類別算的 mean/std 被 90% 的無效步
@@ -101,3 +116,32 @@ class MaskedPPO(PPO):
             (advantages - selected.mean()) / (selected.std() + 1e-8),
             torch.zeros_like(advantages),
         )
+        self._emit_returns_diagnostics(self.storage.advantages, valid, fallback=False)
+
+    def _emit_returns_diagnostics(
+        self,
+        advantages: torch.Tensor,
+        valid: torch.Tensor,
+        *,
+        fallback: bool,
+    ) -> None:
+        """輸出前五次遮罩統計，供 RunPod 驗證腳本自動判讀。"""
+        if not self._diagnostics_enabled or self._diagnostics_count >= 5:
+            return
+
+        self._emit_diagnostics(
+            {
+                "event": "returns",
+                "iteration": self._diagnostics_count + 1,
+                "advantages_shape": list(advantages.shape),
+                "valid_ratio": float(valid.float().mean().item()),
+                "nonzero_ratio": float((advantages != 0).float().mean().item()),
+                "fallback": fallback,
+            }
+        )
+        self._diagnostics_count += 1
+
+    @staticmethod
+    def _emit_diagnostics(payload: dict[str, object]) -> None:
+        """用固定前綴輸出單行 JSON，避免 shell 依賴人類可讀 log 格式。"""
+        print(f"[issue123-ppo] {json.dumps(payload, sort_keys=True)}", flush=True)
