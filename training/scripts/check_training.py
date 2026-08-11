@@ -1,9 +1,27 @@
 #!/usr/bin/env python3
-"""讀最新一輪訓練的 TensorBoard event file，判斷該不該中斷（#124）。
+"""讀一輪訓練的 TensorBoard event file：判斷該不該中斷，或匯出成 CSV（#124）。
 
+    # 看最新一輪的現況與判定
     /workspace/venv/bin/python training/scripts/check_training.py
 
+    # 把整份 scalar 序列匯出成 CSV（進 git 用）
+    /workspace/venv/bin/python training/scripts/check_training.py \\
+        --csv /workspace/run3.csv
+
+    # 指定某一輪（預設是 mtime 最新的）
+    /workspace/venv/bin/python training/scripts/check_training.py \\
+        --run /workspace/training-runs/logs/rsl_rl/billiard/2026-08-11_06-36-37 \\
+        --csv /workspace/run2.csv
+
 不需要進 venv 以外的環境，也不會碰 GPU，訓練跑著的時候可以隨時跑。
+
+為什麼要有 CSV
+--------------
+event file 是二進位、體積大，`training/outputs/` 因此被 gitignore。但曲線本身
+是這個專案最有 diff 價值的產出之一——匯成 CSV（幾十 KB 純文字）進 git 之後，
+畫圖、跨輪對照、驗證文件裡的數字都不必再開 pod。
+
+匯出的是**原始值**，不做 ×20 之類的縮放：縮放屬於分析，存檔要忠於來源。
 
 判定邏輯的由來
 --------------
@@ -11,13 +29,16 @@
 那一輪其實學起來了（break_foul 終止率 0.077 → 0.189、spread ×20 在 iter 57
 衝到起點的 7 倍），然後又整個退回去，首尾相減看起來就像「完全沒動」。
 
-所以這一版改成追**歷史最佳值與最新值的落差**（drawdown），並且把
-learning rate 崩塌獨立成一條——那是「policy 已經凍結，繼續跑不會有任何
-變化」的直接證據，優先於其他所有判斷。
+所以改成追**歷史最佳值與最新值的落差**（drawdown）。第二版又把 learning rate
+崩塌設成無條件最高優先，於是把成功的第三輪判成「中斷」——lr 低有兩種完全相反
+的意思（在壞位置凍結／單純收斂），差別只看指標守不守得住，所以它不能當獨立的
+判準。現行順序是：先看學到了沒 → 再看守不守得住 → lr 放最後。
 """
 
 from __future__ import annotations
 
+import argparse
+import csv
 import glob
 import os
 import sys
@@ -90,6 +111,36 @@ def _resolve(tags: list[str], needles: tuple[str, ...]) -> str | None:
     return None
 
 
+def dump_csv(accumulator: EventAccumulator, tags: list[str], path: str) -> None:
+    """把**全部** scalar tag 逐 iteration 寫成 CSV。
+
+    刻意不篩選 tag：`METRICS` 只挑了判定要用的八項，但存檔的目的是「以後不必
+    再開 pod」，少存一欄就等於少一個之後回答得了的問題。
+
+    ⚠️ 排除結尾是 `/time` 的 tag。rsl_rl 會替部分指標多記一份以**牆鐘秒數**當
+    step 的版本（例如 `Train/mean_reward/time`），混進來會把 step 聯集撐成幾千
+    列全是空格。
+
+    值一律原始值，不做 ×20 之類的縮放——縮放屬於分析，存檔要忠於來源。
+    """
+    keep = sorted(tag for tag in tags if not tag.endswith("/time"))
+    series = {
+        tag: {event.step: event.value for event in accumulator.Scalars(tag)}
+        for tag in keep
+    }
+    steps = sorted({step for values in series.values() for step in values})
+
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["iteration", *keep])
+        for step in steps:
+            writer.writerow(
+                [step, *(series[tag].get(step, "") for tag in keep)]
+            )
+
+    print(f"[check] CSV → {path}（{len(steps)} 列 × {len(keep)} 欄）")
+
+
 def _smooth(values: list[float], window: int) -> list[float]:
     """滑動平均。單點雜訊會讓 peak 偏高、drawdown 誤判成退步。"""
     out = []
@@ -104,11 +155,28 @@ def _aim_to_gap(aim_reward: float) -> float:
     return AIM_REFERENCE_GAP * (1.0 - aim_reward / AIM_REWARD_SCALE)
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--run",
+        help=f"要讀的 run 目錄。預設是 {LOG_ROOT} 底下 mtime 最新的那一個。",
+    )
+    parser.add_argument(
+        "--csv",
+        help="把全部 scalar 序列寫成 CSV（原始值，不縮放）。",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    run = _latest_run()
+    args = _parse_args()
+    run = args.run or _latest_run()
     accumulator = EventAccumulator(run)
     accumulator.Reload()
     tags = accumulator.Tags()["scalars"]
+
+    if args.csv:
+        dump_csv(accumulator, tags, args.csv)
 
     series: dict[str, list[float]] = {}
     steps: list[int] = []
