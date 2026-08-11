@@ -25,15 +25,46 @@ _ANGLE_PERIOD = 360.0
 
 
 def _wrap_angle(angle: float) -> float:
-    """把任意角度折回 `SHOT_ANGLE` 的半開區間，目前是 `[-180, 180)`。
+    """把任意角度折成「最接近動作空間中心」的等價角度。
 
-    ⚠️ 週期固定取 360.0 而**不是**從 `ACTION_BOUNDS` 的區間寬度推導：兩者現在
-    恰好相等，但若之後為了改善瞄準解析度把 `SHOT_ANGLE` 收窄（#231 問題 2），
-    區間寬度會變成 60 之類的值，用它當週期就會把 45° 折成完全不同的方向。
-    圓的週期永遠是 360，區間下界只決定折回哪一圈。
+    以**區間中心**為錨，而不是下界——這樣涵蓋整圈與收窄兩種情形都正確：
+
+    - `SHOT_ANGLE = (-180, 180)`：中心 0，折回 `[-180, 180)`。兩個端點是同一個
+      方向，`+180` 折成 `-180`，半開區間的語意成立。
+    - `SHOT_ANGLE = (-30, 30)`（Milestone A）：中心仍是 0，折回 `[-180, 180)`
+      之後 `30` 就停在 `30`。兩個端點是**不同方向**，不該互相折回——用下界當錨
+      的話會折成 `[-30, 330)`，`+30` 變 `+30` 沒錯，但 `-31` 會變成 `329`，
+      離動作空間更遠而不是更近。
+
+    ⚠️ 週期固定取 `360.0` 而**不是**區間寬度：收窄後寬度是 60，拿它當週期會把
+    45° 折成 -15°，完全不同的方向。圓的週期永遠是 360。
+
+    折回後**不保證**落在 `[low, high]` 內——區間收窄後有些物理角度根本無法表達。
+    需要那個保證的呼叫端請用 `_canonical_shot_angle()`。
     """
-    low, _ = ACTION_BOUNDS[_SHOT_ANGLE]
-    return (angle - low) % _ANGLE_PERIOD + low
+    low, high = ACTION_BOUNDS[_SHOT_ANGLE]
+    center = (low + high) / 2.0
+    half_period = _ANGLE_PERIOD / 2.0
+    return (angle - center + half_period) % _ANGLE_PERIOD - half_period + center
+
+
+def _canonical_shot_angle(angle: float) -> float:
+    """`_wrap_angle()` 加上「折完必須落在動作空間內」的檢查。
+
+    `SHOT_ANGLE` 涵蓋整圈時這個檢查永遠通過（任何方向都表達得了）。Milestone A
+    把它收窄到 ±30° 之後就不是了——90° 是合法的物理角度，但 policy 輸不出來。
+
+    對這種情形拋 ValueError 而不是夾住：夾住等於把 90° 謊報成 30°，是不同的
+    方向。Milestone B 把區間改回整圈時，任何殘留的假設會在這裡大聲失敗。
+    """
+    low, high = ACTION_BOUNDS[_SHOT_ANGLE]
+    wrapped = _wrap_angle(angle)
+    if not low <= wrapped <= high:
+        raise ValueError(
+            f"shot_angle {angle} 折算為 {wrapped}°，超出目前動作空間 "
+            f"[{low}, {high}]（Milestone A 期間 SHOT_ANGLE 已收窄，見 #231）"
+        )
+    return wrapped
 
 
 def decode_rl_action(
@@ -102,12 +133,14 @@ def normalize_action(action: Action) -> list[float]:
     開球、人工調參）換算成「policy 該輸出什麼」。
 
     本函式是公開介面，呼叫者不保證 `Action` 來自 `decode_rl_action`，因此
-    驗證強度與 decode 對等；角度也要先折回區間，否則外部傳入的 270° 會算出
-    1.5，越出正規化域。
+    驗證強度與 decode 對等；角度先折回最近的等價值，落不進動作空間就拋
+    ValueError（見 `_canonical_shot_angle`），不會靜默算出越界的正規化值。
     """
     physical = [
         *validate_2d_value(action.cue_ball_placement, "cue_ball_placement"),
-        _wrap_angle(validate_finite_number(action.shot_angle, "shot_angle")),
+        _canonical_shot_angle(
+            validate_finite_number(action.shot_angle, "shot_angle")
+        ),
         validate_finite_number(action.cue_ball_speed, "cue_ball_speed"),
         *validate_2d_value(action.position_offset, "position_offset"),
     ]

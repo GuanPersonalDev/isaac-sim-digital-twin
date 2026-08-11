@@ -26,15 +26,17 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         hidden_dims=[256, 128, 64],
         activation="elu",
         obs_normalization=False,
-        # init_std=1.0 在正規化域 [-1, 1] 上等於「幾乎均勻亂打」：對 shot_angle
-        # （物理域 [-180, 180)）而言探索標準差是 ±180 度。#123 的 800 局實測沒有
-        # 任何一局合法開球，主因不是 reward 而是根本瞄不準。
+        # init_std=1.0 在正規化域 [-1, 1] 上等於「幾乎均勻亂打」。#123 的 800 局
+        # 實測沒有任何一局合法開球，主因不是 reward 而是根本瞄不準。
         #
-        # ⚠️ 0.4 仍然遠大於瞄準的容錯窗口：母球到 1 號球 1.5875 m，接觸只容許
-        #    側向 2R，換算角度僅 ±2.062°，正規化域上是 ±0.0115——init_std=0.4
-        #    的探索半寬是 ±72°，命中質量比只有約 2.9%。#231 已把區間端點搬正
-        #    （normalized 0 現在是正對球堆，不再是背對），但**解析度沒有改善**；
-        #    是否為 Milestone A 收窄 SHOT_ANGLE 見 #231 的問題 2。
+        # 0.4 配上 #231 收窄後的 SHOT_ANGLE（Milestone A 為 ±30°）是 ±12° 的
+        # 探索半寬，對上 ±2.062° 的接觸窗口 → 命中質量比約 17.2%。收窄前是
+        # ±72° 對 ±2.062°，只有 2.9%——2026-08-11 的 pod 短訓練就卡在那裡：
+        # critic 五個 iteration 把 value loss 壓到 0.01（答案永遠是 -1.5）、
+        # advantage ≈ 0、action std 完全不動。
+        #
+        # ⚠️ Milestone B 把 SHOT_ANGLE 改回 ±180° 時，這個值要一起重新評估——
+        #    同樣的 0.4 在整圈區間上會退回 2.9% 的命中率。
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.4),
     )
     critic = RslRlMLPModelCfg(

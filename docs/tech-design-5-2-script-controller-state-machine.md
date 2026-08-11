@@ -101,7 +101,7 @@ WAITING   → RESET    : observation.is_ball_moving == False
 | 欄位 | 型別 | 用途 |
 |---|---|---|
 | `cue_ball_placement` | `list[float]`（2 維） | RL 索引 0–1；母球桌台相對 XY（m），球心須位於 Kitchen 安全範圍 |
-| `shot_angle` | `float` | RL 索引 2；`[-180, 180)` 度，`0°` 朝桌台 `+Y`（正對球堆），正角朝 `-X` 增加（2026-08-11 由 `[0, 360)` 改成以 0° 為中心，#231） |
+| `shot_angle` | `float` | RL 索引 2；**Milestone A 為 `[-30, 30]` 度**，`0°` 朝桌台 `+Y`（正對球堆），正角朝 `-X` 增加。2026-08-11 兩次修訂（#231）：先由 `[0, 360)` 改成以 0° 為中心，再收窄以換取探索解析度；Milestone B 之前須改回 `[-180, 180)` |
 | `cue_ball_speed` | `float` | RL 索引 3；母球目標初速，範圍 `0.65–3.3392 m/s`（下界 2026-08-10 由 0.5 上調，#123：0.5 m/s 的母球滾不到球堆） |
 | `position_offset` | `list[float]`（2 維） | RL 索引 4–5；依序為上下／左右偏移，範圍各為 `[-0.5, 0.5]` 球半徑 |
 | `should_execute_action` | `bool` | 見 5.3 節 |

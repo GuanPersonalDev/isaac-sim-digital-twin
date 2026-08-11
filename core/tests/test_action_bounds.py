@@ -28,7 +28,7 @@ from core.services.rolling_resistance_service import GRAVITY, ROLLING_FRICTION_C
 _ISSUE_110_INDEX_TABLE = (
     ("placement_x", 0, "cue_ball_placement[0]", (-0.606425, 0.606425)),
     ("placement_y", 1, "cue_ball_placement[1]", (-1.241425, -0.635)),
-    ("shot_angle", 2, "shot_angle", (-180.0, 180.0)),
+    ("shot_angle", 2, "shot_angle", (-30.0, 30.0)),
     ("cue_ball_speed", 3, "cue_ball_speed", (0.65, 3.3392)),
     ("offset_vertical", 4, "position_offset[0]", (-0.5, 0.5)),
     ("offset_horizontal", 5, "position_offset[1]", (-0.5, 0.5)),
@@ -103,19 +103,45 @@ class TestAggregatedVectors:
 
 
 class TestDimensionSemantics:
-    def test_shot_angle_spans_a_full_circle_centred_on_the_rack(self):
-        # 物理域是半開區間 [-180, 180)；Box 只能表達閉區間，故上界記為
-        # 180.0，由反正規化尾端的 `_wrap_angle()` 折回（#225／#231）。
-        #
-        # 兩件事都要釘住，而且第二件才是 #231 的重點：
-        #   1. 覆蓋完整 360°——Milestone B 的一般擊球要能瞄任意方向
-        #   2. **中點是 0°（正對球堆）**——Gaussian policy 的初始輸出集中在
-        #      normalized 0，舊區間 (0, 360) 的中點是 180°，等於未訓練的
-        #      policy 預設把母球往 kitchen 底庫打
+    def test_shot_angle_is_centred_on_the_rack(self):
+        # #231 問題 1：Gaussian policy 的初始輸出集中在 normalized 0，那個值
+        # 必須對應「正對球堆」（0° 朝桌台 +Y）。原本的 (0, 360) 中點是 180°，
+        # 等於未訓練的 policy 預設把母球往 kitchen 底庫打。
         # Assert
-        assert SHOT_ANGLE == (-180.0, 180.0)
-        assert SHOT_ANGLE[1] - SHOT_ANGLE[0] == 360.0
         assert (SHOT_ANGLE[0] + SHOT_ANGLE[1]) / 2 == 0.0
+
+    def test_shot_angle_covers_every_legal_aim_at_the_one_ball(self):
+        # #231 問題 2：Milestone A 把區間收窄到 ±30° 換取探索解析度
+        # （命中質量比 2.9% → 17.2%）。收窄的下限由幾何決定，不是拍腦袋的
+        # 數字——母球從**任何**合法 kitchen 擺位都必須瞄得到 1 號球，再加上
+        # 接觸本身的容錯窗口。
+        #
+        # 這條測試現算而不寫死：桌台尺寸、開球擺位或 kitchen 範圍一改，
+        # 收窄過頭會直接失敗，而不是變成「某些擺位打不到球堆」的靜默缺陷。
+        # Arrange
+        one_ball_x, one_ball_y = BREAK_SHOT_POSITIONS[1]
+        ball_diameter = 2 * TableBallSet.DEFAULT_BALL_RADIUS
+
+        # Act：kitchen 四個角落是最極端的瞄準需求
+        required_aim_deg = 0.0
+        contact_window_deg = 0.0
+        for cue_x in CUE_BALL_PLACEMENT_X:
+            for cue_y in CUE_BALL_PLACEMENT_Y:
+                dx = one_ball_x - cue_x
+                dy = one_ball_y - cue_y
+                # 0° 朝 +Y、正角朝 -X，所以第一引數取 -dx
+                required_aim_deg = max(
+                    required_aim_deg, abs(math.degrees(math.atan2(-dx, dy)))
+                )
+                distance = math.hypot(dx, dy)
+                contact_window_deg = max(
+                    contact_window_deg,
+                    math.degrees(math.atan(ball_diameter / distance)),
+                )
+
+        # Assert
+        assert SHOT_ANGLE[1] >= required_aim_deg + contact_window_deg
+        assert SHOT_ANGLE[0] <= -(required_aim_deg + contact_window_deg)
 
     def test_position_offset_axes_are_symmetric_and_identical(self):
         # 圓形可行域 clamp 的前提：兩軸同尺規且對稱，反正規化才是等比縮放，
