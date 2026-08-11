@@ -72,7 +72,30 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.0005,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-3,
+        # 🔴 3.0e-4 是實測值不是猜的（#124 第二輪，2026-08-11）。
+        #
+        # 那一輪的 reward 地形修好之後 policy 確實學起來了——break_foul 終止率
+        # 0.077 → 0.189（上一輪是歸零）、母球對 1 號球的最近接近距離
+        # 0.514 m → 0.321 m、spread ×20 在 iter 57 衝到 0.117（起點的 7 倍）。
+        # 然後全部退回去：iter 228 的 spread 只剩 0.002、接近距離退到 0.448 m。
+        #
+        # 退步與 lr 同步：
+        #
+        #   iter    0    57   114   171   228
+        #   lr    1e-3 3.8e-4 8e-5  1e-5  1e-5
+        #   spread 0.017 0.117 0.014 0.009 0.002
+        #
+        # adaptive 排程的規則是「KL 太大就砍 lr」。1.0e-3 配上同一批資料
+        # num_learning_epochs × num_mini_batches = 20 個梯度步本來就會產生大
+        # KL，排程只好一路砍；砍到 1e-5 時 policy 已經漂過最佳點，之後就凍在
+        # 退步後的位置——剩下 770 個 iteration 完全沒有變化。
+        #
+        # **最佳點 iter 57 對應的 lr 恰好是 3.8e-4**，所以起點直接放在那裡，
+        # 排程不必猛砍。
+        #
+        # 若新一輪 lr 又崩到 1e-5，下一手是 num_learning_epochs 5 → 3（從源頭
+        # 減少同批資料的重複更新以壓 KL），**不是**再調這個數字。
+        learning_rate=3.0e-4,
         schedule="adaptive",
         # ⚠️ gamma 必須是 1.0，這不是調參是修正方向性錯誤（#123）。
         #    reward 是純 terminal（mdp/rewards.py 只在 all_balls_at_rest 時給分），
@@ -84,6 +107,12 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         # 中間步驟沒有任何 reward，GAE 的 lam < 1 只會把 critic 的 bias 混進來。
         # 終點給分的有限 episode 用 lam = 1.0（Monte Carlo return）最乾淨。
         lam=1.0,
-        desired_kl=0.01,
+        # 0.01 → 0.02（#124 第二輪）。adaptive 排程在 KL > desired_kl × 2 時把
+        # lr 除以 1.5，desired_kl=0.01 等於「KL 一超過 0.02 就腰斬」——對這個
+        # 任務太敏感，實測是一路砍到 1e-5 且再也沒回來（回升條件是
+        # KL < desired_kl / 2，而 action std 在收斂期本來就會讓 KL 偏大）。
+        #
+        # 放寬到 0.02 是給排程餘裕，不是關掉它：真正發散時它仍然會踩煞車。
+        desired_kl=0.02,
         max_grad_norm=1.0,
     )
