@@ -20,6 +20,20 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # log 落點是 <CWD>/logs/rsl_rl/<experiment_name>/<timestamp>（見 #121 E-2）。
     # 改名會讓新舊 run 分家，訂下來就不要再動。
     experiment_name = "billiard"
+    # actor 與 critic 各自要吃哪些 observation group。值取自 ObservationsCfg 的
+    # 群組名（本專案只有一個 'policy' 群組，21 維）。
+    #
+    # 不設也能跑——rsl_rl 5.0.1 會 fallback 去找名為 'policy' 的群組，而且猜對
+    # 了（log 的 `Resolved observation sets` 兩邊都是 ['policy']）。但它每次啟動
+    # 都印三行 UserWarning，其中兩行明說 **This behavior will be removed in a
+    # future version**。#123 就記著這個缺口，趁 #124 開長訓練之前補掉，免得之後
+    # 升 rsl_rl 時變成「跑不起來而且不知道為什麼」。
+    #
+    # ⚠️ 本機無 isaaclab/rsl_rl，這個欄位名沒辦法在本機驗證。判斷標準很簡單：
+    #    上 pod 後那三行 `obs_groups` 的 UserWarning 應該完全消失，而
+    #    `Resolved observation sets` 仍然是 actor/critic 各 ['policy']。若警告
+    #    還在，代表欄位放錯層級——那也只是回到現況，不會弄壞任何東西。
+    obs_groups = {"actor": ["policy"], "critic": ["policy"]}
     actor = RslRlMLPModelCfg(
         # 32×32 是 cartpole 模板預設值。21 維觀測、6 維連續動作，而 reward 含
         # 凸包面積這種非線性幾何量——兩層 32 撐不住（#123）。
