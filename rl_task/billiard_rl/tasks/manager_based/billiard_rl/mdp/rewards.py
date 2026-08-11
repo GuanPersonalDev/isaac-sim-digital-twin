@@ -110,13 +110,6 @@ def evaluate_shot(
     要求的呼叫端責任（「進袋球一樣要給一筆資料，value 用該球進的那個袋口座標
     代入」），也是訓練端不需要把球搬離檯面的原因。
     """
-    positions: dict[int, tuple[float, float]] = {}
-    for ball_id in _OBJECT_BALL_IDS:
-        pocket = pocket_index[ball_id]
-        positions[ball_id] = (
-            _POCKET_XY[pocket] if pocket >= 0 else ball_xy[ball_id]
-        )
-
     pocketed_object_ball_ids = {
         ball_id for ball_id in _OBJECT_BALL_IDS if pocket_index[ball_id] >= 0
     }
@@ -135,9 +128,45 @@ def evaluate_shot(
         final_ball_positions=[list(xy) for xy in ball_xy],
         cue_ball_pocketed=pocket_index[CUE_BALL_INDEX] >= 0,
         nine_ball_pocketed=pocket_index[_NINE_BALL_ID] >= 0,
-        spread_score=calculate_spread_score(positions, pocketed_object_ball_ids),
+        spread_score=_spread_score(
+            ball_xy, pocket_index, pocketed_object_ball_ids, break_foul_result
+        ),
     )
     return decompose_reward(shot_result, break_foul_result)
+
+
+def _spread_score(
+    ball_xy: list[tuple[float, float]],
+    pocket_index: list[int],
+    pocketed_object_ball_ids: set[int],
+    break_foul_result: BreakFoulResult,
+) -> float:
+    """散開分數，但 `should_reset` 時不算——那個分支的結果會被丟掉。
+
+    `calculate_spread_score()` 是純 Python 的凸包（Andrew's monotone chain）加上
+    72 次 `math.dist`，而 `decompose_reward()` 在 `should_reset` 分支直接把
+    spread 歸零、根本不看這個值。
+
+    這在 B-4 只有「落定才結算」的時候無關痛癢（犯規局照樣要等球停，一局也只
+    算一次）。但 `break_foul_decided` 提前終止上線後，**犯規局變成第 1 步就
+    結算**，而首次接觸不是 1 號球在訓練初期是壓倒性多數（瞄準容錯窗口只有
+    ±2.06°）——等於每個 env step 都在 `_compute_breakdown()` 的逐 env Python
+    迴圈裡算幾百個馬上被丟掉的凸包，把早停省下的物理時間吐回去。
+
+    回傳 0.0 而不是 None：`ShotResult.spread_score` 是 float，而 0.0 也通過
+    `reward_service._validate_spread_score()` 的 [0, 1] 檢查，萬一之後有人改成
+    走 `calculate_reward()` 也不會炸。
+    """
+    if break_foul_result.should_reset:
+        return 0.0
+
+    positions: dict[int, tuple[float, float]] = {}
+    for ball_id in _OBJECT_BALL_IDS:
+        pocket = pocket_index[ball_id]
+        positions[ball_id] = (
+            _POCKET_XY[pocket] if pocket >= 0 else ball_xy[ball_id]
+        )
+    return calculate_spread_score(positions, pocketed_object_ball_ids)
 
 
 def _breakdown(env: ManagerBasedRLEnv, action_term_name: str) -> dict[str, torch.Tensor]:
