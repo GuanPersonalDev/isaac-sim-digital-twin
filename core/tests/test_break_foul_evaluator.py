@@ -7,6 +7,7 @@ from core.services.break_foul_evaluator import (
     FIRST_CONTACT_FOUL_PENALTY,
     INSUFFICIENT_RAIL_CONTACT_PENALTY,
     MIN_RAIL_CONTACTED_OBJECT_BALLS,
+    NO_CONTACT_FOUL_PENALTY,
     evaluate_break_foul,
 )
 
@@ -100,12 +101,16 @@ class TestEvaluateBreakFoul:
             should_reset=True,
         )
 
-    def test_returns_first_contact_penalty_when_no_ball_contacted(
+    def test_returns_no_contact_penalty_when_no_ball_contacted(
         self,
         no_first_contact_ball_id: None,
         no_pocketed_object_ball_ids: set[int],
         four_rail_contacted_object_ball_ids: set[int],
     ):
+        """整局沒碰到球比碰到錯球更差（#124）。
+
+        兩者原本同為 -1.5，導致 policy 起點附近的 reward 地形完全是平的。
+        """
         result = evaluate_break_foul(
             first_contacted_ball_id=no_first_contact_ball_id,
             pocketed_object_ball_ids=no_pocketed_object_ball_ids,
@@ -113,9 +118,25 @@ class TestEvaluateBreakFoul:
         )
 
         assert result == BreakFoulResult(
-            penalty=FIRST_CONTACT_FOUL_PENALTY,
+            penalty=NO_CONTACT_FOUL_PENALTY,
             should_reset=True,
         )
+
+    def test_foul_penalties_form_a_strictly_increasing_ladder(self):
+        """犯規罰分必須嚴格遞增，這是 dense shaping 能運作的前提。
+
+        任兩級相等就會產生一片沒有梯度的平原——#124 第一輪訓練就是踩在
+        「沒碰到球」與「碰到錯球」同為 -1.5 的那片平原上收斂到亂打。
+        """
+        ladder = [
+            NO_CONTACT_FOUL_PENALTY,
+            FIRST_CONTACT_FOUL_PENALTY,
+            INSUFFICIENT_RAIL_CONTACT_PENALTY,
+            0.0,
+        ]
+
+        assert ladder == sorted(ladder)
+        assert len(set(ladder)) == len(ladder)
 
     def test_first_contact_foul_takes_precedence_over_rail_foul(
         self,

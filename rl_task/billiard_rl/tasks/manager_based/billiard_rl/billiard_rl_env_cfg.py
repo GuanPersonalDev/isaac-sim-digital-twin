@@ -223,17 +223,18 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    """獎勵：四個獨立的 RewTerm，分項進 TensorBoard。
+    """獎勵：五個獨立的 RewTerm，分項進 TensorBoard。
 
     數值權威在 `core.services.reward_service.calculate_reward()`——那裡的邏輯
-    不是單純相加（犯規重置時只回傳罰分、9 號球獎勵 gate 在沒犯規上），所以
-    `mdp/rewards.py` 的 `decompose_reward()` 負責拆解，並由對拍測試保證
-    **四項之和恆等於 `calculate_reward()`**。
+    不是單純相加（犯規重置時只回傳罰分 + 塑形、9 號球獎勵 gate 在沒犯規上），
+    所以 `mdp/rewards.py` 的 `decompose_reward()` 負責拆解，並由對拍測試保證
+    **五項之和恆等於 `calculate_reward()`**。
 
     ⚠️ `weight` 一律 1.0。權重調整屬 #123（PPO 超參數）的範圍，而且改權重會讓
-    分項總和不再等於 core 的 reward——要調請先確認那是刻意的。
+    分項總和不再等於 core 的 reward——要調請先確認那是刻意的。塑形強度要調的話
+    改 `aim_shaping_calculator.AIM_REWARD_SCALE`，那裡有防止排序反轉的檢查。
 
-    四項都只在球落定的那一步給分（gate 在 `all_balls_at_rest`）。中間步回 0，
+    前四項只在球落定的那一步給分（gate 在 `all_balls_at_rest`）。中間步回 0，
     否則「飛越久分越高」。
     """
 
@@ -244,6 +245,11 @@ class RewardsCfg:
     cue_scratch: RewTerm = RewTerm(func=mdp.cue_scratch, weight=1.0)
 
     foul: RewTerm = RewTerm(func=mdp.foul, weight=1.0)
+
+    # #124：dense shaping。與上面四項不同，犯規重置的局也會給分——那正是它
+    # 存在的理由（第一輪訓練 238 個 iteration 收斂到「母球一顆球都沒碰到」，
+    # 因為「沒碰到」與「碰到錯球」同為 -1.5，起點附近整片沒有梯度）。
+    aim: RewTerm = RewTerm(func=mdp.aim, weight=1.0)
 
 @configclass
 class TerminationsCfg:

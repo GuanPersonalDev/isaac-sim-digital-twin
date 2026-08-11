@@ -37,6 +37,14 @@ _POCKET_XY: list[tuple[float, float]] = list(POCKET_POSITIONS.values())
 CUE_BALL_INDEX = 0
 """母球在 collection 的 object 維度索引（= ball_0）。"""
 
+ONE_BALL_INDEX = 1
+"""1 號球的 object 維度索引（= ball_1）。
+
+與 `CUE_BALL_INDEX` 同一套慣例：`_make_ball_cfgs()` 的 `sorted()` 讓
+collection 索引恰等於 ball_id，`rewards.evaluate_shot()` 也是這樣用的
+（`pocket_index[ball_id]`）。
+"""
+
 
 def pocket_xy(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     """`(6, 2)` 袋口中心的桌台相對座標。"""
@@ -105,3 +113,36 @@ def update_first_contact(
 
     unset = (first_contact < 0) & touching.any(dim=-1)
     return torch.where(unset, candidate, first_contact)
+
+
+def update_closest_approach(
+    closest_approach: torch.Tensor,
+    ball_xy: torch.Tensor,
+    ball_radius: float,
+    first_contact: torch.Tensor,
+) -> torch.Tensor:
+    """更新母球對 1 號球的最近**表面**間距，`(N,)` float，初值 `inf`。
+
+    closest_approach: `(N,)` 目前為止的最小值
+    first_contact: `(N,)` long，-1 = 尚未接觸任何球
+
+    只在 `first_contact < 0` 的 env 上更新——一旦碰到任何球，這一局「瞄得準
+    不準」就已經定案了。不加這個 gate 的話，開球後散開的 1 號球滾過母球旁邊
+    也會刷新最小值，等於替一桿爛球補發塑形分。
+
+    ⚠️ 呼叫順序必須在 `update_first_contact()` **之前**：碰到 1 號球的那個
+    tick，`first_contact` 還是 -1，間距才記得到接近 0 的值。順序反過來的話
+    命中的那一局反而拿不到滿分。
+
+    表面間距 = 球心距 − 直徑，夾在 0 以下不再往負跑（PhysX 的接觸解算容許
+    輕微重疊）。0.0 的語意固定是「碰到了」。
+    """
+    cue_xy = ball_xy[:, CUE_BALL_INDEX, :]  # (N, 2)
+    one_xy = ball_xy[:, ONE_BALL_INDEX, :]  # (N, 2)
+    gap = (one_xy - cue_xy).norm(dim=-1) - 2.0 * ball_radius
+    gap = gap.clamp_min(0.0)
+
+    not_yet_contacted = first_contact < 0
+    return torch.where(
+        not_yet_contacted, torch.minimum(closest_approach, gap), closest_approach
+    )

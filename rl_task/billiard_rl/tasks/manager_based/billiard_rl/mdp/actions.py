@@ -32,6 +32,7 @@ from .physics import decay_velocities
 from .shot_tracking import (
     detect_pocketed,
     detect_rail_contact,
+    update_closest_approach,
     update_first_contact,
 )
 
@@ -136,6 +137,11 @@ class BilliardStrikeAction(ActionTerm):
         self._first_contact = torch.full(
             (self.num_envs,), -1, dtype=torch.long, device=self.device
         )
+        # #124 dense shaping：母球對 1 號球的最近表面間距（m），首次接觸前才更新。
+        # 初值 inf = 這一局還沒量到，`closest_approach_to_reward()` 對它回 0 分。
+        self._closest_approach = torch.full(
+            (self.num_envs,), float("inf"), device=self.device
+        )
 
     """
     Properties.
@@ -198,9 +204,19 @@ class BilliardStrikeAction(ActionTerm):
     def first_contact(self) -> torch.Tensor:
         """`(num_envs,)` long：母球第一顆碰到的球，-1 = 整局沒碰到任何球。
 
-        `evaluate_break_foul()` 要求首次接觸必須是 1 號球，否則判 -1.5 並重置。
+        `evaluate_break_foul()` 要求首次接觸必須是 1 號球，碰到錯球判 -1.5 並
+        重置；-1（整局沒碰到）判 -2.0，比碰到錯球更差（#124）。
         """
         return self._first_contact
+
+    @property
+    def closest_approach(self) -> torch.Tensor:
+        """`(num_envs,)` float：母球對 1 號球的最近表面間距（m），首次接觸前的最小值。
+
+        0.0 = 碰到了，`inf` = 這一局還沒量到。dense shaping 的唯一輸入，
+        換算見 `core.services.aim_shaping_calculator.closest_approach_to_reward()`。
+        """
+        return self._closest_approach
 
     """
     Operations.
@@ -286,6 +302,8 @@ class BilliardStrikeAction(ActionTerm):
         self._pocket_index[index] = -1
         self._rail_contacted[index] = False
         self._first_contact[index] = -1
+        # 不清的話上一局命中的 0.0 會留到下一局，等於白送 dense shaping 滿分。
+        self._closest_approach[index] = float("inf")
         # 條件變數重新取樣。這是 #122 的核心——第 21 維必須逐局變動，policy
         # 才學得到「偏移能力上限 → 該怎麼打」的條件依賴。
         self._resample_max_offset(index)
@@ -341,6 +359,15 @@ class BilliardStrikeAction(ActionTerm):
 
         self._rail_contacted |= detect_rail_contact(ball_xy, self.cfg.ball_radius)
 
+        # ⚠️ 順序：closest_approach 必須用**這個 tick 之前**的 first_contact。
+        #    碰到 1 號球的那個 tick，first_contact 還是 -1，間距才記得到 ~0；
+        #    先更新 first_contact 的話命中的那一局反而拿不到塑形滿分。
+        self._closest_approach = update_closest_approach(
+            self._closest_approach,
+            ball_xy,
+            self.cfg.ball_radius,
+            self._first_contact,
+        )
         self._first_contact = update_first_contact(
             self._first_contact, ball_xy, self.cfg.ball_radius
         )

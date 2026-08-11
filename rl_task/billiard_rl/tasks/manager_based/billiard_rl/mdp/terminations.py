@@ -70,14 +70,16 @@ def break_foul_decided_mask(
 
     `evaluate_break_foul()` 在 `first_contacted_ball_id != 1` 這個分支直接
     short-circuit 回傳 `(-1.5, should_reset=True)`，**完全不看進袋與顆星**，
-    而 `calculate_reward()` 在 `should_reset` 時只回傳罰分、其餘三項歸零。所以
+    而 `calculate_reward()` 在 `should_reset` 時只回傳罰分加上 aim 塑形、其餘
+    三項歸零（aim 記的是首次接觸之前的最小值，此刻也已經定案）。所以
     只要首次接觸已經確定且不是 1 號球，整局的 reward 就已經定了——繼續模擬
     5~10 秒只是把算力花在等一個已知的結果停下來，而「首次接觸不是 1 號球」
     在早期訓練是最常見的結果。
 
     ⚠️ `first_contact == -1`（整局沒碰到任何球）**不能**放進來：那是「還沒碰到」
        與「永遠不會碰到」的同一個值，要等球全停才分得出來，交給
-       `all_balls_at_rest()`。
+       `all_balls_at_rest()`。#124 起這個情形的罰分是 -2.0（比碰到錯球更差），
+       但仍然只有等球停才判得出來，所以這裡的排除條件不變。
     """
     return struck & (first_contact > 0) & (first_contact != 1)
 

@@ -2,6 +2,12 @@ import math
 
 from ..models.break_foul_result import BreakFoulResult
 from ..models.shot_result import ShotResult
+from .aim_shaping_calculator import closest_approach_to_reward
+from .break_foul_evaluator import (
+    FIRST_CONTACT_FOUL_PENALTY,
+    INSUFFICIENT_RAIL_CONTACT_PENALTY,
+    NO_CONTACT_FOUL_PENALTY,
+)
 from .cue_ball_pocketed_penalty_calculator import (
     calculate_cue_ball_pocketed_penalty,
 )
@@ -11,11 +17,15 @@ from .nine_ball_pocketed_bonus_calculator import (
 from .spread_score_calculator import spread_score_to_reward
 
 
+# 引用 break_foul_evaluator 的常數而不是重打數字：兩邊各寫一份的話，那裡加
+# 一種犯規（如 #124 的 NO_CONTACT）這裡就會把它判成「不支援的狀態」並拋錯，
+# 而錯誤訊息完全不會提到真正的原因。
 _VALID_BREAK_FOUL_STATES = frozenset(
     {
         (0.0, False),
-        (-0.5, False),
-        (-1.5, True),
+        (INSUFFICIENT_RAIL_CONTACT_PENALTY, False),
+        (FIRST_CONTACT_FOUL_PENALTY, True),
+        (NO_CONTACT_FOUL_PENALTY, True),
     }
 )
 
@@ -28,8 +38,14 @@ def calculate_reward(
     _validate_spread_score(shot_result.spread_score)
     _validate_break_foul_result(break_foul_result)
 
+    # ⚠️ dense shaping 必須**跨過** should_reset 分支（#124）。犯規重置涵蓋了
+    #    「沒碰到球」與「碰到錯球」兩種情形，而那正是訓練初期的壓倒性多數——
+    #    塑形若跟其他項一樣被這個分支吃掉，就等於只在已經打好的那 4.5% 局
+    #    給塑形，完全沒有把 policy 拉出平原的作用。
+    aim_reward = closest_approach_to_reward(shot_result.closest_approach)
+
     if break_foul_result.should_reset:
-        return break_foul_result.penalty
+        return break_foul_result.penalty + aim_reward
 
     cue_ball_penalty = calculate_cue_ball_pocketed_penalty(
         shot_result.cue_ball_pocketed
@@ -47,6 +63,7 @@ def calculate_reward(
         + cue_ball_penalty
         + break_foul_result.penalty
         + nine_ball_bonus
+        + aim_reward
     )
 
 

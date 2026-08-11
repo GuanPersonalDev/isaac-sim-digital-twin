@@ -16,6 +16,7 @@ policy 照那個實際回報學，人卻照分項看，查起來會非常痛。
 """
 
 import itertools
+import math
 
 import pytest
 
@@ -28,14 +29,23 @@ from billiard_rl.tasks.manager_based.billiard_rl.mdp.rewards import (  # noqa: E
     evaluate_shot,
 )
 from billiard_rl.tasks.manager_based.billiard_rl.mdp.shot_tracking import (  # noqa: E402
+    ONE_BALL_INDEX,
     detect_cue_contact,
     detect_pocketed,
     detect_rail_contact,
+    update_closest_approach,
     update_first_contact,
 )
 from core.models.shot_result import ShotResult  # noqa: E402
 from core.models.table_ball_set import TableBallSet  # noqa: E402
-from core.services.break_foul_evaluator import evaluate_break_foul  # noqa: E402
+from core.services.aim_shaping_calculator import (  # noqa: E402
+    AIM_REFERENCE_GAP,
+    AIM_REWARD_SCALE,
+)
+from core.services.break_foul_evaluator import (  # noqa: E402
+    NO_CONTACT_FOUL_PENALTY,
+    evaluate_break_foul,
+)
 from core.services.break_shot_position_provider import (  # noqa: E402
     BREAK_SHOT_POSITIONS,
 )
@@ -166,25 +176,124 @@ def test_update_first_contact_stays_unset_without_contact():
 
 
 ##
+# #124：dense shaping 的距離追蹤
+##
+
+
+def _unset(n: int = 1) -> tuple[torch.Tensor, torch.Tensor]:
+    """`(closest_approach, first_contact)` 的初值。"""
+    return (
+        torch.full((n,), float("inf"), dtype=torch.float64),
+        torch.full((n,), -1, dtype=torch.long),
+    )
+
+
+def test_closest_approach_measures_surface_gap_not_centre_distance():
+    ball_xy = _layout({ONE_BALL_INDEX: 4.0 * _RADIUS})
+    closest, first = _unset()
+
+    closest = update_closest_approach(closest, ball_xy, _RADIUS, first)
+
+    # 球心距 4r，表面間距 4r - 2r = 2r
+    assert float(closest[0]) == pytest.approx(2.0 * _RADIUS)
+
+
+def test_closest_approach_keeps_the_minimum_over_the_episode():
+    closest, first = _unset()
+
+    for gap in (1.0, 0.3, 0.7):
+        ball_xy = _layout({ONE_BALL_INDEX: gap + 2.0 * _RADIUS})
+        closest = update_closest_approach(closest, ball_xy, _RADIUS, first)
+
+    assert float(closest[0]) == pytest.approx(0.3), "0.7 不該覆寫掉更近的 0.3"
+
+
+def test_closest_approach_floors_at_zero_on_contact():
+    """PhysX 的接觸解算容許輕微重疊，間距不得跑成負值。
+
+    0.0 的語意固定是「碰到了」＝塑形滿分，負值會讓 `closest_approach_to_reward()`
+    直接拋 ValueError。
+    """
+    ball_xy = _layout({ONE_BALL_INDEX: 1.5 * _RADIUS})  # 重疊
+    closest, first = _unset()
+
+    closest = update_closest_approach(closest, ball_xy, _RADIUS, first)
+
+    assert float(closest[0]) == 0.0
+
+
+def test_closest_approach_freezes_after_any_contact():
+    """碰到球之後就定案——散開的 1 號球滾過母球旁邊不得補發塑形分。"""
+    ball_xy = _layout({ONE_BALL_INDEX: 0.5 + 2.0 * _RADIUS})
+    closest, _ = _unset()
+    contacted = torch.full((1,), 5, dtype=torch.long)  # 已經碰到 5 號球
+
+    closest = update_closest_approach(closest, ball_xy, _RADIUS, contacted)
+
+    assert float(closest[0]) == float("inf")
+
+
+def test_closest_approach_records_the_contact_tick_itself():
+    """命中 1 號球的那個 tick 必須拿得到 ~0。
+
+    `actions.py` 的呼叫順序保證這個 tick 的 `first_contact` 還是 -1；順序反過來
+    的話，真正打中的那一局反而拿不到塑形滿分。
+    """
+    ball_xy = _layout({ONE_BALL_INDEX: 2.0 * _RADIUS})
+    closest, first = _unset()
+
+    closest = update_closest_approach(closest, ball_xy, _RADIUS, first)
+    first = update_first_contact(first, ball_xy, _RADIUS)
+
+    assert int(first[0]) == ONE_BALL_INDEX
+    assert float(closest[0]) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_closest_approach_is_per_env():
+    closest, first = _unset(2)
+    ball_xy = torch.cat(
+        [
+            _layout({ONE_BALL_INDEX: 0.2 + 2.0 * _RADIUS}),
+            _layout({ONE_BALL_INDEX: 0.8 + 2.0 * _RADIUS}),
+        ]
+    )
+
+    closest = update_closest_approach(closest, ball_xy, _RADIUS, first)
+
+    assert float(closest[0]) == pytest.approx(0.2)
+    assert float(closest[1]) == pytest.approx(0.8)
+
+
+##
 # B-3b／B-3c：reward 分項
 ##
 
 
 def test_decomposition_sums_to_core_reward():
-    """**最重要的一項**：四項之和必須恆等於 `calculate_reward()`。
+    """**最重要的一項**：五項之和必須恆等於 `calculate_reward()`。
 
-    窮舉 reward 鏈的所有分支組合：母球進袋 × 9 號球進袋 × 三種犯規狀態。
+    窮舉 reward 鏈的所有分支組合：母球進袋 × 9 號球進袋 × 四種犯規狀態
+    × 塑形距離（含跨過 `should_reset` 分支的那一條）。
     """
     foul_cases = [
-        # (first_contact, pocketed_object_balls, rail_contacted) → 三種 BreakFoulResult
+        # (first_contact, pocketed_object_balls, rail_contacted) → 四種 BreakFoulResult
         (1, {3}, set()),  # 合法：有進袋
         (1, set(), {1, 2, 3, 4}),  # 合法：4 顆碰顆星
         (1, set(), {1, 2}),  # -0.5 未達 4 顆
         (5, set(), {1, 2, 3, 4}),  # -1.5 首次接觸不是 1 號球，且 should_reset
-        (None, set(), set()),  # -1.5 整局沒碰到任何球
+        (None, set(), set()),  # -2.0 整局沒碰到任何球（#124）
     ]
-    for (first, pocketed, rails), cue_pocketed, nine_pocketed, spread_score in (
-        itertools.product(foul_cases, (False, True), (False, True), (0.0, 0.37, 1.0))
+    # 塑形距離也要進窮舉：aim 是唯一跨過 should_reset 分支的項目，只測 inf
+    # 的話那條路徑上的分解錯誤永遠不會被抓到。
+    approaches = (0.0, AIM_REFERENCE_GAP / 3.0, AIM_REFERENCE_GAP, math.inf)
+    for (
+        (first, pocketed, rails),
+        cue_pocketed,
+        nine_pocketed,
+        spread_score,
+        approach,
+    ) in itertools.product(
+        foul_cases, (False, True), (False, True), (0.0, 0.37, 1.0), approaches
     ):
         break_foul_result = evaluate_break_foul(first, pocketed, rails)
         shot_result = ShotResult(
@@ -192,6 +301,7 @@ def test_decomposition_sums_to_core_reward():
             cue_ball_pocketed=cue_pocketed,
             nine_ball_pocketed=nine_pocketed,
             spread_score=spread_score,
+            closest_approach=approach,
         )
 
         components = decompose_reward(shot_result, break_foul_result)
@@ -200,12 +310,15 @@ def test_decomposition_sums_to_core_reward():
         assert sum(components.values()) == pytest.approx(expected, abs=1e-9), (
             f"分解與 core 不一致：first={first} pocketed={pocketed} rails={rails} "
             f"cue={cue_pocketed} nine={nine_pocketed} spread={spread_score} "
-            f"→ {components} vs {expected}"
+            f"approach={approach} → {components} vs {expected}"
         )
 
 
 def test_decomposition_zeroes_everything_on_reset_foul():
-    """`should_reset` 時 core 只回傳罰分，其餘三項必須是 0（不是「剛好抵消」）。"""
+    """`should_reset` 時 core 只回傳罰分（+塑形），其餘三項必須是 0。
+
+    「是 0」而不是「剛好抵消」——抵消的話換一組輸入就會露餡。
+    """
     break_foul_result = evaluate_break_foul(5, set(), {1, 2, 3, 4})
     assert break_foul_result.should_reset
 
@@ -223,6 +336,53 @@ def test_decomposition_zeroes_everything_on_reset_foul():
     assert components["cue_scratch"] == 0.0
     assert components["nine_ball"] == 0.0
     assert components["foul"] == break_foul_result.penalty
+    # 沒帶 closest_approach → inf → 塑形 0 分，維持改動前的數值。
+    assert components["aim"] == 0.0
+
+
+def test_aim_is_the_only_term_paid_on_a_reset_foul():
+    """#124 的核心：塑形必須跨過 `should_reset` 分支。
+
+    訓練初期壓倒性多數的 episode 都走這個分支，塑形若跟其他四項一樣被吃掉
+    就等於沒加——而且完全不報錯，只是 policy 學不動。
+    """
+    break_foul_result = evaluate_break_foul(None, set(), set())
+    assert break_foul_result.should_reset
+
+    components = decompose_reward(
+        ShotResult(
+            final_ball_positions=[[0.0, 0.0]] * _BALL_COUNT,
+            cue_ball_pocketed=False,
+            nine_ball_pocketed=False,
+            spread_score=1.0,
+            closest_approach=0.0,
+        ),
+        break_foul_result,
+    )
+
+    assert components["aim"] == pytest.approx(AIM_REWARD_SCALE)
+    assert components["spread"] == 0.0
+    assert components["cue_scratch"] == 0.0
+    assert components["nine_ball"] == 0.0
+
+
+def test_missing_every_ball_is_worse_than_hitting_the_wrong_one():
+    """犯規階梯必須嚴格遞增，包含塑形之後也一樣（#124）。
+
+    第一輪訓練就是踩在兩者同為 -1.5 的那片平原上收斂到亂打。
+    """
+    positions = [[0.0, 0.0]] * _BALL_COUNT
+
+    best_miss = calculate_reward(
+        ShotResult(positions, False, False, 0.0, closest_approach=0.0),
+        evaluate_break_foul(None, set(), set()),
+    )
+    worst_wrong_contact = calculate_reward(
+        ShotResult(positions, False, False, 0.0, closest_approach=math.inf),
+        evaluate_break_foul(5, set(), {1, 2, 3, 4}),
+    )
+
+    assert best_miss < worst_wrong_contact
 
 
 def test_evaluate_shot_uses_pocket_coordinates_for_pocketed_balls():
@@ -254,9 +414,25 @@ def test_evaluate_shot_on_break_layout_is_a_valid_reward():
         ball_xy, [-1] * _BALL_COUNT, [False] * _BALL_COUNT, first_contact=-1
     )
 
-    # 沒碰到任何球 → 首次接觸不是 1 號球 → -1.5 且重置
-    assert components["foul"] == pytest.approx(-1.5)
+    # 沒碰到任何球 → -2.0 且重置（#124 起與「碰到錯球」的 -1.5 分開）
+    assert components["foul"] == pytest.approx(NO_CONTACT_FOUL_PENALTY)
     assert components["spread"] == 0.0
+    # closest_approach 沒帶 → inf → 塑形 0 分
+    assert components["aim"] == 0.0
+
+
+def test_evaluate_shot_passes_closest_approach_through_to_the_aim_term():
+    ball_xy = [BREAK_SHOT_POSITIONS[b] for b in sorted(BREAK_SHOT_POSITIONS)]
+
+    components = evaluate_shot(
+        ball_xy,
+        [-1] * _BALL_COUNT,
+        [False] * _BALL_COUNT,
+        first_contact=-1,
+        closest_approach=0.0,
+    )
+
+    assert components["aim"] == pytest.approx(AIM_REWARD_SCALE)
 
 
 def test_evaluate_shot_flags_cue_and_nine_ball_pockets():

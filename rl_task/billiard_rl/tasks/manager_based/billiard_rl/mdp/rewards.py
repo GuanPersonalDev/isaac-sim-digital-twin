@@ -6,9 +6,12 @@
 **不是單純相加**——開球犯規重置時它只回傳罰分、忽略其他所有項；9 號球獎勵
 還要 gate 在「沒有犯規」上。
 
-所以這裡的做法是：`decompose_reward()` 把 `calculate_reward()` 拆成四個分量，
-並由對拍測試保證**四者之和恆等於 `calculate_reward()`**。分項只是呈現，
+所以這裡的做法是：`decompose_reward()` 把 `calculate_reward()` 拆成五個分量，
+並由對拍測試保證**五者之和恆等於 `calculate_reward()`**。分項只是呈現，
 數值權威仍在 core。
+
+⚠️ 第五項 `aim`（#124 的 dense shaping）與其他四項不同：它**跨過**犯規重置
+分支，犯規的局照樣給分。理由見 `core.services.aim_shaping_calculator`。
 
 效能：`calculate_spread_score()` 是純 Python 凸包（Andrew's monotone chain），
 不好向量化。但它只需要在**落定的 env** 上算，而落定是每局一次的稀疏事件，
@@ -24,6 +27,7 @@ import torch
 
 from core.models.break_foul_result import BreakFoulResult
 from core.models.shot_result import ShotResult
+from core.services.aim_shaping_calculator import closest_approach_to_reward
 from core.services.cue_ball_pocketed_penalty_calculator import (
     calculate_cue_ball_pocketed_penalty,
 )
@@ -53,25 +57,29 @@ _CACHE_ATTR = "_billiard_reward_breakdown"
 def decompose_reward(
     shot_result: ShotResult, break_foul_result: BreakFoulResult
 ) -> dict[str, float]:
-    """把 `calculate_reward()` 拆成四個分量，四者之和恆等於它。
+    """把 `calculate_reward()` 拆成五個分量，五者之和恆等於它。
 
-    回傳 key：`spread` / `cue_scratch` / `foul` / `nine_ball`。
+    回傳 key：`spread` / `cue_scratch` / `foul` / `nine_ball` / `aim`。
 
     對照 `reward_service.calculate_reward()` 的三段邏輯：
 
-    1. `should_reset` 時只回傳罰分 → 其餘三項全部歸零，`foul` 帶罰分
-    2. 否則四項相加
+    1. `should_reset` 時只回傳罰分 **加上 aim 塑形** → 其餘三項歸零
+    2. 否則五項相加
     3. 9 號球獎勵 gate 在「母球沒進袋且沒有犯規罰分」上
 
     拆解本身不做任何判斷，只是把同一組條件寫成分項；數值權威在 core。
     """
+    # #124：aim 是唯一跨過 should_reset 分支的項目，兩條路徑都要付。
+    aim_value = closest_approach_to_reward(shot_result.closest_approach)
+
     if break_foul_result.should_reset:
-        # calculate_reward() 在這個分支直接 return penalty，其他項連算都不算。
+        # calculate_reward() 在這個分支只 return penalty + aim，其他項連算都不算。
         return {
             "spread": 0.0,
             "cue_scratch": 0.0,
             "foul": break_foul_result.penalty,
             "nine_ball": 0.0,
+            "aim": aim_value,
         }
 
     cue_scratch = calculate_cue_ball_pocketed_penalty(shot_result.cue_ball_pocketed)
@@ -90,6 +98,7 @@ def decompose_reward(
         "cue_scratch": cue_scratch,
         "foul": break_foul_result.penalty,
         "nine_ball": nine_ball,
+        "aim": aim_value,
     }
 
 
@@ -98,13 +107,17 @@ def evaluate_shot(
     pocket_index: list[int],
     rail_contacted: list[bool],
     first_contact: int,
+    closest_approach: float = float("inf"),
 ) -> dict[str, float]:
-    """單一 env、單一局面 → 四個 reward 分量。
+    """單一 env、單一局面 → 五個 reward 分量。
 
     ball_xy: 10 顆球的桌台相對 XY，索引 = ball_id
     pocket_index: 10 個袋口索引，-1 = 沒進袋
     rail_contacted: 10 個布林，該球是否碰過顆星
     first_contact: 母球第一顆碰到的球（ball_id），-1 = 整局沒碰到
+    closest_approach: 母球對 1 號球的最近表面間距（m），首次接觸前的最小值。
+        預設 `inf`（= 沒量到，塑形 0 分）——與 `ShotResult` 的預設一致，
+        舊呼叫端不會被靜默灌水。
 
     **進袋球代入袋口座標**——這是 `calculate_spread_score()` docstring 明文
     要求的呼叫端責任（「進袋球一樣要給一筆資料，value 用該球進的那個袋口座標
@@ -131,6 +144,7 @@ def evaluate_shot(
         spread_score=_spread_score(
             ball_xy, pocket_index, pocketed_object_ball_ids, break_foul_result
         ),
+        closest_approach=closest_approach,
     )
     return decompose_reward(shot_result, break_foul_result)
 
@@ -197,8 +211,9 @@ def _compute_breakdown(
     進袋判定更是直接錯的（正朝袋口飛去的球尚未進袋）。
 
     ⚠️ 但「局面已定」不只有落定一種：`break_foul_decided` 的 env 首次接觸已經
-    確定且不是 1 號球，`calculate_reward()` 在那個分支只回傳 -1.5、其餘三項
-    歸零，**完全不看球在哪裡**，所以球還在動也算得出正確答案。這一項必須跟
+    確定且不是 1 號球，`calculate_reward()` 在那個分支只回傳 -1.5 加上 aim
+    塑形、其餘三項歸零，**完全不看球在哪裡**，所以球還在動也算得出正確答案
+    （aim 記的是首次接觸之前的最小值，此刻同樣已經定案）。這一項必須跟
     `TerminationsCfg.break_foul` 同進同出：那邊提前終止、這邊不結算的話，
     -1.5 永遠不會被支付，policy 會學到「隨便亂打可以免費跳過這一局」。
     """
@@ -209,6 +224,7 @@ def _compute_breakdown(
         "cue_scratch": zeros.clone(),
         "foul": zeros.clone(),
         "nine_ball": zeros.clone(),
+        "aim": zeros.clone(),
     }
 
     settled = all_balls_at_rest(env) | break_foul_decided(env, action_term_name)
@@ -227,6 +243,7 @@ def _compute_breakdown(
     pocket_index = strike_term.pocket_index[settled_ids].cpu().tolist()
     rail_contacted = strike_term.rail_contacted[settled_ids].cpu().tolist()
     first_contact = strike_term.first_contact[settled_ids].cpu().tolist()
+    closest_approach = strike_term.closest_approach[settled_ids].cpu().tolist()
 
     for row, env_id in enumerate(settled_ids.tolist()):
         components = evaluate_shot(
@@ -234,6 +251,7 @@ def _compute_breakdown(
             pocket_index[row],
             rail_contacted[row],
             first_contact[row],
+            closest_approach[row],
         )
         for name, value in components.items():
             result[name][env_id] = value
@@ -264,3 +282,18 @@ def foul(env: ManagerBasedRLEnv, action_term_name: str = "strike") -> torch.Tens
 def nine_ball(env: ManagerBasedRLEnv, action_term_name: str = "strike") -> torch.Tensor:
     """9 號球進袋獎勵（母球進袋或犯規時歸零）。"""
     return _breakdown(env, action_term_name)["nine_ball"]
+
+
+def aim(env: ManagerBasedRLEnv, action_term_name: str = "strike") -> torch.Tensor:
+    """瞄準塑形：母球在首次接觸之前對 1 號球的最近接近距離（#124）。
+
+    **唯一在犯規重置的局也會給分的項目。** 這是刻意的：訓練初期壓倒性多數的
+    episode 都是犯規，塑形若跟其他四項一樣被 `should_reset` 分支吃掉就等於
+    沒加。理由與量化依據見
+    `core.services.aim_shaping_calculator` 的模組 docstring。
+
+    TensorBoard 上這一項的用法：`Episode_Reward/aim` ×20 若持續上升，代表
+    policy 正在把母球往球堆帶——它會比 `spread` 早很多開始動，是這一輪最
+    靈敏的環境側指標。
+    """
+    return _breakdown(env, action_term_name)["aim"]

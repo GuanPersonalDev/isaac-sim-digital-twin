@@ -20,10 +20,12 @@ __all__ = [
     "nine_ball",
     "cue_scratch",
     "foul",
+    "aim",
     "detect_pocketed",
     "detect_rail_contact",
     "detect_cue_contact",
     "update_first_contact",
+    "update_closest_approach",
 ]
 
 # Forward stable MDP terms lazily, then override with environment-specific terms below.
@@ -34,11 +36,20 @@ from .actions_cfg import BilliardStrikeActionCfg
 from .events import break_shot_positions, reset_break_shot_layout
 from .observations import ball_positions
 from .physics import decay_velocities
-from .rewards import cue_scratch, decompose_reward, evaluate_shot, foul, nine_ball, spread
+from .rewards import (
+    aim,
+    cue_scratch,
+    decompose_reward,
+    evaluate_shot,
+    foul,
+    nine_ball,
+    spread,
+)
 from .shot_tracking import (
     detect_cue_contact,
     detect_pocketed,
     detect_rail_contact,
+    update_closest_approach,
     update_first_contact,
 )
 from .terminations import (
