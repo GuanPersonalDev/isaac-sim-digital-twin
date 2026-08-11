@@ -39,11 +39,26 @@ METRICS: list[tuple[str, tuple[str, ...], float]] = [
     ("aim x20", ("Episode_Reward", "aim"), 20.0),
     ("spread x20", ("Episode_Reward", "spread"), 20.0),
     ("foul x20", ("Episode_Reward", "foul"), 20.0),
-    ("action std", ("noise_std",), 1.0),
+    # rsl_rl 5.0.1 記的是 `Policy/mean_std`；舊版與部分分支叫 `mean_noise_std`。
+    # 兩個都試，不然這一欄會靜靜地消失（#124 第三輪就漏了它）。
+    ("action std", ("mean_std",), 1.0),
     ("lr", ("learning_rate",), 1.0),
     ("mean reward", ("mean_reward",), 1.0),
     ("time_out", ("Episode_Termination", "time_out"), 1.0),
 ]
+
+# 同一個顯示名可以有多組候選關鍵字，依序試。
+TAG_FALLBACKS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "action std": (("mean_std",), ("noise_std",)),
+}
+
+# 「越高越好」的指標才適合拿來判斷退步。
+#
+# ⚠️ `break_foul`（碰到錯球的終止率）**故意不在這裡**：它的好壞方向會翻轉。
+#    逃離「母球什麼都不碰」的階段，它上升代表開始碰到球，是好事；policy 學會
+#    瞄準 1 號球之後，它下降到 0 才是好事。#124 第三輪就是這樣被誤判成
+#    「跌幅 137%」的災難，實際上那是成功的證據。
+PROGRESS_METRICS = ("aim x20", "spread x20", "mean reward")
 
 # aim 塑形的滿分，用來把 reward 反推回物理距離。與
 # core.services.aim_shaping_calculator 的常數對齊；這支腳本在 pod 上獨立跑，
@@ -99,7 +114,10 @@ def main() -> None:
     steps: list[int] = []
     missing: list[str] = []
     for name, needles, scale in METRICS:
-        tag = _resolve(tags, needles)
+        candidates = TAG_FALLBACKS.get(name, (needles,))
+        tag = next(
+            (found for c in candidates if (found := _resolve(tags, c))), None
+        )
         if tag is None:
             missing.append(name)
             continue
@@ -138,7 +156,7 @@ def main() -> None:
     # ---- 歷史最佳 vs 最新 ----
     print(f"\n=== 歷史最佳 vs 最新（滑動平均 {SMOOTH_WINDOW}）===")
     drawdowns: dict[str, float] = {}
-    for name in ("aim x20", "spread x20", "mean reward", "break_foul"):
+    for name in PROGRESS_METRICS:
         if name not in series:
             continue
         smooth = _smooth(series[name], SMOOTH_WINDOW)
@@ -155,6 +173,14 @@ def main() -> None:
             f"  最新 {last:>9.5f}   跌幅 {drop * 100:>6.1f}%"
         )
 
+    if "break_foul" in series:
+        smooth = _smooth(series["break_foul"], SMOOTH_WINDOW)
+        print(
+            f"\n  break_foul（碰到錯球）{smooth[0]:.5f} → {smooth[-1]:.5f}"
+            "　※ 不進退步判定，好壞方向會翻轉：\n"
+            "     逃離「什麼都不碰」時它該上升；學會瞄 1 號球後它該降到 0。"
+        )
+
     lr_collapsed = False
     if "lr" in series:
         lr_first, lr_last = series["lr"][0], series["lr"][-1]
@@ -167,34 +193,34 @@ def main() -> None:
 
     # ---- 判定 ----
     print("\n=== 判定 ===")
+    regressed = [n for n, d in drawdowns.items() if d > DRAWDOWN_THRESHOLD]
+    aim_smooth = _smooth(series.get("aim x20", [0.0]), SMOOTH_WINDOW)
+    learned_something = max(aim_smooth) - aim_smooth[0] > 0.01
+
+    # ⚠️ 判斷順序是有意義的：先看「學到了沒」，再看「守不守得住」，
+    #    **lr 放最後**。
+    #
+    #    lr 低有兩種完全相反的意思——policy 在壞位置凍結（#124 第二輪），
+    #    或單純收斂了（第三輪）。差別只看指標守不守得住，所以 lr 不能當
+    #    獨立的判準。第一版把它設成無條件最高優先，於是把成功的第三輪
+    #    判成「中斷」。
     if total < DECISION_ITERATION:
         print(f"還沒到決策點（{total}/{DECISION_ITERATION}），繼續跑。")
         return
 
-    regressed = [n for n, d in drawdowns.items() if d > DRAWDOWN_THRESHOLD]
-    progressed = [
-        n
-        for n in ("aim x20", "spread x20")
-        if n in drawdowns and drawdowns[n] <= DRAWDOWN_THRESHOLD
-    ]
-    peak_aim = max(_smooth(series["aim x20"], SMOOTH_WINDOW)) if "aim x20" in series else 0.0
-    start_aim = _smooth(series["aim x20"], SMOOTH_WINDOW)[0] if "aim x20" in series else 0.0
-    learned_something = peak_aim - start_aim > 0.01
-
-    # lr 崩塌優先於一切：policy 已經凍結，繼續跑不會有任何變化。
-    if lr_collapsed:
-        print("🔴 lr 已崩到起始值的 5% 以下 → policy 凍結，繼續跑不會再變。中斷。")
-        print("   下一手：num_learning_epochs 5 → 3（從源頭壓 KL），不是再調 lr。")
-    elif regressed and learned_something:
-        print(f"🔴 學起來過但已退步（{', '.join(regressed)}）→ 中斷。")
-        print("   最佳點附近的 checkpoint 是目前最好的 policy，別刪。")
-    elif not learned_something:
+    if not learned_something:
         print("🔴 aim 從頭到尾沒動 → 不是優化器問題，是 reward 地形。")
         print("   下一手：收窄 CUE_BALL_PLACEMENT_X（擺位變異 σ ≈ 8.8°）。")
-    elif progressed:
-        print("✅ 仍在最佳點附近且沒有明顯回落 → 跑完 1000。")
+    elif regressed:
+        print(f"🔴 學起來過但已退步（{', '.join(regressed)}）→ 中斷。")
+        print("   最佳點附近的 checkpoint 是目前最好的 policy，別刪。")
+        if lr_collapsed:
+            print("   lr 也崩了 → 下一手是 num_learning_epochs 5 → 3（從源頭壓 KL）。")
+    elif lr_collapsed:
+        print("🟢 指標守在峰值附近，但 lr 已到底 → **已收斂**，繼續跑不會再變。")
+        print("   可以收工。想再往上推的話改 num_learning_epochs 5 → 3 重跑。")
     else:
-        print("🟡 訊號混雜，再看 100 個 iteration。")
+        print("✅ 仍在進步且沒有回落 → 跑完 1000。")
 
 
 if __name__ == "__main__":

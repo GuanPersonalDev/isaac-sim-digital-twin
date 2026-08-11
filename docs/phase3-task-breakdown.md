@@ -130,10 +130,14 @@ no-op 可使用 `cue_ball_speed = 0.0`；RL action space 的正規化、裁切�
 | 項目 | 數值 |
 |---|---|
 | 母球目標初速範圍 | 0.65 ~ 3.3392 m/s（**下界 2026-08-10 由 0.5 上調（#123）**：訓練端強制純滾動，母球水平減速度只有 μg = 0.0981 m/s²，可滾行程為 v²/(2×0.0981)。從 kitchen 最遠處（Y = -1.241425）滾到 1 號球需走 1.8193 m，至少要 0.5974 m/s——原本的 0.5 m/s 在碰到球堆之前就停了，正規化域低端整段是死區。0.65 讓任何合法擺位都碰得到球堆（最差抵達速度 0.256 m/s）。上限維持 3.3392 m/s；先前不含袋口的 2D 模型高估 spread，2026-08-11 已用 RunPod 真實 PhysX 兩輪控制式開球重新校準 reward（1,016 筆 pooled mean 0.0420），不再用該模型的 0.216~0.248 作為尺度依據。<br>上界來源：2026-07-26 換裝 Barrett WAM + 差動 IK 取代 RMPflow 後實測：預設姿態桿尖峰值速度 2.5302 m/s，套用真實撞球動量傳遞公式 v_ball=v_cue×(1+e)×M桿/(M桿+m球)（球桿 0.5kg、母球 0.163kg、皮革頭恢復係數 e=0.75）換算為母球初速上限 3.3392 m/s，已寫入 `core/models/action_bounds.py` 的 `CUE_BALL_SPEED`（#114 的物理域單一來源；原 `ScriptController.MAX_CUE_BALL_SPEED` 已於 #114 移除，改為引用此常數）。原 UR5 直線推桿版本 1.313 m/s 已淘汰。姿態仍有優化空間未窮舉，離真實開球水準（業餘 ~7.6 m/s、職業 ~8.9–11.2 m/s）仍有明顯差距，詳見對應調查紀錄） |
-| 出桿角度範圍 | 0 ~ 360 度 |
+| 出桿角度範圍 | **Milestone A：−30 ~ +30 度**（#231，見上方 Action 索引表第 2 列；Milestone B 之前必須改回 −180 ~ +180 並重訓，見 #232） |
 | 擊球位置偏移範圍 | ±0.5 球半徑 |
 | 靜止判定閾值 | 所有球速度 < 0.01 m/s |
-| 回合超時上限 | 10 秒 |
+| 回合超時上限 | 20 秒（`episode_length_s`，純安全網不是預期長度；實際落定約 10~12 步，一步 = 1 秒） |
+| PPO 超參數 | `lr=3.0e-4`、`desired_kl=0.02`、`gamma=lam=1.0`、`init_std=0.4`、`num_envs=1024`、`max_iterations=1000`。單一來源是 `rl_task/.../agents/rsl_rl_ppo_cfg.py`；lr 與 desired_kl 的實測依據見 [issue-124-training-runs.md](issue-124-training-runs.md) |
+
+三輪訓練的完整紀錄（每輪改了什麼、量到什麼、為什麼失敗）：
+**[issue-124-training-runs.md](issue-124-training-runs.md)**
 
 ---
 
