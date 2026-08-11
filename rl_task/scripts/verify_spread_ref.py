@@ -37,6 +37,15 @@ parser.add_argument("--max_steps", type=_positive_int, default=10000)
 parser.add_argument("--angle_jitter_deg", type=float, default=1.5)
 parser.add_argument("--placement_jitter_m", type=float, default=0.03)
 parser.add_argument("--seed", type=int, default=123)
+# 正規化域的出杆速度：+1 = CUE_BALL_SPEED 上界（3.3392 m/s），-1 = 下界。
+#
+# 預設 1.0 就是 SPREAD_REF 的錨定條件，不要在校準時改動。給非 1.0 是為了做
+# **速度掃描**（#123 review 第 2 點）：上界 3.3392 該不該維持，原本的依據是
+# 一個被證實高估約 5 倍的 2D 模型，而實測只量過最大速度這一個點。用
+# -0.5 / 0.0 / 0.5 / 1.0 各跑一輪才知道真實環境的 spread 到底在哪裡飽和——
+# 若根本沒飽和，代表上界仍是瓶頸，Milestone A 的 demo 敘事與手臂端速度
+# 目標都要重新談。
+parser.add_argument("--normalized_speed", type=float, default=1.0)
 parser.add_argument(
     "--output",
     default="/workspace/issue123-validation/spread-ref-result.json",
@@ -69,7 +78,9 @@ from core.services.break_shot_position_provider import (  # noqa: E402
 from core.services.pocket_geometry import POCKET_POSITIONS  # noqa: E402
 from core.services.spread_score_calculator import (  # noqa: E402
     SPREAD_REF,
+    SPREAD_REWARD_MAX,
     SPREAD_REWARD_SCALE,
+    SPREAD_SCORE_AT_REWARD_MAX,
     calculate_spread_score,
     spread_score_to_reward,
 )
@@ -132,8 +143,14 @@ def _controlled_actions(env: ManagerBasedRLEnv) -> torch.Tensor:
     choose_zero_side = torch.rand(env.num_envs, device=env.device) < 0.5
     actions[:, _ANGLE_INDEX] = torch.where(choose_zero_side, near_zero, near_360)
 
-    actions[:, _SPEED_INDEX] = 1.0
+    actions[:, _SPEED_INDEX] = args_cli.normalized_speed
     return actions
+
+
+def _physical_speed(normalized_speed: float) -> float:
+    """正規化域 → m/s，寫進結果檔讓掃描表直接可讀。"""
+    low, high = ACTION_BOUNDS[_SPEED_INDEX]
+    return (high + low) / 2.0 + normalized_speed * (high - low) / 2.0
 
 
 def _raw_spread(
@@ -235,7 +252,8 @@ def _write_result(
             "angle_jitter_deg": args_cli.angle_jitter_deg,
             "placement_jitter_m": args_cli.placement_jitter_m,
             "cue_ball_y_m": BREAK_SHOT_POSITIONS[0][1],
-            "normalized_speed": 1.0,
+            "normalized_speed": args_cli.normalized_speed,
+            "cue_ball_speed_mps": _physical_speed(args_cli.normalized_speed),
             "normalized_offsets": [0.0, 0.0],
             "seed": args_cli.seed,
         },
@@ -268,16 +286,32 @@ def _write_result(
         measured_mean = float(primary_summary["mean"])
         relative_deviation = (measured_mean - SPREAD_REF) / SPREAD_REF
         within_tolerance = abs(relative_deviation) <= _REFERENCE_TOLERANCE
-        observed_max_reward = spread_score_to_reward(
-            float(primary_summary["max"])
-        )
-        safety_pass = observed_max_reward < _CUE_SCRATCH_PENALTY_MAGNITUDE
+        observed_max_raw = float(primary_summary["max"])
+        observed_max_reward = spread_score_to_reward(observed_max_raw)
+        # ⚠️ 不能再用 `observed_max_reward < 3.5` 判定：#123 review 之後
+        #    `spread_score_to_reward()` 本身就夾在 SPREAD_REWARD_MAX（3.4），
+        #    那個比較會恆為真、護欄變成擺設。要比的是**未夾制前**有沒有越線，
+        #    等價於原始分數有沒有到達夾制起點。
+        clamp_engaged = observed_max_raw >= SPREAD_SCORE_AT_REWARD_MAX
+        safety_pass = not clamp_engaged
+        # 掃描模式（非錨定速度）不做 SPREAD_REF 容差比較——SPREAD_REF 是在
+        # normalized_speed=1.0 量的，拿別的速度去比一定不合格，那是誤報。
+        is_calibration_speed = args_cli.normalized_speed == 1.0
         if not safety_pass:
             status = "UNSAFE_SCALE"
             recommendation = (
-                "降低 SPREAD_REWARD_SCALE；實測最大 spread reward 已蓋過 scratch"
+                "重跑本腳本重新錨定 SPREAD_REF（實測已頂到 SPREAD_REWARD_MAX 的"
+                "夾制起點，該區間梯度已消失）；夾制本身仍保證不蓋過 scratch"
             )
             exit_code = 3
+        elif not is_calibration_speed:
+            status = "SWEEP"
+            recommendation = (
+                f"速度掃描樣本（normalized_speed="
+                f"{args_cli.normalized_speed}），不做 SPREAD_REF 容差比較；"
+                "與其他速度的 primary_statistics.mean 併看以判斷是否飽和"
+            )
+            exit_code = 0
         elif within_tolerance:
             status = "PASS"
             recommendation = (
@@ -300,8 +334,15 @@ def _write_result(
                     SPREAD_REF * (1.0 - _REFERENCE_TOLERANCE),
                     SPREAD_REF * (1.0 + _REFERENCE_TOLERANCE),
                 ],
+                "observed_max_raw_spread": observed_max_raw,
                 "observed_max_reward": observed_max_reward,
                 "cue_scratch_penalty_magnitude": _CUE_SCRATCH_PENALTY_MAGNITUDE,
+                "spread_reward_max": SPREAD_REWARD_MAX,
+                "spread_score_at_reward_max": SPREAD_SCORE_AT_REWARD_MAX,
+                "clamp_engaged": clamp_engaged,
+                "clamp_headroom_fraction": (
+                    SPREAD_SCORE_AT_REWARD_MAX / observed_max_raw - 1.0
+                ),
                 "safety_pass": safety_pass,
                 "recommendation": recommendation,
             }
@@ -317,6 +358,8 @@ def _write_result(
 
 
 def _validate_arguments() -> None:
+    if not -1.0 <= args_cli.normalized_speed <= 1.0:
+        raise SystemExit("--normalized_speed 必須在 [-1, 1]（正規化域）")
     if not 0.0 <= args_cli.angle_jitter_deg <= 30.0:
         raise SystemExit("--angle_jitter_deg 必須在 [0, 30] 度")
     if not 0.0 <= args_cli.placement_jitter_m <= 0.10:
@@ -343,7 +386,9 @@ def main() -> int:
 
     print(
         f"[#123 spread] envs={env.num_envs} target={args_cli.target_samples} "
-        f"max_episodes={args_cli.max_episodes} seed={args_cli.seed}"
+        f"max_episodes={args_cli.max_episodes} seed={args_cli.seed} "
+        f"normalized_speed={args_cli.normalized_speed} "
+        f"({_physical_speed(args_cli.normalized_speed):.4f} m/s)"
     )
 
     try:

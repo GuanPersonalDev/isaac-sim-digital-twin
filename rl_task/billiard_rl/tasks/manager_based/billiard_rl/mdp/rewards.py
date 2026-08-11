@@ -38,7 +38,7 @@ from core.services.spread_score_calculator import (
 )
 
 from .shot_tracking import CUE_BALL_INDEX
-from .terminations import all_balls_at_rest
+from .terminations import all_balls_at_rest, break_foul_decided
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -160,12 +160,18 @@ def _breakdown(env: ManagerBasedRLEnv, action_term_name: str) -> dict[str, torch
 def _compute_breakdown(
     env: ManagerBasedRLEnv, action_term_name: str
 ) -> dict[str, torch.Tensor]:
-    """只對「這一步剛落定」的 env 計算 reward，其餘回 0。
+    """只對「這一步局面已定」的 env 計算 reward，其餘回 0。
 
     ⚠️ gate 在 `all_balls_at_rest` 上不是優化而是正確性：球還在飛的時候
     `calculate_spread_score()` 取到的是飛行途中的隨機構型，而「還在飛」與
     出桿力道正相關——不 gate 的話 policy 會學成「打到時限還沒停」。
     進袋判定更是直接錯的（正朝袋口飛去的球尚未進袋）。
+
+    ⚠️ 但「局面已定」不只有落定一種：`break_foul_decided` 的 env 首次接觸已經
+    確定且不是 1 號球，`calculate_reward()` 在那個分支只回傳 -1.5、其餘三項
+    歸零，**完全不看球在哪裡**，所以球還在動也算得出正確答案。這一項必須跟
+    `TerminationsCfg.break_foul` 同進同出：那邊提前終止、這邊不結算的話，
+    -1.5 永遠不會被支付，policy 會學到「隨便亂打可以免費跳過這一局」。
     """
     device = env.device
     zeros = torch.zeros(env.num_envs, device=device)
@@ -176,7 +182,7 @@ def _compute_breakdown(
         "nine_ball": zeros.clone(),
     }
 
-    settled = all_balls_at_rest(env)
+    settled = all_balls_at_rest(env) | break_foul_decided(env, action_term_name)
     settled_ids = settled.nonzero(as_tuple=False).flatten()
     if settled_ids.numel() == 0:
         return result

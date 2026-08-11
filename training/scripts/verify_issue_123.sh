@@ -138,4 +138,64 @@ for record in returns:
     )
 PY
 
+# --- 場景規模煙霧測試（#123 review 第 5 點）------------------------------------
+#
+# 上面的 PPO 驗證跑的是 NUM_ENVS（預設 64），但 billiard_rl_env_cfg.py 設定的
+# 是 1024——那個規模**從來沒有實際建起來過**。桌台碰撞網格是主要記憶體項，
+# 「建不建得起來」與「it/s 拐點在哪」都還沒驗，這是 #124 正式開跑前的實質風險。
+#
+# 設 SCENE_SMOKE_ENVS=0 可略過。想找算力飽和點就跑幾次不同的值：
+#   for n in 64 256 1024 2048; do SCENE_SMOKE_ENVS=$n bash training/scripts/verify_issue_123.sh; done
+SCENE_SMOKE_ENVS="${SCENE_SMOKE_ENVS:-1024}"
+SCENE_SMOKE_ITERATIONS="${SCENE_SMOKE_ITERATIONS:-2}"
+SCENE_SMOKE_LOG="${SCENE_SMOKE_LOG:-${VALIDATION_DIR}/scene-smoke-${SCENE_SMOKE_ENVS}.log}"
+SCENE_SMOKE_RUN_DIR="${SCENE_SMOKE_RUN_DIR:-${VALIDATION_DIR}/scene-smoke-runs}"
+GPU_SAMPLE_PATH="${VALIDATION_DIR}/scene-smoke-${SCENE_SMOKE_ENVS}-gpu.txt"
+
+if [[ "${SCENE_SMOKE_ENVS}" == "0" ]]; then
+    echo "[issue123] 略過場景規模煙霧測試（SCENE_SMOKE_ENVS=0）"
+else
+    echo "[issue123] 場景規模煙霧測試：num_envs=${SCENE_SMOKE_ENVS} iterations=${SCENE_SMOKE_ITERATIONS}"
+    mkdir -p "${SCENE_SMOKE_RUN_DIR}"
+    : > "${GPU_SAMPLE_PATH}"
+
+    gpu_sampler_pid=""
+    if command -v nvidia-smi &>/dev/null; then
+        # 每秒取一次已用顯存，之後取最大值——回答「1024 env 的峰值記憶體多少」。
+        ( while true; do
+              nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits                   >> "${GPU_SAMPLE_PATH}" 2>/dev/null || true
+              sleep 1
+          done ) &
+        gpu_sampler_pid=$!
+    fi
+
+    smoke_start=${SECONDS}
+    set +e
+    RUN_DIR="${SCENE_SMOKE_RUN_DIR}"     bash training/scripts/run_train.sh         --num_envs "${SCENE_SMOKE_ENVS}"         "agent.max_iterations=${SCENE_SMOKE_ITERATIONS}"         "agent.save_interval=${SCENE_SMOKE_ITERATIONS}"         2>&1 | tee "${SCENE_SMOKE_LOG}"
+    smoke_status=${PIPESTATUS[0]}
+    set -e
+    smoke_elapsed=$(( SECONDS - smoke_start ))
+
+    if [[ -n "${gpu_sampler_pid}" ]]; then
+        kill "${gpu_sampler_pid}" 2>/dev/null || true
+        wait "${gpu_sampler_pid}" 2>/dev/null || true
+    fi
+
+    peak_gpu_mib="n/a"
+    if [[ -s "${GPU_SAMPLE_PATH}" ]]; then
+        peak_gpu_mib=$(sort -n "${GPU_SAMPLE_PATH}" | tail -1)
+    fi
+
+    if [[ "${smoke_status}" -ne 0 ]]; then
+        echo "[#123 FAIL] num_envs=${SCENE_SMOKE_ENVS} 起不來（exit=${smoke_status}）。" >&2
+        echo "            峰值顯存 ${peak_gpu_mib} MiB，log：${SCENE_SMOKE_LOG}" >&2
+        echo "            若是 OOM，先降 env_spacing 或改用不含 SimpleRoom 的桌台 USD。" >&2
+        exit "${smoke_status}"
+    fi
+
+    echo "[#123 PASS] num_envs=${SCENE_SMOKE_ENVS} 場景建置與 ${SCENE_SMOKE_ITERATIONS} 個 iteration 完成"
+    echo "            wall-clock ${smoke_elapsed}s（含 Isaac 啟動）／峰值顯存 ${peak_gpu_mib} MiB"
+    echo "            log：${SCENE_SMOKE_LOG}"
+fi
+
 echo "[#123 PASS] 完整 log：${LOG_PATH}"

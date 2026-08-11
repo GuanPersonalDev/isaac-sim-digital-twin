@@ -1,5 +1,7 @@
 import math
 
+from .cue_ball_pocketed_penalty_calculator import CUE_BALL_POCKETED_PENALTY
+
 # 9-ball 標準桌台尺寸（見 core/services/break_shot_position_provider.py 的
 # _FOOT = 0.635 = 1/4 桌長反推：桌長 2.54m，桌寬取半桌長 1.27m）。
 TABLE_LENGTH = 2.54
@@ -33,6 +35,29 @@ SPREAD_REF = 0.0420
 # 因此平均好球有可見訊號，極端散開又不會蓋過母球落袋懲罰。
 SPREAD_REWARD_SCALE = 1.0
 
+# 上限夾制（#123 review，2026-08-11）。
+#
+# 需要它的理由：`SPREAD_REF` 是用**控制式**最大速度開球量到的，但訓練後的
+# policy 會去優化擺位、角度與擊球偏移——**本來就該打得比控制式更好**。轉換
+# 本身沒有上界（raw = 1.0 會換算成 +32.7），一旦 raw 越過臨界值，
+# 「打得夠散 + 母球落袋」就會變成正 reward。
+#
+# 正確的不變量是**跨度**而不是絕對值：policy 比較的是「scratch 換到更好的
+# 散開」與「不 scratch 但散開較差」，所以條件是
+# `max(f) - min(f) < |CUE_BALL_POCKETED_PENALTY|`。而 f 單調遞增、下界是
+# rack 的 0.0，跨度就等於上界，因此夾住上界即可。
+#
+# ⚠️ 夾制是**安全網不是 shaping**：超過上限的區間梯度會消失。真的頂到上限
+#    時正確的反應是重跑 `rl_task/scripts/verify_spread_ref.py` 重新錨定
+#    `SPREAD_REF`，不是接受那段平坦區。`SPREAD_SCORE_AT_REWARD_MAX` 就是
+#    給驗證腳本判斷「夾制有沒有咬到」用的。
+_SCRATCH_SAFETY_MARGIN = 0.1
+SPREAD_REWARD_MAX = abs(CUE_BALL_POCKETED_PENALTY) - _SCRATCH_SAFETY_MARGIN
+# 夾制開始生效的原始分數。兩輪實測最大值是 0.10395，距離這裡只有約 10%。
+SPREAD_SCORE_AT_REWARD_MAX = SPREAD_RACK + SPREAD_REWARD_MAX * (
+    SPREAD_REF - SPREAD_RACK
+) / SPREAD_REWARD_SCALE
+
 
 def spread_score_to_reward(spread_score: float) -> float:
     """`calculate_spread_score()` 的 0~1 分數 → reward 項的實際數值。
@@ -43,7 +68,7 @@ def spread_score_to_reward(spread_score: float) -> float:
         RunPod 控制式開球平均     0.0420 → +1.00
         RunPod 控制式開球 p90     0.0541 → +1.40
         RunPod 兩輪實測最大值      0.1040 → +3.05
-        實測上緣護欄               0.1100 → +3.25
+        夾制起點                   0.1144 → +3.40（以上全部是 +3.40）
 
     這是 reward 的定義本身，不是 `RewTerm.weight`——四個 RewTerm 的 weight 一律
     維持 1.0。權重若寫在 RewTerm 上，`core.services.reward_service.calculate_reward()`
@@ -51,7 +76,10 @@ def spread_score_to_reward(spread_score: float) -> float:
     `test_decomposition_sums_to_core_reward` 那條護欄會失去意義（它比的是未加權的
     分項和）。
     """
-    return SPREAD_REWARD_SCALE * (spread_score - SPREAD_RACK) / (SPREAD_REF - SPREAD_RACK)
+    reward = (
+        SPREAD_REWARD_SCALE * (spread_score - SPREAD_RACK) / (SPREAD_REF - SPREAD_RACK)
+    )
+    return min(reward, SPREAD_REWARD_MAX)
 
 
 def calculate_spread_score(

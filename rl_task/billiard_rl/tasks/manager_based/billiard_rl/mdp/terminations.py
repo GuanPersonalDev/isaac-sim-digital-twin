@@ -60,6 +60,43 @@ def balls_at_rest_mask(lin_vel: torch.Tensor, struck: torch.Tensor) -> torch.Ten
     return at_rest & struck
 
 
+def break_foul_decided_mask(
+    first_contact: torch.Tensor, struck: torch.Tensor
+) -> torch.Tensor:
+    """`(num_envs,)` bool：這一局的開球犯規結果**已經確定**，不必再等球停。
+
+    first_contact: `(num_envs,)` long，母球第一顆碰到的球，-1 = 目前還沒碰到
+    struck: `(num_envs,)` 該 env 這一局是否已經擊過球
+
+    `evaluate_break_foul()` 在 `first_contacted_ball_id != 1` 這個分支直接
+    short-circuit 回傳 `(-1.5, should_reset=True)`，**完全不看進袋與顆星**，
+    而 `calculate_reward()` 在 `should_reset` 時只回傳罰分、其餘三項歸零。所以
+    只要首次接觸已經確定且不是 1 號球，整局的 reward 就已經定了——繼續模擬
+    5~10 秒只是把算力花在等一個已知的結果停下來，而「首次接觸不是 1 號球」
+    在早期訓練是最常見的結果。
+
+    ⚠️ `first_contact == -1`（整局沒碰到任何球）**不能**放進來：那是「還沒碰到」
+       與「永遠不會碰到」的同一個值，要等球全停才分得出來，交給
+       `all_balls_at_rest()`。
+    """
+    return struck & (first_contact > 0) & (first_contact != 1)
+
+
+def break_foul_decided(
+    env: ManagerBasedRLEnv,
+    action_term_name: str = "strike",
+) -> torch.Tensor:
+    """DoneTerm 進入點：開球犯規已確定 → 提前終止。
+
+    ⚠️ 這個 term 與 `mdp/rewards.py` 的結算 gate 是**綁在一起的**：
+       `_compute_breakdown()` 必須同樣接受 `break_foul_decided` 的 env，否則
+       episode 提前結束但 reward 從未結算，那 -1.5 永遠不會被支付——policy 會
+       學到「隨便亂打可以免費跳過這一局」，比不做早停還糟。
+    """
+    strike_term = env.action_manager.get_term(action_term_name)
+    return break_foul_decided_mask(strike_term.first_contact, strike_term.struck)
+
+
 def all_balls_at_rest(
     env: ManagerBasedRLEnv,
     action_term_name: str = "strike",

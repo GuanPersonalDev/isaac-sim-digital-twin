@@ -3,10 +3,15 @@ import math
 import pytest
 
 from core.services.break_shot_position_provider import BREAK_SHOT_POSITIONS
+from core.services.cue_ball_pocketed_penalty_calculator import (
+    CUE_BALL_POCKETED_PENALTY,
+)
 from core.services.spread_score_calculator import (
     SPREAD_RACK,
     SPREAD_REF,
+    SPREAD_REWARD_MAX,
     SPREAD_REWARD_SCALE,
+    SPREAD_SCORE_AT_REWARD_MAX,
     TABLE_LENGTH,
     TABLE_WIDTH,
     calculate_spread_score,
@@ -221,7 +226,21 @@ class TestSpreadScoreToReward:
         # Assert
         assert spread_score_to_reward(SPREAD_REF) == pytest.approx(SPREAD_REWARD_SCALE)
 
-    def test_reward_is_strictly_increasing_in_spread_score(self):
+    def test_reward_is_strictly_increasing_below_the_clamp(self):
+        # 夾制起點以下必須每一分都算數——policy 要學得到「更散一點更好」。
+        # Arrange
+        ascending = [0.0, SPREAD_RACK, SPREAD_REF, 0.08, 0.1]
+        assert max(ascending) < SPREAD_SCORE_AT_REWARD_MAX
+
+        # Act
+        rewards = [spread_score_to_reward(score) for score in ascending]
+
+        # Assert
+        assert rewards == sorted(rewards)
+        assert len(set(rewards)) == len(rewards)
+
+    def test_reward_is_non_decreasing_across_the_whole_domain(self):
+        # 夾制起點以上是刻意的平坦區（安全網），所以整體只保證單調不減。
         # Arrange
         ascending = [0.0, SPREAD_RACK, SPREAD_REF, 0.1, 0.5, 1.0]
 
@@ -230,7 +249,6 @@ class TestSpreadScoreToReward:
 
         # Assert
         assert rewards == sorted(rewards)
-        assert len(set(rewards)) == len(rewards)
 
     def test_best_reachable_break_stays_below_the_cue_scratch_penalty(self):
         # 兩輪 RunPod 實測最大值是 0.10395。上修到 0.11 作為護欄後，reward
@@ -245,3 +263,40 @@ class TestSpreadScoreToReward:
 
         # Assert
         assert reward < cue_scratch_penalty_magnitude
+
+
+class TestSpreadRewardClamp:
+    """#123 review：上限夾制，避免 policy 學成「打得夠散就可以順便 scratch」。"""
+
+    def test_clamp_stays_strictly_below_the_cue_scratch_penalty(self):
+        # 這是夾制存在的唯一理由。不變量其實是「跨度 < |scratch|」，而 f 單調
+        # 遞增、下界是 rack 的 0.0，所以跨度等於上界。
+        # Assert
+        assert SPREAD_REWARD_MAX < abs(CUE_BALL_POCKETED_PENALTY)
+
+    def test_theoretical_maximum_score_is_clamped(self):
+        # 未夾制時 raw=1.0 會換算成約 +32.7，遠超過 scratch 的 -3.5。
+        # Assert
+        assert spread_score_to_reward(1.0) == pytest.approx(SPREAD_REWARD_MAX)
+
+    def test_clamp_threshold_is_the_score_where_reward_reaches_the_maximum(self):
+        # SPREAD_SCORE_AT_REWARD_MAX 是給 verify_spread_ref.py 判斷「夾制有沒有
+        # 咬到」用的——夾制之後不能再用 `reward < 3.5` 判定，那會恆為真。
+        # Assert
+        assert spread_score_to_reward(SPREAD_SCORE_AT_REWARD_MAX) == pytest.approx(
+            SPREAD_REWARD_MAX
+        )
+        assert spread_score_to_reward(
+            SPREAD_SCORE_AT_REWARD_MAX * 0.99
+        ) < SPREAD_REWARD_MAX
+
+    def test_measured_maximum_still_has_headroom_below_the_clamp(self):
+        # 兩輪 RunPod 實測最大值 0.10395 尚未頂到夾制起點。餘裕只有約 10%——
+        # 訓練後的 policy 打得比控制式開球更好是預期中的事，這條測試在餘裕
+        # 消失時會失敗，那就是重跑 verify_spread_ref.py 重新錨定的訊號。
+        # Arrange
+        measured_max_raw_spread = 0.10395
+
+        # Assert
+        assert measured_max_raw_spread < SPREAD_SCORE_AT_REWARD_MAX
+        assert spread_score_to_reward(measured_max_raw_spread) < SPREAD_REWARD_MAX

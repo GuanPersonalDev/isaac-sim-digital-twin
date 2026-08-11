@@ -10,6 +10,8 @@ __all__ = [
     "decay_velocities",
     "all_balls_at_rest",
     "balls_at_rest_mask",
+    "break_foul_decided",
+    "break_foul_decided_mask",
     "break_shot_positions",
     "reset_break_shot_layout",
     "decompose_reward",
@@ -39,4 +41,9 @@ from .shot_tracking import (
     detect_rail_contact,
     update_first_contact,
 )
-from .terminations import all_balls_at_rest, balls_at_rest_mask
+from .terminations import (
+    all_balls_at_rest,
+    balls_at_rest_mask,
+    break_foul_decided,
+    break_foul_decided_mask,
+)

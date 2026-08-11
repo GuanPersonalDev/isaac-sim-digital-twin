@@ -267,6 +267,15 @@ class TerminationsCfg:
 
     balls_at_rest: DoneTerm = DoneTerm(func=mdp.all_balls_at_rest)
 
+    # 首次接觸確定且不是 1 號球 → -1.5 且其餘各項歸零，結果已定，不必等球停
+    # （#123 review）。這在早期訓練是最常見的結果，等落定等於每局白燒 5~10 秒
+    # 物理。**不是 time_out**：回報是完整的，不該被 value function bootstrap。
+    #
+    # ⚠️ 與 mdp/rewards.py 的 `_compute_breakdown()` gate 綁在一起，兩邊必須
+    #    同進同出——只加這個 term 而不放行 reward 結算的話，-1.5 永遠不會被
+    #    支付，policy 會學到「隨便亂打可以免費跳過這一局」。
+    break_foul: DoneTerm = DoneTerm(func=mdp.break_foul_decided)
+
     time_out: DoneTerm = DoneTerm(func=mdp.time_out, time_out=True)
 
 ##
