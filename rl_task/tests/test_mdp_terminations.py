@@ -34,6 +34,7 @@ from billiard_rl.tasks.manager_based.billiard_rl.mdp.terminations import (  # no
 )
 from core.ports.rigid_body_api import RigidBodyAPI  # noqa: E402
 from core.services.ball_motion_monitor import BallMotionMonitor  # noqa: E402
+from core.services.aim_shaping_calculator import AIM_REWARD_SCALE  # noqa: E402
 from core.services.break_foul_evaluator import (  # noqa: E402
     FIRST_CONTACT_FOUL_PENALTY,
 )
@@ -272,7 +273,39 @@ def test_early_terminated_env_still_gets_paid_the_foul_penalty(ball_id: int):
         "cue_scratch": 0.0,
         "foul": FIRST_CONTACT_FOUL_PENALTY,
         "nine_ball": 0.0,
+        # 沒帶 closest_approach → inf → 塑形 0 分（#124）。
+        "aim": 0.0,
     }
+
+
+@pytest.mark.parametrize("ball_id", [2, 5, 9])
+def test_early_terminated_env_still_gets_paid_the_aim_shaping(ball_id: int):
+    """提前終止的 env 也必須拿到 dense shaping（#124）。
+
+    這是同一組跨模組耦合的另一半：`break_foul_decided` 讓犯規的局在第 1 步
+    就結算，而犯規正是訓練初期的壓倒性多數。塑形若沒有跟著在這條路徑上支付，
+    它就只會發給已經打好的那少數幾局——等於完全沒有把 policy 拉出平原的作用，
+    而且不會報錯。
+
+    ⚠️ aim 的值在此刻已經定案：它記的是**首次接觸之前**的最小間距，而首次
+       接觸已經發生，之後不再更新。所以球還在飛也不影響正確性。
+    """
+    mid_flight_xy = [(0.1 * i, -0.2 * i) for i in range(_BALL_COUNT)]
+
+    components = evaluate_shot(
+        mid_flight_xy,
+        [-1] * _BALL_COUNT,
+        [False] * _BALL_COUNT,
+        ball_id,
+        closest_approach=0.0,
+    )
+
+    assert components["foul"] == FIRST_CONTACT_FOUL_PENALTY
+    assert components["aim"] == pytest.approx(AIM_REWARD_SCALE)
+    # 其餘三項仍然歸零——塑形是額外加的，不是把 should_reset 分支打開。
+    assert components["spread"] == 0.0
+    assert components["cue_scratch"] == 0.0
+    assert components["nine_ball"] == 0.0
 
 
 def test_legal_break_still_computes_the_real_spread():
