@@ -27,8 +27,14 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         activation="elu",
         obs_normalization=False,
         # init_std=1.0 在正規化域 [-1, 1] 上等於「幾乎均勻亂打」：對 shot_angle
-        # （物理域 [0, 360)）而言探索標準差是 ±180 度。#123 的 800 局實測沒有
+        # （物理域 [-180, 180)）而言探索標準差是 ±180 度。#123 的 800 局實測沒有
         # 任何一局合法開球，主因不是 reward 而是根本瞄不準。
+        #
+        # ⚠️ 0.4 仍然遠大於瞄準的容錯窗口：母球到 1 號球 1.5875 m，接觸只容許
+        #    側向 2R，換算角度僅 ±2.062°，正規化域上是 ±0.0115——init_std=0.4
+        #    的探索半寬是 ±72°，命中質量比只有約 2.9%。#231 已把區間端點搬正
+        #    （normalized 0 現在是正對球堆，不再是背對），但**解析度沒有改善**；
+        #    是否為 Milestone A 收窄 SHOT_ANGLE 見 #231 的問題 2。
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.4),
     )
     critic = RslRlMLPModelCfg(

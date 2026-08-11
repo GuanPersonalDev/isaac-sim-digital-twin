@@ -24,6 +24,18 @@ _PLACEMENT_X, _PLACEMENT_Y, _SHOT_ANGLE, _SPEED, _OFFSET_V, _OFFSET_H = range(
 _ANGLE_PERIOD = 360.0
 
 
+def _wrap_angle(angle: float) -> float:
+    """把任意角度折回 `SHOT_ANGLE` 的半開區間，目前是 `[-180, 180)`。
+
+    ⚠️ 週期固定取 360.0 而**不是**從 `ACTION_BOUNDS` 的區間寬度推導：兩者現在
+    恰好相等，但若之後為了改善瞄準解析度把 `SHOT_ANGLE` 收窄（#231 問題 2），
+    區間寬度會變成 60 之類的值，用它當週期就會把 45° 折成完全不同的方向。
+    圓的週期永遠是 360，區間下界只決定折回哪一圈。
+    """
+    low, _ = ACTION_BOUNDS[_SHOT_ANGLE]
+    return (angle - low) % _ANGLE_PERIOD + low
+
+
 def decode_rl_action(
     raw_action: list[float],
     max_offset: float,
@@ -72,11 +84,11 @@ def decode_rl_action(
 
     return Action(
         cue_ball_placement=[physical[_PLACEMENT_X], physical[_PLACEMENT_Y]],
-        # 物理域是半開區間 [0, 360)，但 ACTION_BOUNDS 的 high 記為週期
-        # 360.0（gymnasium 的 Box 只能表達閉區間）。這裡統一收回，否則 +1
-        # 會還原成 360.0 —— 與 0.0 同方向卻是不同數值，兩端各自處理就會在
-        # 邊界靜默不一致。
-        shot_angle=physical[_SHOT_ANGLE] % _ANGLE_PERIOD,
+        # 物理域是半開區間 [-180, 180)，但 ACTION_BOUNDS 的 high 記為 180.0
+        # （gymnasium 的 Box 只能表達閉區間）。這裡統一折回，否則 +1 會還原成
+        # 180.0 —— 與 -180.0 同方向卻是不同數值，兩端各自處理就會在邊界
+        # 靜默不一致。
+        shot_angle=_wrap_angle(physical[_SHOT_ANGLE]),
         cue_ball_speed=physical[_SPEED],
         position_offset=[physical[_OFFSET_V], physical[_OFFSET_H]],
         should_execute_action=should_execute_action,
@@ -90,12 +102,12 @@ def normalize_action(action: Action) -> list[float]:
     開球、人工調參）換算成「policy 該輸出什麼」。
 
     本函式是公開介面，呼叫者不保證 `Action` 來自 `decode_rl_action`，因此
-    驗證強度與 decode 對等；角度也要先收週期，否則外部傳入的 370° 會算出
-    1.055，越出正規化域。
+    驗證強度與 decode 對等；角度也要先折回區間，否則外部傳入的 270° 會算出
+    1.5，越出正規化域。
     """
     physical = [
         *validate_2d_value(action.cue_ball_placement, "cue_ball_placement"),
-        validate_finite_number(action.shot_angle, "shot_angle") % _ANGLE_PERIOD,
+        _wrap_angle(validate_finite_number(action.shot_angle, "shot_angle")),
         validate_finite_number(action.cue_ball_speed, "cue_ball_speed"),
         *validate_2d_value(action.position_offset, "position_offset"),
     ]

@@ -8,6 +8,7 @@ from core.models.action_bounds import (
     ACTION_DIM,
     ACTION_HIGH,
     ACTION_LOW,
+    SHOT_ANGLE,
 )
 from core.services.rl_action_decoder import decode_rl_action, normalize_action
 
@@ -150,22 +151,22 @@ class TestDenormalization:
 
 
 class TestShotAngleWrap:
-    def test_upper_bound_wraps_to_zero(self):
-        # 物理域是半開區間 [0, 360)。ACTION_BOUNDS 的 high 記為週期 360.0，
-        # 必須由反正規化尾端收回，否則 +1 會還原成 360.0 —— 與 0.0 同方向
+    def test_upper_bound_wraps_to_the_lower_bound(self):
+        # 物理域是半開區間 [-180, 180)。ACTION_BOUNDS 的 high 記為 180.0，
+        # 必須由反正規化尾端折回，否則 +1 會還原成 180.0 —— 與 -180.0 同方向
         # 卻是不同數值，兩端各自處理就會在邊界靜默不一致。
         # Act
         action = decode_rl_action(_unit_vector(_SHOT_ANGLE, 1.0), 1.0)
 
         # Assert
-        assert action.shot_angle == pytest.approx(0.0)
+        assert action.shot_angle == pytest.approx(SHOT_ANGLE[0])
 
     def test_value_just_below_the_upper_bound_is_not_wrapped(self):
         # Act
         action = decode_rl_action(_unit_vector(_SHOT_ANGLE, 0.99), 1.0)
 
         # Assert
-        assert action.shot_angle == pytest.approx(_ANGLE_PERIOD * 0.995)
+        assert action.shot_angle == pytest.approx(SHOT_ANGLE[1] * 0.99)
 
     @pytest.mark.parametrize("normalized", [-1.0, -0.5, 0.0, 0.5, 1.0, 2.0])
     def test_result_always_stays_in_the_half_open_interval(
@@ -175,7 +176,31 @@ class TestShotAngleWrap:
         action = decode_rl_action(_unit_vector(_SHOT_ANGLE, normalized), 1.0)
 
         # Assert
-        assert 0.0 <= action.shot_angle < _ANGLE_PERIOD
+        assert SHOT_ANGLE[0] <= action.shot_angle < SHOT_ANGLE[0] + _ANGLE_PERIOD
+
+    def test_neutral_action_aims_straight_at_the_rack(self):
+        # #231 的核心：Gaussian policy 的初始輸出集中在 normalized 0，那個值
+        # 必須對應「正對球堆」（0° 朝桌台 +Y）。舊區間 (0, 360) 會還原成
+        # 180°——未訓練的 policy 預設把母球往 kitchen 底庫打。
+        # Act
+        action = decode_rl_action(_unit_vector(_SHOT_ANGLE, 0.0), 1.0)
+
+        # Assert
+        assert action.shot_angle == pytest.approx(0.0)
+
+    @pytest.mark.parametrize(
+        ("physical_angle", "equivalent_angle"),
+        [(270.0, -90.0), (359.0, -1.0), (180.0, -180.0), (-370.0, -10.0)],
+    )
+    def test_out_of_interval_angles_fold_to_the_same_direction(
+        self, physical_angle: float, equivalent_angle: float
+    ):
+        # 週期固定是 360，不是區間寬度。normalize_action 是公開介面，外部
+        # 傳進來的角度不保證已經折過。
+        # Assert
+        assert normalize_action(
+            _action(shot_angle=physical_angle)
+        ) == pytest.approx(normalize_action(_action(shot_angle=equivalent_angle)))
 
 
 class TestClampRunsBeforeDenormalization:
@@ -320,14 +345,14 @@ class TestRoundTrip:
         assert restored.position_offset == pytest.approx(action.position_offset)
 
     def test_angle_upper_bound_round_trips_to_the_same_direction(self):
-        # +1 還原成 0°，再正規化回去是 -1 —— 數值不同、方向相同。往返在
-        # 這一維只能斷言方向等價。
+        # +1 還原成 -180°（= +180°，背對球堆），再正規化回去是 -1 —— 數值
+        # 不同、方向相同。往返在這一維只能斷言方向等價。
         # Act
         action = decode_rl_action(_unit_vector(_SHOT_ANGLE, 1.0), 1.0)
         recovered = normalize_action(action)
 
         # Assert
-        assert action.shot_angle == pytest.approx(0.0)
+        assert action.shot_angle == pytest.approx(SHOT_ANGLE[0])
         assert recovered[_SHOT_ANGLE] == pytest.approx(-1.0)
 
 
@@ -351,13 +376,14 @@ class TestNormalizeActionInputContract:
         with pytest.raises(ValueError):
             normalize_action(_action(cue_ball_speed=non_finite_value))
 
-    @pytest.mark.parametrize("shot_angle", [360.0, 370.0, -10.0])
+    @pytest.mark.parametrize("shot_angle", [360.0, 370.0, -10.0, 270.0, -270.0])
     def test_wraps_shot_angle_into_the_normalized_domain(
         self, shot_angle: float
     ):
-        # core-review finding 2：decode 尾端有 % 360.0，反向沒有。傳入
-        # 370.0 會算出 1.055...，越出 [-1, 1]，下游若做 Box.contains()
-        # 檢查會是未定義行為。
+        # core-review finding 2：decode 尾端有折回，反向沒有。傳入 370.0
+        # 會算出越界值，下游若做 Box.contains() 檢查會是未定義行為。
+        # #231 之後區間變成 [-180, 180)，270.0 是新增的越界案例——若沿用
+        # 舊的 `% 360` 會得到 270 → 正規化 1.5。
         # Act
         recovered = normalize_action(_action(shot_angle=shot_angle))
 
@@ -385,7 +411,12 @@ def _midpoint(index: int) -> float:
 
 def _expected_endpoint(index: int, sign: float) -> float:
     bound = ACTION_HIGH[index] if sign > 0 else ACTION_LOW[index]
-    return bound % _ANGLE_PERIOD if index == _SHOT_ANGLE else bound
+    if index != _SHOT_ANGLE:
+        return bound
+    # 角度是半開區間 [SHOT_ANGLE[0], SHOT_ANGLE[0] + 360)，兩個端點是同一個
+    # 方向，都會被折到下界那一圈。不能寫成 `bound % 360`——Python 的 % 對
+    # 負數取正餘數，-180 會變成 +180，正好折反邊。
+    return (bound - SHOT_ANGLE[0]) % _ANGLE_PERIOD + SHOT_ANGLE[0]
 
 
 def _assert_other_fields_stay_at_midpoint(action: Action, index: int) -> None:

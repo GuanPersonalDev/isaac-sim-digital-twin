@@ -135,13 +135,16 @@ def _controlled_actions(env: ManagerBasedRLEnv) -> torch.Tensor:
     actions[:, 0] = x_jitter / ((x_high - x_low) / 2.0)
     actions[:, 1] = _normalize(BREAK_SHOT_POSITIONS[0][1], 1)
 
-    # 0° 是正規化域的 -1 邊界；360°（同方向）是 +1。兩側各取一半，避免
-    # 只測角度邊界的單側誤差。jitter magnitude 均勻分布於 [0, limit]。
-    magnitude = torch.rand(env.num_envs, device=env.device) * args_cli.angle_jitter_deg
-    near_zero = -1.0 + magnitude / 180.0
-    near_360 = 1.0 - magnitude / 180.0
-    choose_zero_side = torch.rand(env.num_envs, device=env.device) < 0.5
-    actions[:, _ANGLE_INDEX] = torch.where(choose_zero_side, near_zero, near_360)
+    # #231 之後 SHOT_ANGLE 是 (-180, 180)，0°（正對球堆）就是正規化域的 0.0。
+    # 原本必須從 -1 與 +1 兩端各取一半樣本才能涵蓋 0° 附近——那個 workaround
+    # 正是 #231 的證據，區間端點搬正之後可以直接對稱取樣。
+    #
+    # 分布與舊版等價（舊版是 ±U[0, limit]，這裡是 U[-limit, limit]），所以
+    # 本次量到的 spread 統計可以直接與 2026-08-11 的校準結果對照。
+    jitter_deg = (
+        torch.rand(env.num_envs, device=env.device) * 2.0 - 1.0
+    ) * args_cli.angle_jitter_deg
+    actions[:, _ANGLE_INDEX] = jitter_deg / ((ACTION_BOUNDS[_ANGLE_INDEX][1] - ACTION_BOUNDS[_ANGLE_INDEX][0]) / 2.0)
 
     actions[:, _SPEED_INDEX] = args_cli.normalized_speed
     return actions
