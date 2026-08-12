@@ -130,6 +130,49 @@ cd C:\Users\Kuan\isaac-project\IsaacLab
 `--num_envs 4` 只是方便一次看多顆球的擺位/角度變化，不影響 policy 本身；改成 1
 也可以。視窗跳出來後就是即時物理模擬，Ctrl+C 結束。
 
+## 對應 Issue 完成標準核對（#124／#125／#126）
+
+回頭核對 GitHub Issue，本次本機訓練連帶把三張卡的完成標準都補齊了：
+
+| Issue | 完成標準 | 狀態 |
+|---|---|---|
+| **#124** [9-5] 單環境訓練跑通確認 | 訓練迴路啟動無錯誤 | ✓ |
+| | reward 曲線有數值變化（非固定值） | ✓（−1.59 → +0.5 附近） |
+| **#125** [9-6] reward 曲線上升趨勢 | 訓練 N 步後 reward 平均值明顯高於初始 | ✓ |
+| | 訓練曲線截圖留存 | ✓ `models/rl/billiard/run_2026-08-12_training_curve.png` |
+| **#126** [9-7] 模型儲存並可載入推論 | 模型儲存完成（checkpoint 格式） | ✓ `model_0.pt` / `model_200.pt`（rsl_rl），另有 TorchScript／ONNX 匯出 |
+| | 載入後能正確執行推論（輸入 observation，輸出 action） | ✓ 見下方獨立驗證 |
+
+### #126 的獨立推論驗證
+
+不只是「`play` 沒有報錯」這種間接證據，額外做了一次單獨載入 TorchScript 並手動餵觀測的測試：
+
+```python
+import torch
+policy = torch.jit.load("models/rl/billiard/iter200/policy.pt")
+policy.eval()
+obs = torch.zeros(1, 21)
+obs[0, -1] = 0.6  # max_offset，合法範圍 [0,1]
+action = policy(obs)
+```
+
+輸出：
+
+```
+input  obs shape   : (1, 21)
+output action shape: (1, 6)
+output action values: [-0.0403, 0.3385, -0.0060, 0.6063, 0.6712, 0.0783]
+```
+
+21 維觀測進、6 維動作出，形狀與訓練設定的 `ObservationsCfg`／`ActionsCfg` 完全吻合。
+（提醒：這裡印出的是模型的**原始**輸出，無界、未裁切——真正要用於執行時必須先過
+`core.services.rl_action_decoder.decode_rl_action()`，見 `models/rl/billiard/README.md`。）
+
+### 訓練曲線圖
+
+`models/rl/billiard/run_2026-08-12_training_curve.png`——`mean_reward`／`spread x20`／
+`aim x20` 三條曲線，標出 it=100 檢查點與 it=200 決策點。
+
 ## 已知限制／後續
 
 - **`ModelController` 本身尚未實作**（backlog #127）。這次只把「訓練完的模型」放進

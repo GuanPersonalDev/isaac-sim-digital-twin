@@ -15,6 +15,7 @@
 | `iter0/` | iteration 0（隨機初始化，訓練前）匯出的 policy，僅供對照回放用 |
 | `iter200/` | iteration 200（收斂）匯出的 policy，與頂層 `policy.pt` 相同 |
 | `run_2026-08-12_metrics.csv` | 整輪 TensorBoard scalar 原始值（未縮放），212 個 iteration |
+| `run_2026-08-12_training_curve.png` | 訓練曲線圖（mean_reward／spread／aim），標出 it=100／200 檢查點 |
 
 `policy.pt` 是 TorchScript 格式，`policy.onnx`／`policy.onnx.data` 是 ONNX 格式（batch size
 固定為 1）。两者都是從 rsl_rl 的 `model_0.pt` / `model_200.pt`（含 optimizer state，只有
