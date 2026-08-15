@@ -9,7 +9,12 @@
 """
 
 from ..models.action import Action
-from ..models.action_bounds import ACTION_BOUNDS, ACTION_DIM
+from ..models.action_bounds import (
+    ACTION_BOUNDS,
+    ACTION_CENTER,
+    ACTION_DIM,
+    ACTION_HALF_SPAN,
+)
 from .numeric_validation import (
     validate_2d_value,
     validate_finite_number,
@@ -157,15 +162,9 @@ def _denormalize(value: float, index: int) -> float:
     相消（x = 0.1 會算出 0.05000000000000004），兩軸誤差不對稱就會把圓
     壓歪。代價是端點不再位元精確，比較時用近似值。
     """
-    low, high = ACTION_BOUNDS[index]
-    center = (high + low) / 2.0
-    half_span = (high - low) / 2.0
-    return center + value * half_span
+    return ACTION_CENTER[index] + value * ACTION_HALF_SPAN[index]
 
 
 def _normalize(value: float, index: int) -> float:
     """第 index 維的物理域 → 正規化域 `[-1, 1]`，`_denormalize` 的反函式。"""
-    low, high = ACTION_BOUNDS[index]
-    center = (high + low) / 2.0
-    half_span = (high - low) / 2.0
-    return (value - center) / half_span
+    return (value - ACTION_CENTER[index]) / ACTION_HALF_SPAN[index]

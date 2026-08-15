@@ -71,9 +71,18 @@ import billiard_rl.tasks.manager_based.billiard_rl.mdp.rewards as reward_module 
 from billiard_rl.tasks.manager_based.billiard_rl.billiard_rl_env_cfg import (  # noqa: E402
     BilliardRlEnvCfg,
 )
-from core.models.action_bounds import ACTION_BOUNDS, ACTION_DIM  # noqa: E402
+from core.models.action import Action  # noqa: E402
+from core.models.action_bounds import (  # noqa: E402
+    ACTION_CENTER,
+    ACTION_DIM,
+    ACTION_HALF_SPAN,
+)
 from core.services.break_shot_position_provider import (  # noqa: E402
     BREAK_SHOT_POSITIONS,
+)
+from core.services.rl_action_decoder import (  # noqa: E402
+    decode_rl_action,
+    normalize_action,
 )
 from core.services.pocket_geometry import POCKET_POSITIONS  # noqa: E402
 from core.services.spread_score_calculator import (  # noqa: E402
@@ -117,23 +126,39 @@ class ShotAudit:
         )
 
 
-def _normalize(value: float, index: int) -> float:
-    low, high = ACTION_BOUNDS[index]
-    return (value - (high + low) / 2.0) / ((high - low) / 2.0)
+def _base_normalized_action() -> list[float]:
+    """控制式開球的物理描述 → 正規化域，換算走 `core` 的 `normalize_action()`。
+
+    物理域與正規化域的換算全庫只有 `core/services/rl_action_decoder.py` 一份
+    （#228）。本腳本原本自己抄了一份 `(value - center) / half_span`，兩份實作
+    在動作空間改動時只會有一邊跟著改，而換算漂移不報錯。
+
+    只有母球擺位 Y 真的需要換算（break position 是物理座標）。X 取動作空間
+    中心、角度取 0°（正對球堆），兩者的正規化值都是 0，jitter 直接疊上去。
+    """
+    return normalize_action(
+        Action(
+            cue_ball_placement=[ACTION_CENTER[0], BREAK_SHOT_POSITIONS[0][1]],
+            shot_angle=0.0,
+            cue_ball_speed=_physical_speed(args_cli.normalized_speed),
+            position_offset=[0.0, 0.0],
+            should_execute_action=True,
+        )
+    )
 
 
 def _controlled_actions(env: ManagerBasedRLEnv) -> torch.Tensor:
     """產生最大速度、零偏移、對準 1 號球附近的控制式開球。"""
-    actions = torch.zeros(
-        (env.num_envs, ACTION_DIM), device=env.device, dtype=torch.float32
-    )
+    actions = torch.tensor(
+        _base_normalized_action(), device=env.device, dtype=torch.float32
+    ).expand(env.num_envs, ACTION_DIM).clone()
 
     x_jitter = (
         torch.rand(env.num_envs, device=env.device) * 2.0 - 1.0
     ) * args_cli.placement_jitter_m
-    x_low, x_high = ACTION_BOUNDS[0]
-    actions[:, 0] = x_jitter / ((x_high - x_low) / 2.0)
-    actions[:, 1] = _normalize(BREAK_SHOT_POSITIONS[0][1], 1)
+    # jitter 是物理域的**增量**，除以半幅就換算成正規化域的增量。引用常數而不
+    # 是就地從 ACTION_BOUNDS 重算，理由同 `_base_normalized_action()`。
+    actions[:, 0] += x_jitter / ACTION_HALF_SPAN[0]
 
     # #231 之後 SHOT_ANGLE 是 (-180, 180)，0°（正對球堆）就是正規化域的 0.0。
     # 原本必須從 -1 與 +1 兩端各取一半樣本才能涵蓋 0° 附近——那個 workaround
@@ -144,16 +169,23 @@ def _controlled_actions(env: ManagerBasedRLEnv) -> torch.Tensor:
     jitter_deg = (
         torch.rand(env.num_envs, device=env.device) * 2.0 - 1.0
     ) * args_cli.angle_jitter_deg
-    actions[:, _ANGLE_INDEX] = jitter_deg / ((ACTION_BOUNDS[_ANGLE_INDEX][1] - ACTION_BOUNDS[_ANGLE_INDEX][0]) / 2.0)
+    actions[:, _ANGLE_INDEX] += jitter_deg / ACTION_HALF_SPAN[_ANGLE_INDEX]
 
+    # CLI 給的本來就是正規化域的值，直接寫入不經換算——速度是掃描的主要變因，
+    # 不讓它多繞一次物理域 round-trip 的浮點誤差。
     actions[:, _SPEED_INDEX] = args_cli.normalized_speed
     return actions
 
 
 def _physical_speed(normalized_speed: float) -> float:
-    """正規化域 → m/s，寫進結果檔讓掃描表直接可讀。"""
-    low, high = ACTION_BOUNDS[_SPEED_INDEX]
-    return (high + low) / 2.0 + normalized_speed * (high - low) / 2.0
+    """正規化域 → m/s，寫進結果檔讓掃描表直接可讀。
+
+    走 `core` 的還原函式，與訓練端 ActionTerm、Demo 端 ModelController 同一份
+    （#228）。`max_offset` 給 1.0 不影響結果：本向量的偏移兩維都是 0。
+    """
+    vector = [0.0] * ACTION_DIM
+    vector[_SPEED_INDEX] = normalized_speed
+    return decode_rl_action(vector, 1.0).cue_ball_speed
 
 
 def _raw_spread(

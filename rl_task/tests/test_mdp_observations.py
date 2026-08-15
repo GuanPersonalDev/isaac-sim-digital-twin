@@ -18,8 +18,9 @@
 
 （`pytest` 沒有的話：`/workspace/IsaacLab/isaaclab.sh -p -m pip install pytest`）
 
-本檔不啟動 Kit app、不建場景，也不 import isaaclab——`encode_ball_positions()`
-是純張量函式，餵造出來的資料就能驗。跑一次約 1 秒，不需要 GPU。
+本檔不啟動 Kit app、不建場景，也不 import isaaclab。`encode_ball_positions()`
+是純張量函式；`ball_positions()` 是 ObsTerm 入口，用 stub 的 scene /
+action_manager 餵已知球位就能驗（#228）。跑一次約 1 秒，不需要 GPU。
 
 ---
 
@@ -40,6 +41,7 @@ pytest.importorskip("torch", reason="本機無 torch，本檔只在 pod 上跑")
 import torch  # noqa: E402
 
 from billiard_rl.tasks.manager_based.billiard_rl.mdp.observations import (  # noqa: E402
+    ball_positions,
     encode_ball_positions,
 )
 from core.models.observation import Observation  # noqa: E402
@@ -258,3 +260,137 @@ def test_accepts_column_shaped_max_offset():
     column = encode_ball_positions(pos_w, origins, offsets.reshape(-1, 1))
 
     assert torch.equal(flat, column)
+
+
+##
+# ObsTerm 入口（#228）
+##
+# 上面的對拍只涵蓋 `encode_ball_positions()`。訓練端實際被 ObsTerm 呼叫的是
+# `ball_positions()`，它在共用函式之外還多做兩件取值：
+#
+#   1. `balls.data.body_link_pos_w.torch`（不是 deprecated 的 `object_pos_w`）
+#   2. `env.action_manager.get_term(...).max_offset`（權威 buffer，#122）
+#
+# 這兩行取錯不會報錯——`object_pos_w` 在 3.0 還在、只是標記 deprecated；
+# `max_offset[0]` 廣播給全部 env 形狀也對。對拍測不到入口，所以這裡用 stub
+# 把取值接起來。不建 ManagerBasedRLEnv、不 import isaaclab。
+
+
+class _WarpTensor:
+    """Isaac Lab 3.0 的 data property 回傳 warp 包裝，必須再取 `.torch`。"""
+
+    def __init__(self, tensor: torch.Tensor) -> None:
+        self.torch = tensor
+
+
+class _BallData:
+    def __init__(self, pos_w: torch.Tensor, decoy_pos_w: torch.Tensor) -> None:
+        self.body_link_pos_w = _WarpTensor(pos_w)
+        # 故意給不同的值：入口若退回 object_pos_w，對拍會失敗。
+        self.object_pos_w = _WarpTensor(decoy_pos_w)
+
+
+class _Scene(dict):
+    def __init__(self, balls: object, env_origins: torch.Tensor) -> None:
+        super().__init__(balls=balls)
+        self.env_origins = env_origins
+
+
+class _ActionManager:
+    def __init__(self, terms: dict[str, object]) -> None:
+        self._terms = terms
+
+    def get_term(self, name: str) -> object:
+        return self._terms[name]
+
+
+class _StubEnv:
+    """只實作 `ball_positions()` 會碰到的屬性，形狀與真實 env 對齊。"""
+
+    def __init__(
+        self,
+        pos_w: torch.Tensor,
+        origins: torch.Tensor,
+        max_offset: torch.Tensor,
+    ) -> None:
+        decoy = pos_w + 99.0
+        self.scene = _Scene(type("Balls", (), {"data": _BallData(pos_w, decoy)})(), origins)
+        self.action_manager = _ActionManager(
+            {"strike": type("Term", (), {"max_offset": max_offset})()}
+        )
+
+
+def test_obs_term_entry_matches_encoder_and_core():
+    """入口輸出必須同時等於向量化編碼與 core 的純 Python 版。
+
+    這是 #228 訓練端 observation 路徑的最後一節：取值 → 向量化編碼 →
+    與 Demo 端同一份 `encode_rl_observation()` 對拍。
+    """
+    torch.manual_seed(4)
+    pos_w = torch.rand(4, _BALL_COUNT, 3, dtype=torch.float32) * 2.0 - 1.0
+    origins = torch.rand(4, 3, dtype=torch.float32) * 10.0 - 5.0
+    offsets = torch.tensor([0.0, 0.25, 0.75, 1.0], dtype=torch.float32)
+    env = _StubEnv(pos_w, origins, offsets)
+
+    actual = ball_positions(env)
+
+    assert actual.shape == (4, 21)
+    assert torch.equal(actual, encode_ball_positions(pos_w, origins, offsets))
+    assert torch.allclose(
+        actual.double(), _reference(pos_w, origins, offsets.tolist()), atol=_ATOL
+    )
+
+
+def test_obs_term_reads_per_env_max_offset_from_the_action_term():
+    """第 21 格必須是 ActionTerm 上那份 buffer，不是函式自己另取的值。
+
+    退回 `max_offset[0]` 或模組常數不會報錯，policy 看到的條件與實際裁切
+    半徑就對不上（#122）。
+    """
+    pos_w = torch.zeros(3, _BALL_COUNT, 3, dtype=torch.float32)
+    origins = torch.zeros(3, 3, dtype=torch.float32)
+    offsets = torch.tensor([0.1, 0.4, 0.9], dtype=torch.float32)
+
+    encoded = ball_positions(_StubEnv(pos_w, origins, offsets))
+
+    assert [float(encoded[i, 20]) for i in range(3)] == [0.1, 0.4, 0.9]
+
+
+def test_obs_term_reads_body_link_pos_w_not_object_pos_w():
+    """必須走 `body_link_pos_w.torch`。`object_pos_w` 在 3.0 還在，退回去不報錯。"""
+    torch.manual_seed(5)
+    pos_w = torch.rand(2, _BALL_COUNT, 3, dtype=torch.float32)
+    origins = torch.zeros(2, 3, dtype=torch.float32)
+    offsets = torch.full((2,), 0.5, dtype=torch.float32)
+    env = _StubEnv(pos_w, origins, offsets)
+
+    encoded = ball_positions(env)
+    via_body = encode_ball_positions(pos_w, origins, offsets)
+    via_object = encode_ball_positions(pos_w + 99.0, origins, offsets)
+
+    assert torch.equal(encoded, via_body)
+    assert not torch.allclose(encoded, via_object, atol=_ATOL)
+
+
+def test_obs_term_wrong_action_term_name_raises():
+    """名字打錯必須立刻 KeyError，不能靜默降級成常數或全 0。"""
+    env = _StubEnv(
+        torch.zeros(1, _BALL_COUNT, 3),
+        torch.zeros(1, 3),
+        torch.zeros(1),
+    )
+
+    with pytest.raises(KeyError):
+        ball_positions(env, action_term_name="not_strike")
+
+
+def test_obs_term_wrong_asset_name_raises():
+    """asset 名字打錯必須立刻 KeyError，不能靜默讀到別的剛體。"""
+    env = _StubEnv(
+        torch.zeros(1, _BALL_COUNT, 3),
+        torch.zeros(1, 3),
+        torch.zeros(1),
+    )
+
+    with pytest.raises(KeyError):
+        ball_positions(env, asset_name="not_balls")

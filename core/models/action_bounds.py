@@ -159,3 +159,10 @@ ACTION_BOUNDS = (
 
 ACTION_LOW = [low for low, _ in ACTION_BOUNDS]
 ACTION_HIGH = [high for _, high in ACTION_BOUNDS]
+
+# 中點式反正規化的兩個係數（見 `rl_action_decoder._denormalize`）。
+#
+# 需要換算尺度的呼叫端一律引用這兩個常數，**不要**自己從 ACTION_BOUNDS 重算
+# (high ± low) / 2——那就是第二份實作，而換算漂移不會報錯（#228）。
+ACTION_CENTER = [(low + high) / 2.0 for low, high in ACTION_BOUNDS]
+ACTION_HALF_SPAN = [(high - low) / 2.0 for low, high in ACTION_BOUNDS]
