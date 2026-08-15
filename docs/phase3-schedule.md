@@ -139,7 +139,7 @@
 | 9-5 | Block 9 | 單環境訓練跑通確認（確認 reward 有在變化）→ 啟動雲端背景訓練 | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-12 | 2026-08-09 | #124 |
 | 9-6 | Block 9 | 確認訓練過程中 reward 曲線有上升趨勢（訓練跑背景，此為監控判讀） | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-12 | 2026-08-15 | #125 |
 | 9-7 | Block 9 | 儲存訓練好的模型確認可以載入並執行推論 | 0.5h | M5: RL 訓練與多環境 | TRUE | 2026-08-12 | 2026-08-15 | #126 |
-| 9-C3 | Block 9 | 訓練成果取回流程（policy.pt / policy.onnx / env.yaml ＋ 中間 checkpoint 的 TorchScript ＋ TensorBoard event 檔） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #226 |
+| 9-C3 | Block 9 | 訓練成果取回流程（policy.pt / policy.onnx / env.yaml ＋ 中間 checkpoint 的 TorchScript ＋ TensorBoard event 檔） | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-15 | 2026-08-15 | #226 |
 | 9-8 | Block 9 | 實作 ModelController（載入 TorchScript exported/policy.pt，normalizer 已內建） | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #127 |
 | 9-C4 | Block 9 | core/ 共用層兩端呼叫路徑一致性測試（訓練端 vs Demo 端輸出一致、無重複實作）【拆分自 #225，需 #121/#122/#127 到位】 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #228 |
 | 9-9 | Block 9 | 確認 ModelController 執行效果優於隨機參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #128 |
