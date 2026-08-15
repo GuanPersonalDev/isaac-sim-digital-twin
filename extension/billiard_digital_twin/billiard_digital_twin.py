@@ -1,6 +1,7 @@
 import itertools
 import sys
 import os
+from core.models import table_ball_set
 import omni.ext
 import omni.usd
 import omni.timeline
@@ -14,11 +15,12 @@ for p in [_EXT_DIR, _PROJECT_ROOT]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from core.controllers.script_controller import ScriptController
+from core.controllers.model_controller import ModelController
 from core.models.table_ball_set import TableBallSet
 from core.models.robot_arm import RobotArm
 from core.models.barrett_wam_robot import BarrettWamRobot
 from core.ports import RigidBodyAPI
+from core.ports.policy_port import PolicyPort
 from core.services.asset_utility import TABLE_PATH
 from core.services.observation_builder import DemoTableObservationBuilder, TrainingTableObservationBuilder
 from core.services.table_orchestrator import DemoTableOrchestrator, TrainingTableOrchestrator
@@ -31,6 +33,7 @@ from isaac_sim_impl_6_0.material_api_impl import MaterialAPIImpl
 from isaac_sim_impl_6_0.rigid_body_api_impl import RigidBodyAPIImpl
 from isaac_sim_impl_6_0.articulation_api_impl import ArticulationAPIImpl
 from isaac_sim_impl_6_0.physics_api_impl import PhysicsAPIImpl
+from isaac_sim_impl_6_0.torch_script_policy_impl import TorchScriptPolicyImpl
 from ui.debug_menu import DebugMenu
 from ui.tool_menu_registry import discover_and_register, unregister
 from core.models.billiard_table import BilliardTable
@@ -45,7 +48,8 @@ _TOOL_MENU_NAME = "Tools"
 # Demo 桌實際掛載的手臂類別，換手臂只需要改這一行（見 core/models/robot_arm.py）。
 _ROBOT_ARM_CLASS: type[RobotArm] = BarrettWamRobot
 _TABLE_SIZE_PROBE_PATH = "/World/_TableSizeProbe"
-
+_POLICY_PATH = os.path.join(_PROJECT_ROOT, "models", "rl", "billiard", "policy.pt")
+_EVAL_MAX_OFFSET = 0.6
 
 def _format_vector(values: list[float]) -> str:
     # 固定小數點後 3 位，避免 Debug Menu 每幀因為浮點數位數不一而跳動版面。
@@ -64,6 +68,7 @@ class BilliardExtension(omni.ext.IExt):
         self._timeline_playing = False
         self._table_unit_side_length = 0.0
         self._tick_callback_id = None
+        self._policy: PolicyPort | None = None
         scripts_dir = os.path.join(_PROJECT_ROOT, "scripts")
         self._tool_menu_items = discover_and_register(scripts_dir, _TOOL_MENU_NAME)
         stage = omni.usd.get_context().get_stage()
@@ -172,7 +177,7 @@ class BilliardExtension(omni.ext.IExt):
         if table_ball_set is None:
             raise RuntimeError(f"{table_id} 剛建立卻沒有 TableBallSet，無法建立 TableSession")
         pocket_handler = self._build_pocket_event_handler(table, table_ball_set)
-        controller = ScriptController()
+        controller = self._build_model_controller(table_ball_set)
         error_state = ErrorState()
         impulse_striking_service = ImpulseStrikingService(
             self._rigid_body_api, table_ball_set.get_ball_prim_paths()[0], table_ball_set.get_ball_radius()
@@ -225,7 +230,7 @@ class BilliardExtension(omni.ext.IExt):
             raise RuntimeError(f"{table_id} 剛建立卻沒有 RobotArm，無法建立 DemoTableSession")
 
         pocket_handler = self._build_pocket_event_handler(table, table_ball_set)
-        controller = ScriptController()
+        controller = self._build_model_controller(table_ball_set)
         error_state = ErrorState()
         runtime = TableRuntime(
             DemoTableObservationBuilder(
@@ -238,6 +243,16 @@ class BilliardExtension(omni.ext.IExt):
         return DemoTableSession(
             table_id, table, runtime, pocket_handler, self._rigid_body_api, robot_manager, articulation_api
         )
+
+    def _build_model_controller(self, table_ball_set: TableBallSet) -> ModelController:
+        policy = self._get_policy()
+        return ModelController(policy, table_ball_set.get_table_x_y(), _EVAL_MAX_OFFSET)
+    
+    def _get_policy(self) -> PolicyPort:
+        if self._policy is None:
+            self._policy = TorchScriptPolicyImpl(_POLICY_PATH)
+        
+        return self._policy
 
     def _disable_demo(self) -> None:
         for session in self._demo_sessions:
