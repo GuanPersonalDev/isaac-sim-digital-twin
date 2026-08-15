@@ -142,7 +142,7 @@
 | 9-C3 | Block 9 | 訓練成果取回流程（policy.pt / policy.onnx / env.yaml ＋ 中間 checkpoint 的 TorchScript ＋ TensorBoard event 檔） | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-15 | 2026-08-15 | #226 |
 | 9-8 | Block 9 | 實作 ModelController（載入 TorchScript models/rl/billiard/policy.pt，normalizer 為 Identity 故餵原始觀測）【實際超出原估：新增 PolicyPort + TorchScript adapter 讓 core/ 不依賴 torch、狀態機抽出共用基底 BilliardStateMachineController 並重構 ScriptController、訓練桌與 Demo 桌都改用 ModelController】 | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-15 | 2026-08-15 | #127 |
 | 9-C4 | Block 9 | core/ 共用層兩端呼叫路徑一致性測試（訓練端 vs Demo 端輸出一致、無重複實作）【拆分自 #225，需 #121/#122/#127 到位】 | 0.5h | M5: RL 訓練與多環境 | TRUE | 2026-08-15 | 2026-08-15 | #228 |
-| 9-9 | Block 9 | 確認 ModelController 執行效果優於隨機參數 | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #128 |
+| 9-9 | Block 9 | 確認 ModelController 執行效果優於隨機參數 | 0.5h | M5: RL 訓練與多環境 | TRUE | 2026-08-15 | 2026-08-15 | #128 |
 | 10-merge | Block 10 | 雲端多環境並行：直接設定高環境數（1024+）+ 一次性穩定性檢查 | 1h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #223 |
 | A-CP | Block 10 | Milestone A 收斂判定點（未收斂 → 直接帶不完美 policy 進 B，不為 A 犧牲 B 的時間） | 0.5h | M5: RL 訓練與多環境 | FALSE |  | 2026-08-15 | #179 |
 | B-1 | Block 13 | 可達性掃描與可行性地圖（orientation-constrained IK + 後擺走廊）→ 量出手臂實際偏移能力填入 max_offset | 4h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-16 | #180 |

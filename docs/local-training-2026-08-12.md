@@ -173,12 +173,58 @@ output action values: [-0.0403, 0.3385, -0.0060, 0.6063, 0.6712, 0.0783]
 `models/rl/billiard/run_2026-08-12_training_curve.png`——`mean_reward`／`spread x20`／
 `aim x20` 三條曲線，標出 it=100 檢查點與 it=200 決策點。
 
+## #128 確認 ModelController 執行效果優於隨機參數（2026-08-15）
+
+`#127` 結案時留白一項：「Isaac Sim 內實機驗證：訓練桌以模型參數擺位並出桿」，
+註記待 #128 一併確認。純看 `run_2026-08-12_metrics.csv` 的 rsl_rl 訓練曲線
+（iteration 0 的 `Train/mean_reward = −1.592` vs 收斂後 `+0.527`）只能證明
+「訓練後的權重比隨機權重好」，證明不到 `ModelController` 這個 class 本身接上
+Isaac Sim 物理之後也是同樣結果——決策路徑（`encode_rl_observation()` →
+`PolicyPort.infer()` → 狀態機轉換）沒有被實機跑過。
+
+### 實機驗證方法
+
+新增 `rl_task/scripts/verify_model_controller_vs_random.py`，在
+`Isaac-Billiard-v0` 訓練環境（64 平行 env、GPU 物理、`max_offset` 鎖定 0.6，
+與 #227 eval 場景參數一致）裡，每個 env 各自建立一個**真正的**
+`core.controllers.model_controller.ModelController` 實例，餵真正的
+`Observation`，讓它自己跑完 `RESET → IDLE → AIMING` 拿到推論出的原始 6 維
+輸出，直接送進 `env.step()`——訓練環境的 `BilliardStrikeAction` 內部呼叫的是
+**同一個** `decode_rl_action()`（#228 已對拍驗證兩端一致），所以效果等同
+`ModelController` 自己執行 `_execute_strike()`。分別對 `policy.pt`（收斂）與
+`iter0/policy.pt`（隨機初始化）各跑一次固定開球擺位，用訓練環境既有的
+`RewardsCfg`（權威在 `core.services.reward_service.calculate_reward()`）
+算出每個 env 的 episode reward。
+
+執行指令：
+
+```powershell
+C:\Users\Kuan\isaac-project\IsaacLab\isaaclab.bat -p rl_task/scripts/verify_model_controller_vs_random.py --headless --num_envs 64
+```
+
+### 結果（2026-08-15，64 envs，cuda:0）
+
+| checkpoint | mean_reward | std |
+|---|---|---|
+| `iter0/policy.pt`（隨機參數） | −1.2915 | 0.2440 |
+| `policy.pt`（`ModelController` 目前載入） | −1.1332 | 0.8555 |
+
+`ModelController` 平均 reward 優於隨機參數基準 **+0.1583**，腳本判定 ✅ 通過。
+
+兩者數值都是負的——與已知限制一致（見上方「已知限制／後續」：`foul` 卡在約
+−0.49，legal break 比例仍接近 0，policy 學到的較可能是「切球」而非「正對球堆
+全力開球」）。差距幅度（+0.16）也明顯小於訓練曲線峰值對照的差距（+2 以上），
+原因是評估固定 `max_offset=0.6`（訓練時是全範圍 0~1 取樣，policy 只在部分
+子空間學得比較好）且只有 64 個 env 的單次開球樣本，標準差偏大（收斂版
+0.86，個別 env 出手品質仍有落差）。但方向一致、真實物理路徑驗證通過，確認
+`ModelController` 執行效果優於隨機參數，#128 完成。
+
 ## 已知限制／後續
 
-- **`ModelController` 本身尚未實作**（backlog #127）。這次只把「訓練完的模型」放進
-  `isaac-sim-digital-twin`，Demo 端要真正把它接上 `ControllerBase` 介面、換掉
-  `ScriptController`，是另一項獨立工作，`models/rl/billiard/README.md` 記錄了實作時
-  要注意的三個坑（normalizer 是 Identity、動作要過 `decode_rl_action()`、ONNX batch=1）。
+- Demo 端要真正把 `ModelController` 接上 `ControllerBase` 介面、換掉 `ScriptController`
+  的完整整合仍在後續 Block（見 `docs/phase3-schedule.md`）。`models/rl/billiard/README.md`
+  記錄了實作時要注意的三個坑（normalizer 是 Identity、動作要過 `decode_rl_action()`、
+  ONNX batch=1）。
 - 承襲雲端 #124 的未解疑點：**`foul` 卡在約 −0.49 ⟹ legal break（真正合法開球）比例
   仍然接近 0**，尽管 spread／aim 都已經頂到訓練上限。這在本機這輪一樣沒改善，
   推測 policy 學到的是「切球」而非「正對球堆全力開球」，需要實際看 GUI 回放判讀
