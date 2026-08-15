@@ -89,6 +89,62 @@ C:\Users\Kuan\isaac-project\venv\Scripts\python.exe -m tensorboard.main `
 
 開瀏覽器連 `http://localhost:6006`。這一步一樣依賴本機 `training/outputs/`（未進 git）。
 
+## 疑難排解：Windows Remote Desktop 連線時開不出 GUI 視窗（2026-08-15 實測）
+
+這台機器透過 **Windows 遠端桌面（RDP）**連線操作，用「方式一」開 GUI 回放時遇到
+三個障礙，記錄下來給下次連這台機器做 Demo 錄影的人參考：
+
+1. **PowerShell 無法啟用 venv**：`Activate.ps1` 報 `UnauthorizedAccess`（執行原則擋
+   指令碼）。解法是只在目前這個視窗放行，不動系統全域設定：
+
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process
+   C:\Users\Kuan\isaac-project\venv\Scripts\Activate.ps1
+   ```
+
+2. **`isaacsim` 單獨開視窗時工具列一開始看不見**：不是 RDP 顯示驅動的問題，是
+   Omniverse Kit 第一次啟動要編譯 shader/UI，編譯完工具列就會自己出現。等就好，
+   不用中斷重開。
+
+3. **`isaaclab.bat play` 完全不開視窗（但行程有 CPU/GPU 使用率，不是卡死）**：
+   這是本專案用的 IsaacLab 版本（`release/3.0.0-beta2`）**行為改版**，不是本機
+   環境問題——`--headless` 舊參數已棄用，**新版預設值本身就是 headless**，
+   不加 `--viz` 就完全不會建立視窗（見 `IsaacLab/source/isaaclab/isaaclab/app/app_launcher.py:388-390`）。
+   之前 `docs/local-training-2026-08-12.md` 記錄的回放指令是舊版語法，這裡更新：
+
+   ```powershell
+   .\isaaclab.bat play --rl_library rsl_rl --task Isaac-Billiard-v0 `
+       --external_callback billiard_rl.tasks.register_external_tasks `
+       --checkpoint "<checkpoint 路徑>\model_0.pt" `   # 或 model_200.pt
+       --num_envs 4 `
+       --viz kit
+   ```
+
+   關鍵是**必須加 `--viz kit`** 才會開 Isaac Sim GUI 視窗；不加就是安靜地在背景
+   跑完整個模擬迴圈，沒有任何錯誤訊息，容易誤判成「卡住」。
+
+   驗證結果：加上 `--viz kit` 後，`model_0.pt`（訓練前，隨機亂打）與
+   `model_200.pt`（訓練後，收斂）皆可正常開窗回放，對比清楚可用於 Demo 錄影。
+
+### 多桌（高 env 數）Demo 素材的可行性評估（尚未實測，僅記錄評估結論）
+
+曾評估「Demo 用 1024 桌同時開球」的畫面，結論是**不建議直接渲染全部 1024 桌**：
+
+- 訓練時的 1024 env 是 headless、無 camera、純物理負載，GPU 消耗很輕；但 GUI
+  即時渲染是完全不同量級的工作（1024 桌 × 11 個物件 ≈ 11,264 個渲染物件），
+  從未實測過，且畫面上 1024 張小桌子人眼根本看不出個別球局。
+- 用 `--max_visible_envs` 參數（見 `app_launcher.py:603-606`）：物理照樣跑滿
+  設定的 env 數，只渲染其中一部分，兼顧「大規模平行」的視覺印象與畫面可讀性。
+  建議指令雛型：`--num_envs 1024 --viz kit --max_visible_envs 16`（從小數字開始
+  漸進測試 FPS／記憶體，不要一開始就衝大數字）。
+- `self.viewer.eye = (8.0, 0.0, 5.0)`（`billiard_rl_env_cfg.py`）是為單桌近拍調的
+  相機位置，`env_spacing=4.0` 下多桌網格會攤得很開，要拍多桌全景需要在 Isaac Sim
+  視窗裡手動把相機拉遠/拉高，不是改程式碼。
+- **記憶體觀察**：此機器（RTX 4090）僅開 4 桌 GUI 回放時，任務管理器「系統記憶體
+  ／共用 GPU 記憶體」已到 83%（非「專用 GPU 記憶體／VRAM」，兩者意義不同——
+  前者代表主機 RAM 或 VRAM 溢出借用 RAM，後者才是 GPU 顯存本身），暗示往上加
+  env 數前應先盯緊這個數字，不要一次跳到大數字。
+
 ## 快速對照表：我要做什麼、該用哪個方式
 
 | 目的 | 用哪個 |
