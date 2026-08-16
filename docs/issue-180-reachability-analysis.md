@@ -1,6 +1,6 @@
 # #180 可達性掃描前置分析：基座位置與球桿握把點
 
-**狀態**：分析完成，待實際 orientation-constrained IK 掃描驗證
+**狀態**：分析完成，基座位置決策已更新（見第九節），待實際 orientation-constrained IK 掃描驗證
 **日期**：2026-08-16
 **關聯**：#180（可達性掃描與可行性地圖）、#183（B-CP1 決策點）、#91（已併入 #180）
 
@@ -109,6 +109,103 @@ Kitchen 擺位區與目標球都對稱於 X=0，最佳基座位置必落在球�
 - 後擺走廊長度 L 目前是估計值（0.1~0.15m），未在程式碼或文件中找到實測/設計定案數字
 - 表格中「最佳基座 Y」只用了兩個代表性角落做 Chebyshev bisector，未驗證其餘角落與擺位區內部點是否仍在該基座位置的可達範圍內
 
+## 九、決策更新（2026-08-16）：基座位置（含高度）逐球可變，桿長維持標準
+
+### 背景
+
+第六節提出的三個槓桿（縮短握把 G、重擺基座 X/Y、降低掛載高度）都建立在「基座位置是單一固定常數」的假設上。這次決策把這個假設整個推翻，連帶讓前兩個槓桿失效。
+
+### 決策內容
+
+1. **基座位置（含 X/Y/Z）不再是固定常數，改為逐次擊球依 Action 需求動態決定。** `TableRobotManager._ROBOT_OFFSET_FROM_TABLE_CENTER`（`core/models/table_robot_manager.py:14`）目前仍是 class 常數，這個決策代表它未來要改成呼叫端逐球傳入的計算結果，不是初始化時定死的值。
+2. **本次不處理「如何實際重新定位」的機構或實作**——真實世界要嘛靠可移動機構（滑軌、機械手臂搬運座），要嘛靠別的解法；這件事會在 Demo 時明確說明是本次不解決的範疇。這裡只確認「假設基座自由，可達性問題是否解得開」這個理論問題。
+3. **球桿維持標準桿長（1.5m），握把回復真實比例**（G≈1.35m，桿尾露出 0.15m，見下方資產調整）——取代第六節「縮短握把」的建議，該建議已作廢。
+
+### 為什麼這樣可行
+
+R_h（水平臂展需求）只跟 G 與瞄準角度有關，跟基座位置無關；基座位置只決定「在哪裡量測」。用第四節同一套 Chebyshev bisector 方法重算，G=1.35m 時 Kitchen 兩個代表角落算出的 end-effector 需求點（桌台相對座標）分別在 (1.19, -1.85) 與 (1.02, -2.53)——兩點都已經在球檯外面（頭岸之外），因為 G 越大，握把點沿瞄準反方向被推得越遠，而 Kitchen 瞄向 1 號球的反方向剛好是把 end-effector 推出頭岸。
+
+基座位置一旦可以逐球自由選，直接把基座放在這個需求點附近即可，R_h 可壓到接近 0，不用犧牲 G。
+
+高度同理：肩部世界高度 = `base_z + 1.0`（`world→wam_base_link`）`+ 0.346`（`wam_base_link→wam_shoulder_yaw_link`）。原本 `base_z` 固定為 0，才會有肩部恆定 1.346m、跟球檯平面 0.0286m 差 1.317m（超過 WAM7 理論最大臂展 0.91m 達 0.41m）這個死結。`base_z` 一旦也自由，這個差值同樣可以被抵銷到接近 0。
+
+R_h 與 ΔZ 都壓到接近 0 之後，所需總臂展趨近後擺走廊 L（≈0.1~0.15m），遠低於 0.91m 理論值，餘裕寬裕。
+
+### 這個決策改變了什麼
+
+- 第六節「縮短握把 G」「重擺基座 X/Y」兩個槓桿不再需要，由本節取代。
+- 第六節「降低肩部相對球檯高度」這個槓桿，改成「基座高度逐球自由設定」繞過，不是真的把 WAM7 URDF 內建的 1.0m 地面掛載抬升改掉。URDF 本身內建假設帶來的問題還在，只是被「基座自由」這個更高層的決策蓋過去，還沒真正解決根因——未來若真的要做實體機構，第六節第三點的問題還是要面對。
+- #180 驗收條件第二條「確認基座位置合理」的意涵，從「確認一個固定座標」變成「確認『逐球最佳化基座位置』這個方法本身合理」。
+
+### 資產調整
+
+`assets/ball_stick.usda` 的 `Cylinder` pivot 已從 G=0.3m（上一輪的「縮短握把」方案，已作廢）調回 G=1.35m：
+
+```
+xformOp:translate = (0, 0.6, 0)
+```
+
+桿身總長不變（`height = 1.5`），握把（`CueStick` 原點）到桿尖的距離 1.35m，到桿尾的距離 0.15m，符合真實球桿握姿比例。
+
+### 尚未解決／仍需驗證
+
+- ~~這裡的 R_h≈0、ΔZ≈0 只是理論球面距離的近似，不是真實 IK 解~~ → 第十節已用實際差動 IK／固定姿態在 headless Isaac Sim 中驗證過，不再只是近似。
+- ~~「由 Action 反推基座位置」的具體演算法還沒定案~~ → 第十節已定案並實作（`core/services/base_placement_calculator.py`）。
+- 仍未消除：關節限位、奇異點迴避、球檯庫邊碰撞（見第十節「還沒解決的部分」）。
+
+## 十、實作與驗證（2026-08-16）：差動 IK 收斂失敗 → 改用固定姿態
+
+### 差動 IK 的實測結果：收斂失敗
+
+第九節的決策是理論分析，本節是實際動手驗證。先按原計畫用專案既有的差動 IK（`ArticulationAPIImpl`，Jacobian-based DLS）去解 Kitchen 兩個代表角落的需求點（`scripts/probe_base_reachability.py`，headless Isaac Sim，不需要 GUI/RDP，用 `ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES` 繞過互動式 EULA 提示）。
+
+結果：**兩個點都沒收斂**，最終誤差 0.63~0.88m。深入看數字，問題不是「搆不到」——目標點離肩部只有水平 0.125m、垂直 0m，遠低於 0.91m 理論最大臂展。真正的問題是 WAM7 剛 spawn 時的預設姿態（全關節 0）末端執行器朝正上方完全伸直，離肩部足足 0.91m，貼在工作空間邊界上；差動 IK 要處理的是「從幾乎完全伸直收回」這種大幅度、經過邊界附近的運動，這正是 Jacobian-based 局部線性化方法最容易失穩、卡住的情境。加中繼點分段收斂（12 個 waypoint）改善了垂直方向，但水平方向換了新的瓶頸，兩個探測點誤差幾乎一樣（0.629m vs 0.636m），像是卡在某個固定的關節限位或奇異點附近。
+
+### 改用固定姿態＋`base_yaw` 關節，取代逐次即時 IK
+
+差動 IK 是為「小幅度推桿微調」調校的（`ArticulationAPIImpl` 註解本身也承認這點），不適合「基座逐球重擺」這種大範圍收臂＋轉向的初始定位。改用完全不同的策略：**手臂 6 個關節永遠鎖定同一組角度，只有 `wam_base_yaw_joint`（機器人自己的第一個關節，限位 ±2.6 rad）隨瞄準角變化**——不需要 runtime IK 收斂，是普通的 joint-space 位置控制（跟既有的 `move_to_home()` 同一種機制，穩定可靠）。
+
+這個做法把「每個 Kitchen grid point 都要即時解一次 IK」，降成「離線只需要成功解一次」，而且離線可以用手動試誤慢慢湊，不需要保證 runtime 每次都收斂。跟 #181（關節空間揮桿軌跡生成）的既有設計高度吻合——#181 本來就規劃「預先規劃揮桿的關節角度曲線，直接以 joint position/velocity target 播放」（固定軌跡，不是動態 IK），也已經規劃「偏移量先離散化三檔」，這次的固定姿態是同一個精神的延伸。
+
+用 `scripts/probe_canonical_pose.py` 手動試誤（直接下 joint position target，不靠 IK 收斂）找到一組可行姿態：
+
+```
+CANONICAL_REST_JOINTS = (shoulder_pitch=1.9, shoulder_yaw=0, elbow_pitch=1.8,
+                          wrist_yaw=0, wrist_pitch=0, palm_yaw=0)
+```
+
+`shoulder_pitch` 距限位（1.985）留了 0.085 rad 餘裕。實測確認 `base_yaw` 每轉 δ，桿尖方向角同步偏轉 δ（1:1、同向）——公式的正負號是實測出來的，不是推導假設。
+
+### 反推公式（`core/services/base_placement_calculator.py`）
+
+```
+grip = required_grip_position(cue_ball_x, cue_ball_y, shot_angle_deg)   # 沿用第四節公式，未變
+base_yaw_rad = radians(shot_angle_deg) + π/2
+base_position = (grip.x − _LOCAL_TIP_RADIUS·d̂.x,
+                  grip.y − _LOCAL_TIP_RADIUS·d̂.y,
+                  grip.z − _LOCAL_TIP_HEIGHT)
+```
+
+`_LOCAL_TIP_RADIUS`（0.35342m）與 `_LOCAL_TIP_HEIGHT`（0.79640m）是 `base_yaw=0`、基座在世界原點時量出的桿尖位置，改資產或重新調校關節角度時必須重新跑 `probe_canonical_pose.py` 量測，不能手動猜數字。第九節的 `STANDOFF`／動態 IK 假設已作廢，公式整套改寫。
+
+### 端到端驗證：位置與姿態都對得上，且意外全部水平
+
+`scripts/validate_fixed_pose_placement.py`：把公式算出的基座位置＋`base_yaw`＋固定姿態實際套進場景，真的掛上 `ball_stick.usda`（`align_prim_to_target` 對齊腕部），量 Kitchen 兩個代表角落：
+
+| | XY 誤差 | Z 誤差 | 桿身傾斜角 |
+|---|---|---|---|
+| near_corner | 0.00004 m | 0.00001 m | 0.04° |
+| far_corner | 0.00002 m | 0.00001 m | 0.04° |
+
+位置誤差在 0.05mm 等級，桿身傾斜角 0.04°——幾乎完全水平，不是刻意調出來的，是這組固定姿態的副作用。第九節原本標注「姿態是否水平未驗證」的疑慮，這裡已用實測推翻。
+
+### 還沒解決的部分
+
+- **這組公式只覆蓋 fallback (b) 的窄角錐**：`base_yaw` 目標值必須落在 `wam_base_yaw_joint` 限位 [-2.6, 2.6] rad 內才有效，目前的瞄準角範圍（±30°，legal aim ±27.586°）換算後穩穩落在限位內，但 Milestone B 走位球需要的整圈方向（-180°, 180°）不在覆蓋範圍——那需要另外設計（基座本身的旋轉，不能只用這一個關節）。
+- **球檯庫邊碰撞完全沒測過**：這兩次驗證只有單一機器人＋球桿，沒有球檯庫邊幾何。基座旋轉到不同瞄準角時，手臂／基座本身的物理外型有沒有可能撞到庫邊，是 #233 完整範圍要驗證的項目，目前完全未知。
+- **關節限位、奇異點迴避、後擺走廊仍未驗證**：見第八節既有簡化假設清單，這輪驗證的是「這組固定姿態能不能到位」，不是「掃過整個 Kitchen 網格＋整段揮桿軌跡都合法」。
+- **基座沉到地板以下（`base_z` 為負）的問題依然存在，且與姿態固定與否無關**：肩部到桌面高度差 1.317m 本身就超過 WAM7 理論最大臂展 0.91m，這是純幾何限制，不管姿態固定不固定、不管挑哪個關節配置都無法迴避，只要基座 Z 卡在地板（0）就構不到——第九節「基座位置（含高度）逐球可變」這個決策本身沒被取代，本節只是換了達成方式。
+
 ## 參考檔案
 
 - `core/models/action_bounds.py`
@@ -117,8 +214,13 @@ Kitchen 擺位區與目標球都對稱於 X=0，最佳基座位置必落在球�
 - `core/services/table_ball_set.py`（`table_ball_set.py` 內 `TableBallSet`）
 - `core/models/table_robot_manager.py`
 - `core/models/barrett_wam_robot.py`
+- `core/services/base_placement_calculator.py`
 - `extension/billiard_digital_twin/billiard_digital_twin.py`
 - `extension/isaac_sim_impl_6_0/stage_api_impl.py`
+- `extension/isaac_sim_impl_6_0/articulation_api_impl.py`
 - `assets/barrett_wam/wam7.urdf`
-- `assets/ball_stick.usd`
+- `assets/ball_stick.usda`
 - `assets/ball_template.usda`（單位換算交叉驗證用）
+- `scripts/probe_base_reachability.py`（差動 IK 探測，記錄收斂失敗過程）
+- `scripts/probe_canonical_pose.py`（固定姿態手動試誤）
+- `scripts/validate_fixed_pose_placement.py`（端到端驗證）

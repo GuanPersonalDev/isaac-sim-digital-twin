@@ -34,7 +34,7 @@ def Xform "Root"
             custom int refinementLevel = 2
             quatd xformOp:orient = (1, 0, 0, 0)
             double3 xformOp:scale = (1, 1, 1)
-            double3 xformOp:translate = (0, -0.45, 0)
+            double3 xformOp:translate = (0, 0.6, 0)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
         }
     }
