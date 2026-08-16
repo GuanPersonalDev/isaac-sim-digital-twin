@@ -44,7 +44,7 @@ UR5_ASSET_PATH = "Isaac/Robots/UniversalRobots/ur5/ur5.usd"
 UR5_PRIM_PATH = "/World/ur5"
 REAL_ROBOT_LIMIT_DEG_S = 180.0
 
-CUE_STICK_ASSET_PATH = os.path.join(_PROJECT_ROOT, "assets", "ball_stick.usd")
+CUE_STICK_ASSET_PATH = os.path.join(_PROJECT_ROOT, "assets", "ball_stick.usda")
 CUE_STICK_PRIM_PATH = "/World/CueStick"
 FIXED_JOINT_PATH = CUE_STICK_PRIM_PATH + "/FixedJointToRobot"
 END_EFFECTOR_LINK_NAME = "wrist_3_link"
