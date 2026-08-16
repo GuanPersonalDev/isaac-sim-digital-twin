@@ -1,7 +1,6 @@
 import itertools
 import sys
 import os
-from core.models import table_ball_set
 import omni.ext
 import omni.usd
 import omni.timeline
