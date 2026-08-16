@@ -8,6 +8,7 @@ from core.services.base_placement_calculator import (
     _LOCAL_TIP_HEIGHT,
     _LOCAL_TIP_RADIUS,
     compute_base_pose,
+    compute_joint_targets,
     required_grip_position,
 )
 
@@ -157,3 +158,27 @@ class TestCanonicalRestJoints:
     def test_has_six_joints_excluding_base_yaw(self):
         """base_yaw 每球都變，不屬於固定姿態，其餘 6 個關節才是。"""
         assert len(CANONICAL_REST_JOINTS) == 6
+
+
+class TestComputeJointTargets:
+    def test_returns_seven_dof_in_urdf_order(self):
+        """[base_yaw, *CANONICAL_REST_JOINTS]，對應 wam7.urdf 的 7 個關節順序。"""
+        joint_targets = compute_joint_targets(0.0)
+
+        assert len(joint_targets) == 7
+        assert joint_targets[1:] == list(CANONICAL_REST_JOINTS)
+
+    def test_base_yaw_matches_compute_base_pose(self):
+        """跟 compute_base_pose() 用同一套 base_yaw 換算，兩者不能各算一次而漂移。"""
+        shot_angle_deg = 12.3
+
+        joint_targets = compute_joint_targets(shot_angle_deg)
+        _, base_yaw_rad = compute_base_pose(0.0, 0.0, shot_angle_deg, table_z=0.0)
+
+        assert joint_targets[0] == pytest.approx(base_yaw_rad)
+
+    @pytest.mark.parametrize("shot_angle_deg", [-27.586, -30.0, 0.0, 27.586, 30.0])
+    def test_base_yaw_component_stays_inside_joint_limit(self, shot_angle_deg: float):
+        joint_targets = compute_joint_targets(shot_angle_deg)
+
+        assert -_BASE_YAW_JOINT_LIMIT <= joint_targets[0] <= _BASE_YAW_JOINT_LIMIT
