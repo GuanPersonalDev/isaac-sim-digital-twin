@@ -36,3 +36,11 @@ class RobotArm(ABC):
     def is_reset_complete(self) -> bool:
         """是否已到達待機姿態"""
         ...
+
+    @abstractmethod
+    def reposition(self, position: tuple[float, float, float]) -> None:
+        """
+        prim定位到指定位置
+        position: (x, y, z)
+        """
+        ...

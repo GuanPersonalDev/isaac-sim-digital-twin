@@ -21,11 +21,12 @@ class BarrettWamRobot(RobotArm):
         articulation_api: ArticulationAPI,
         position: tuple[float, float, float],
     ):
-        prim_path = BarrettWamRobot.get_prim_path(base_path)
+        self._prim_path = BarrettWamRobot.get_prim_path(base_path)
         self._articulation_api = articulation_api
-        stage_api.create_reference_prim(prim_path, BARRETT_WAM_PATH)
+        self._stage_api = stage_api 
+        self._stage_api.create_reference_prim(self._prim_path, BARRETT_WAM_PATH)
         x, y, z = position
-        stage_api.set_prim_translate(prim_path, x, y, z)
+        self._stage_api.set_prim_translate(self._prim_path, x, y, z)
 
     @staticmethod
     def get_prim_path(base_path: str) -> str:
@@ -46,3 +47,6 @@ class BarrettWamRobot(RobotArm):
 
     def is_reset_complete(self) -> bool:
         return self._articulation_api.is_motion_complete()
+
+    def reposition(self, position: tuple[float, float, float]) -> None:
+        self._stage_api.set_prim_translate(self._prim_path, position[0], position[1], position[2])

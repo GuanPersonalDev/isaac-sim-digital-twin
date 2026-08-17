@@ -64,9 +64,10 @@ class ArticulationAPIImpl(ArticulationAPI):
         # execute_strike 用固定方向＋速度的 feed-forward twist，
         # 不是 move_to_pose/move_to_home 的位置誤差 P controller。
         self._strike_twist: np.ndarray | None = None
-        # move_to_home 用 joint-space 位置控制直接讓 PhysX 關節驅動器插值，
-        # 不需要（也不能，起始位置離目標可能很遠）跑 differential IK；
-        # 這裡只需監控是否已到位，不必每個 tick 重新解 Jacobian。
+        # move_to_home / move_to_joint_position 用 joint-space 位置控制
+        # 直接讓 PhysX 關節驅動器插值，不需要（也不能，起始位置離目標
+        # 可能很遠）跑 differential IK；這裡只需監控是否已到位，不必每個
+        # tick 重新解 Jacobian。
         self._is_joint_space_motion = False
         self._tip_local_offset: np.ndarray | None = None
         self._motion_active = False
@@ -163,6 +164,19 @@ class ArticulationAPIImpl(ArticulationAPI):
                 self._step_motion, event=SimulationEvent.PHYSICS_POST_STEP
             )
             self._motion_active = True
+
+    def _start_joint_space_motion(
+        self,
+        joint_positions: np.ndarray,
+        target_end_effector_position: np.ndarray,
+    ) -> None:
+        # joint-space 位置控制，交給 PhysX 關節驅動器自己插值到位，不需要
+        # （起始位置離目標可能很遠，也不適合）跑 differential IK。
+        self._articulation.switch_dof_control_mode("position")
+        self._articulation.set_dof_position_targets(joint_positions)
+        self._target_position = np.asarray(target_end_effector_position)
+        self._is_joint_space_motion = True
+        self._start_motion()
 
     def _step_motion(self, step_dt, context) -> None:
         if not self._is_joint_space_motion:
@@ -269,13 +283,9 @@ class ArticulationAPIImpl(ArticulationAPI):
         return vec + w * t + np.cross(q_xyz, t)
 
     def move_to_home(self) -> None:
-        # joint-space 位置控制，交給 PhysX 關節驅動器自己插值到位，不需要
-        # （起始位置離目標可能很遠，也不適合）跑 differential IK。
-        self._articulation.switch_dof_control_mode("position")
-        self._articulation.set_dof_position_targets(self._default_joint_positions)
-        self._target_position = self._home_position
-        self._is_joint_space_motion = True
-        self._start_motion()
+        self._start_joint_space_motion(
+            self._default_joint_positions, self._home_position
+        )
 
     def get_end_effector_position(self) -> list[float]:
         if self._tip_local_offset is None:
@@ -301,3 +311,8 @@ class ArticulationAPIImpl(ArticulationAPI):
         if self._capture_callback_id is not None:
             SimulationManager.deregister_callback(self._capture_callback_id)
             self._capture_callback_id = None
+
+    def move_to_joint_position(self, joint_positions: list[float], target_end_effector_position: list[float]) -> None:
+        self._start_joint_space_motion(
+            np.array([joint_positions]), np.array(target_end_effector_position)
+        )

@@ -27,6 +27,9 @@ class ConcreteRobotArm(RobotArm):
     def is_reset_complete(self) -> bool:
         return True
 
+    def reposition(self, position: tuple[float, float, float]) -> None:
+        self.reposition_called_with = position
+
 
 class TestRobotArm:
     def test_incomplete_subclass_cannot_be_instantiated(self):

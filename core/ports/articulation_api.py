@@ -69,3 +69,21 @@ class ArticulationAPI(ABC):
         initialize() 從未被呼叫、或 callback 已經觸發過，皆為 no-op。
         """
         ...
+
+    @abstractmethod
+    def move_to_joint_position(self, joint_positions: list[float], target_end_effector_position: list[float]) -> None:
+        """
+        joint_positions: 各關節角度[
+        [
+            base_yaw,
+            shoulder_pitch,
+            shoulder_yaw, 
+            elbow_pitch,
+            wrist_yaw,
+            wrist_pitch,
+            palm_yaw
+        ]
+        target_end_effector_position: 末端目標位置[x, y, z]
+
+        """
+        ...
