@@ -14,23 +14,13 @@ class ArticulationAPI(ABC):
         ...
 
     @abstractmethod
-    def move_to_pose(self, position: list[float], orientation: list[float]) -> None:
+    def move_to_pose(self, position: list[float], orientation: list[float], linear_velocity: list[float] = [0.0, 0.0, 0.0], angular_velocity: list[float] = [0.0, 0.0, 0.0]) -> None:
         """
-        移動末端到目標位姿
+        移動末端到目標位姿, 抵達時逼近末端速度
         position: [x, y, z]
         orientation: [qw, qx, qy, qz]
-        """
-        ...
-
-    @abstractmethod
-    def execute_strike(
-        self, direction: list[float], distance: float, speed: float
-    ) -> None:
-        """
-        沿指定方向擊球
-        direction: [x, y, z]
-        distance: 擊球距離
-        speed: 擊球速度
+        linear_velocity: [vx, vy, vz]
+        angular_velocity: [wx, wy, wz]
         """
         ...
 
