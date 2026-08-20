@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import omni.usd
 from pxr import Usd, UsdGeom
@@ -6,6 +8,9 @@ from isaacsim.core.experimental.prims import Articulation, RigidPrim
 from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
 from core.ports.articulation_api import ArticulationAPI
+from core.services.base_placement_calculator import CUE_STICK_GRIP_TO_TIP
+
+logger = logging.getLogger(__name__)
 
 
 class ArticulationAPIImpl(ArticulationAPI):
@@ -51,6 +56,7 @@ class ArticulationAPIImpl(ArticulationAPI):
 
         self._articulation: Articulation | None = None
         self._end_effector_rigid_prim: RigidPrim | None = None
+        self._cue_stick_rigid_prim: RigidPrim | None = None
         self._dof_limits = np.empty(0, dtype=float)
         self._jac_link_index: int | None = None
 
@@ -81,9 +87,51 @@ class ArticulationAPIImpl(ArticulationAPI):
 
         self._tip_local_offset = self._compute_tip_local_offset()
 
+        cue_stick_prim_path = self._resolve_cue_stick_prim_path()
+        self._cue_stick_rigid_prim = (
+            RigidPrim(paths=cue_stick_prim_path) if cue_stick_prim_path is not None else None
+        )
+
         self._capture_callback_id = SimulationManager.register_callback(
             self._capture_home_position_once, event=SimulationEvent.PHYSICS_POST_STEP
         )
+
+    def _resolve_cue_stick_prim_path(self) -> str | None:
+        """
+        CueStick 跟 Robot 是同一個 base_path 底下的手足 prim（見
+        TableRobotManager：`{base_path}/Robot`、`{base_path}/CueStick`），
+        不是每個呼叫端都有掛球桿（例如 scripts/probe_base_reachability.py
+        只建 Robot），所以要先確認 prim 真的存在才建立 RigidPrim，避免
+        debug log 需求把沒掛球桿的呼叫端弄壞。
+        """
+        if not self._robot_prim_path.endswith("/Robot"):
+            return None
+        base_path = self._robot_prim_path[: -len("/Robot")]
+        cue_stick_prim_path = base_path + "/CueStick"
+        stage = omni.usd.get_context().get_stage()
+        if not stage.GetPrimAtPath(cue_stick_prim_path).IsValid():
+            return None
+        return cue_stick_prim_path
+
+    def _get_robot_prim_world_position(self) -> list[float]:
+        """
+        Robot prim 本身不是 physics 模擬的剛體，是靠 stage_api.set_prim_translate()
+        設一次性的 classic USD xformOp（見 BarrettWamRobot.reposition()），不會
+        每個 tick 被 Fabric 覆寫，用 raw USD 讀不會有本檔案 class docstring 提到
+        的「tensor API/raw USD 不同步」問題，這裡讀的目的是回讀確認，不是讀
+        physics 模擬狀態。
+        """
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(self._robot_prim_path)
+        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        translation = xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation()
+        return [translation[0], translation[1], translation[2]]
+
+    def _get_cue_stick_world_pose(self) -> tuple[list[float], list[float]] | None:
+        if self._cue_stick_rigid_prim is None:
+            return None
+        positions, orientations = self._cue_stick_rigid_prim.get_world_poses()
+        return positions[0].list(), orientations[0].list()
 
     def _load_dof_max_velocities(self) -> np.ndarray:
         if self._articulation is None:
@@ -202,6 +250,26 @@ class ArticulationAPIImpl(ArticulationAPI):
             self._articulation.set_dof_velocity_targets(qdot[None, :])
 
         if self.is_motion_complete():
+            actual_joint_positions = np.asarray(self._articulation.get_dof_positions())[0]
+            end_effector_position = np.array(self.get_end_effector_position())
+            cue_tip_offset = self._rotate_vector_by_quat(
+                self._get_end_effector_world_orientation(),
+                np.array([0.0, CUE_STICK_GRIP_TO_TIP, 0.0]),
+            )
+            cue_tip_position = end_effector_position + cue_tip_offset
+            robot_prim_position = self._get_robot_prim_world_position()
+            cue_stick_actual_pose = self._get_cue_stick_world_pose()
+            logger.info(
+                "[MOTION_COMPLETE] joint_positions(actual)=%s robot_prim_position=%s "
+                "end_effector_position=%s cue_tip_position(computed)=%s "
+                "cue_tip_offset_from_end_effector=%s "
+                "cue_stick_actual_position=%s cue_stick_actual_orientation=%s",
+                actual_joint_positions.tolist(), robot_prim_position,
+                end_effector_position.tolist(), cue_tip_position.tolist(),
+                cue_tip_offset.tolist(),
+                cue_stick_actual_pose[0] if cue_stick_actual_pose else None,
+                cue_stick_actual_pose[1] if cue_stick_actual_pose else None,
+            )
             self._stop_motion()
 
     def _compute_pose_tracking_twist(self) -> np.ndarray:

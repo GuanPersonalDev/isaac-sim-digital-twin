@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 
 from ..services.base_placement_calculator import CANONICAL_REST_JOINTS, compute_base_pose, required_grip_position
@@ -13,6 +14,8 @@ from .ball_position_provider import BallPositionProvider
 from .impulse_striking_service import ImpulseStrikingService
 from .error_state import ErrorState
 from .rolling_resistance_service import RollingResistanceService
+
+logger = logging.getLogger(__name__)
 
 
 class TableOrchestrator(ABC):
@@ -121,6 +124,12 @@ class DemoTableOrchestrator(TableOrchestrator):
         base_position, base_yaw_rad = compute_base_pose(action.cue_ball_placement[0],
             action.cue_ball_placement[1], action.shot_angle, table_z)
         joint_targets = [base_yaw_rad, *CANONICAL_REST_JOINTS]
+        logger.info(
+            "[AIM][expected] cue_ball=%s shot_angle_deg=%.2f base_position=%s "
+            "joint_targets=%s grip_position=%s",
+            action.cue_ball_placement, action.shot_angle, base_position,
+            joint_targets, grip_position,
+        )
         self._robot_arm.reposition(base_position)
         self._articulation_api.move_to_joint_position(joint_targets, [grip_position[0], grip_position[1], table_z + self._table_ball_set.DEFAULT_BALL_RADIUS])
 
