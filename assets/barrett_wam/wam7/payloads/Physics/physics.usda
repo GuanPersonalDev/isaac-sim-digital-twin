@@ -25,10 +25,19 @@ over "wam"
     over "Geometry"
     {
         over "world" (
-            prepend apiSchemas = ["PhysicsArticulationRootAPI", "NewtonArticulationRootAPI"]
+            prepend apiSchemas = ["PhysicsArticulationRootAPI", "NewtonArticulationRootAPI", "PhysxArticulationAPI"]
         )
         {
             bool newton:selfCollisionEnabled = 0
+            # 預設沒有 author 這兩個值時 PhysX 用內建低迭代次數，對這條
+            # 7 自由度＋高 stiffness（見下方各關節 drive:angular:physics:stiffness）
+            # ＋球桿 FixedJoint 耦合的鏈，在大幅度 joint-space 移動後會數值上
+            # 收斂到穩定但錯誤的關節角（實測 wrist_yaw 卡在偏離目標 0.096 rad，
+            # 對應末端 cartesian 誤差 23mm，遠超過 5mm 容許誤差且永遠不會自己
+            # 收斂）。拉高到 255（PhysX 上限）後同一案例 wrist_yaw 誤差降到
+            # 0.006 rad，見 scripts/probe_solver_iterations.py 的量測。
+            int physxArticulation:solverPositionIterationCount = 255
+            int physxArticulation:solverVelocityIterationCount = 255
 
             over "wam_base_link" (
                 prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
