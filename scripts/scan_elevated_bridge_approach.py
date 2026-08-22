@@ -254,6 +254,19 @@ def _run() -> None:
     cue_stick_prim_path = robot_manager.get_cue_stick_prim_path()
     physics_api.enable_contact_reporting(cue_stick_prim_path)
 
+    # 之前的掃描只對球桿本身啟用碰撞回報，完全沒偵測手臂本體（前臂／連桿等）
+    # 撞到桌子/房間的情況——遍歷機器人 prim 底下所有帶 RigidBodyAPI 的 link，
+    # 全部啟用回報，才能看到手臂本體的碰撞。
+    from pxr import Usd, UsdPhysics as _UsdPhysics
+
+    robot_prim = stage.GetPrimAtPath(robot_prim_path)
+    robot_link_paths = []
+    for prim in Usd.PrimRange(robot_prim):
+        if prim.HasAPI(_UsdPhysics.RigidBodyAPI):
+            robot_link_paths.append(prim.GetPath().pathString)
+            physics_api.enable_contact_reporting(prim.GetPath().pathString)
+    print(f"enabled contact reporting on {len(robot_link_paths)} robot links: {robot_link_paths}")
+
     contacts: list[ContactEvent] = []
     physics_api.subscribe_contact_events(lambda e: contacts.append(e))
 
@@ -358,10 +371,17 @@ def _run() -> None:
         final_joints = np.asarray(articulation_api._articulation.get_dof_positions())[0]
         position_error = float(np.linalg.norm(pos_after_c2 - wrist))
         all_partners = set(partners_a) | set(partners_b) | set(partners_c1) | set(partners_c2)
-        # 只有真的擋住進場的庫邊/球袋碰撞才算失敗；桿頭在最終擊球高度
-        # （離桌面僅 2.86mm=球半徑）輕觸桌面氈布（Surface）是預期中的正常
-        # 現象（現實打撞球桿頭本來就會很貼近氈布），不計入失敗。
-        blocking_partners = {p for p in all_partners if "Surface" not in p and p != cue_stick_prim_path and "Cylinder" not in p}
+        # 排除機器人自己（手臂各連桿之間、連桿跟球桿之間）的自我接觸，只留下
+        # 跟環境（桌子/房間/球）的真實碰撞；桿頭在最終擊球高度（離桌面僅
+        # 2.86mm=球半徑）輕觸桌面氈布（Surface）是預期中的正常現象，不計入
+        # 失敗。
+        # 用路徑前綴比對（不是精確相等）：碰撞回報的是實際碰撞形狀的 prim
+        # path，可能是 RigidBodyAPI 那個 link 底下的子節點（跟球桿
+        # CueStick/Cylinder 同一種巢狀狀況），精確比對會漏掉。
+        def _is_self_path(p: str) -> bool:
+            return p.startswith(robot_prim_path) or p.startswith(cue_stick_prim_path)
+
+        blocking_partners = {p for p in all_partners if "Surface" not in p and not _is_self_path(p)}
         collided = len(blocking_partners) > 0
         return {
             "status": "COLLISION" if collided else "OK",
