@@ -81,7 +81,6 @@ class ArticulationAPIImpl(ArticulationAPI):
         # 在 timeline play 之後呼叫
         self._articulation = Articulation(paths=self._robot_prim_path)
         self._end_effector_rigid_prim = RigidPrim(paths=self._end_effector_prim_path)
-        self._default_joint_positions = np.asarray(self._articulation.get_dof_positions())
         self._dof_limits = self._load_dof_max_velocities()
         self._jac_link_index = self._resolve_end_effector_jacobian_index()
 
@@ -205,6 +204,16 @@ class ArticulationAPIImpl(ArticulationAPI):
         return tip_local
 
     def _capture_home_position_once(self, step_dt, context) -> None:
+        # _default_joint_positions 一起搬到這裡（跟 _home_position 同一個
+        # PHYSICS_POST_STEP callback）擷取：get_dof_positions() 讀的是動態
+        # 模擬狀態，在 initialize() 裡同步呼叫（physics 可能一步都還沒跑）
+        # 拿到的值不可靠，跟 scripts/probe_palm_yaw_correction.py 除錯時
+        # 踩到「剛建構的 Articulation 沒等 physics 穩定就讀，拿到垃圾值」
+        # 是同一類問題。兩者原本不同步擷取，move_to_home() 會把關節開回一個
+        # 不可靠的 _default_joint_positions，永遠碰不到用正確方式量到的
+        # _home_position，是 RESET 狀態卡死、is_motion_complete() 恆為 False
+        # 的根因。
+        self._default_joint_positions = np.asarray(self._articulation.get_dof_positions())
         self._home_position = np.array(self.get_end_effector_position())
         SimulationManager.deregister_callback(self._capture_callback_id)
         self._capture_callback_id = None
