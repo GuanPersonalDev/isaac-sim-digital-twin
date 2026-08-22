@@ -471,6 +471,8 @@ def Xform "Root"
             )
             {
                 token visibility = "inherited"
+                double3 xformOp:translate = (0, -2, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
 
                 def Xform "Floor" (
                     kind = "group"
