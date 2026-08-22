@@ -240,6 +240,15 @@ class ArticulationAPIImpl(ArticulationAPI):
     ) -> None:
         # joint-space 位置控制，交給 PhysX 關節驅動器自己插值到位，不需要
         # （起始位置離目標可能很遠，也不適合）跑 differential IK。
+        #
+        # 如果上一個動作是 move_to_pose()（velocity 控制模式），關節上可能
+        # 還留著非零的殘餘速度指令；切到 position 模式不會自動歸零，殘餘
+        # 速度會跟新的 position drive 打架，讓末端在目標附近持續小幅震盪、
+        # is_motion_complete() 的位置容許誤差永遠卡不進去（實測：同一個
+        # 目標單獨呼叫可以在 <5mm 內收斂，緊接在一次 move_to_pose() 後面呼叫
+        # 卻 1000 步都收斂不了）。切模式前先把速度目標歸零。
+        if self._dof_limits.size > 0:
+            self._articulation.set_dof_velocity_targets(np.zeros((1, len(self._dof_limits))))
         self._articulation.switch_dof_control_mode("position")
         self._articulation.set_dof_position_targets(joint_positions)
         self._target_position = np.asarray(target_end_effector_position)

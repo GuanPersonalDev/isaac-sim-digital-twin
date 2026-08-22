@@ -288,23 +288,58 @@ def _run() -> None:
                 print(f"  [{label}] waypoint {i}/{num_waypoints}: settled_step={settled_step}  pos_err={pos_err:.4f} m")
         return np.array(articulation_api.get_end_effector_position())
 
+    def _run_flat_case(cue_ball, base_position, base_yaw_rad):
+        """沒有庫邊交會（tilt=0）時，直接沿用已驗證過的
+        CANONICAL_REST_JOINTS+base_yaw joint-space 做法，不要透過差動 IK 的
+        高架橋管線——差動 IK 用的目標姿態是另外用 _shortest_arc_quat 構造出
+        來的，跟 CANONICAL_REST_JOINTS 實際 FK 出來的姿態即使指向相同，roll
+        分量也不保證一樣，會逼手臂多繞一段路徑去湊一個「等效但不同」的姿態，
+        這是精度不足案例裡 tilt=0.00 卻仍有 0.2m 誤差、且不管換哪個 roll 都
+        一樣的根因（roll 在這裡根本沒被套用，問題出在流程本身，不是 roll 選
+        不對）。
+        """
+        contacts.clear()
+        robot.reposition(base_position)
+        for _ in range(30):
+            simulation_app.update()
+        _wrist0, _orientation0, _tilt0, _crossing0 = compute_tilted_wrist_pose(
+            cue_ball, _shot_angle_deg(cue_ball, _TARGET_BALL), table_z, ball_radius, roll_rad=0.0
+        )
+        joint_targets = [base_yaw_rad, *CANONICAL_REST_JOINTS]
+        articulation_api.move_to_joint_position(joint_targets, _wrist0.tolist())
+        settled_step = None
+        for _step in range(1000):
+            simulation_app.update()
+            if articulation_api.is_motion_complete():
+                settled_step = _step
+                break
+        final_position = np.array(articulation_api.get_end_effector_position())
+        position_error = float(np.linalg.norm(final_position - _wrist0))
+        all_partners = sorted({c.collider_path_b for c in contacts} | {c.collider_path_a for c in contacts})
+        collided = len(contacts) > 0
+        return {
+            "status": "COLLISION" if collided else "OK",
+            "all_partners": all_partners,
+            "tilt_deg": 0.0,
+            "position_error_m": position_error,
+        }
+
     def _run_elevated_bridge_case(cue_ball, roll_rad, verbose=False):
         angle_deg = _shot_angle_deg(cue_ball, _TARGET_BALL)
-        base_position, _unused_base_yaw = compute_base_pose(
+        base_position, base_yaw_rad = compute_base_pose(
             cue_ball[0], cue_ball[1], angle_deg, table_z=table_z
         )
-        # 先用 tilt=0 探測這個母球位置本身需不需要抬高；不需要的話（沒有交會
-        # 庫邊）就不要套用額外的 roll——roll 是用來閃避「抬高之後」新產生的
-        # 關節限位問題，沒有抬高就沒有這個問題，硬套 roll 只會把原本已經可行
-        # 的水平姿態搞壞。
+        # 先用 tilt=0 探測這個母球位置本身需不需要抬高。
         _wrist0, _orientation0, tilt_rad, crossing = compute_tilted_wrist_pose(
             cue_ball, angle_deg, table_z, ball_radius, roll_rad=0.0
         )
         if tilt_rad is None:
             return {"status": "GEOMETRICALLY_INFEASIBLE"}
-        effective_roll_rad = roll_rad if tilt_rad > 1e-6 else 0.0
+        if tilt_rad <= 1e-6:
+            # 不需要抬高：直接用原本驗證過的水平姿態，不要進差動 IK 管線。
+            return _run_flat_case(cue_ball, base_position, base_yaw_rad)
         wrist, orientation, tilt_rad, crossing = compute_tilted_wrist_pose(
-            cue_ball, angle_deg, table_z, ball_radius, roll_rad=effective_roll_rad
+            cue_ball, angle_deg, table_z, ball_radius, roll_rad=roll_rad
         )
 
         contacts.clear()
