@@ -114,12 +114,55 @@ solver iteration，都無法讓末端執行器收斂到 5mm 容許誤差內（�
    這兩個特定角度範圍改用其他（例如非 CANONICAL_REST_JOINTS 的）目標
    姿態繞開，而不是繼續嘗試修正這組姿態本身的收斂性。
 
+## GUI 檢查指南（需要人工進 Isaac Sim 操作，無法用 headless 腳本自動完成）
+
+### 重現步驟
+
+```bash
+ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \
+    "/c/Users/Kuan/isaac-project/venv/Scripts/python.exe" scripts/repro_flat_case_gui.py
+```
+
+`scripts/repro_flat_case_gui.py` 用 `headless=False` 開啟正常 Isaac Sim
+視窗，自動建好球桌＋機器人、定位到 `_CUE_BALL = (-0.25, -0.1)`（腳本開頭
+可改成 `(0.25, -0.1)` 測另一個失敗案例，或改成 `(0.0, 0.4)` 當正常收斂的
+對照組），下達跟 headless 診斷完全相同的 `move_to_joint_position()`
+指令後就會卡在偏離目標的姿態，**不會自動關閉**，console 每秒印一次目前
+誤差與關節角，方便跟 GUI 上看到的數值對照；視窗不會自己結束，看完直接關
+掉即可。
+
+### 檢查項目（依排除清單優先順序，尚未在 headless 驗證過的项目已標記）
+
+1. **Joint 視覺化**（Physics Debug Visualization 內的 Joints）：卡住之後
+   看關節標記是不是真的靜止不動，還是在做人眼看不出來但幅度夠小、
+   `is_motion_complete()` 卻檢測不到的高頻微幅震盪。
+2. **Drive force / drive error 面板**（Window > Physics > Physics
+   Inspector 或同等診斷面板）：直接讀 `wam_wrist_yaw_joint` /
+   `wam_shoulder_pitch_joint` 當下實際輸出的 drive force 是多少、
+   跟理論上 `stiffness × position_error` 算出來的值是否吻合——如果不
+   吻合，代表卡住的原因不是我們以為的那個彈簧公式，值得重新假設。
+3. **【新假設，尚未驗證】質量比病態**：`wam_wrist_palm_stump_link` 的
+   `physics:mass = 0.000001`（幾乎零質量，見
+   `assets/barrett_wam/wam7/payloads/Physics/physics.usda`），跟上游
+   `wam_upper_arm_link`（mass=2.2）、`wam_forearm_link`（mass=0.5）
+   之間質量比極端懸殊。PhysX 對相鄰剛體質量比過大的鏈條，求解精度容易
+   在鏈條末端（正好是 wrist_yaw 附近）劣化。GUI 裡若有印出 mass ratio
+   相關警告（console 或 Physics Debug 面板），或者可以直接嘗試臨時把
+   `wam_wrist_palm_stump_link` 的 mass 調高（例如 0.01）重新測試同一
+   案例是否改善，藉此驗證/排除這個假設。
+4. **Contact 視覺化**：即使我們自己的 `physics_api` contact reporting
+   沒偵測到事件，也用肉眼確認球桿/手臂有沒有跟環境或自己有微幅穿模
+   （interpenetration）但因為太輕微沒觸發 contact report 的偵測門檻。
+5. 用 `(0.0, 0.4)`（正常收斂案例）跑一次同樣的檢查當對照組，比較上述
+   幾項指標在「正常」與「卡住」兩種情況下的差異，縮小根因範圍。
+
 ## 相關檔案
 
 - `scripts/probe_first_case_residual_error.py` — 隔離診斷、排除清單的實驗
 - `scripts/probe_solver_iterations.py` — solver iteration count 驗證
 - `scripts/verify_solver_iteration_fix.py` — 資產修正後的乾淨驗證
 - `scripts/probe_staged_joint_motion.py` — 分段逼近驗證
+- `scripts/repro_flat_case_gui.py` — GUI 互動診斷用的重現腳本（`headless=False`）
 - `scripts/probe_slow_motion.py` — 準靜態極慢速驗證（結果不可信，僅存檔）
 - `scripts/probe_multi_strategy_convergence.py` — 多策略挑選驗證
 - `assets/barrett_wam/wam7/payloads/Physics/physics.usda` — 已套用的
