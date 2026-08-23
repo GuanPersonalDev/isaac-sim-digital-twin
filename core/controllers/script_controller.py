@@ -18,10 +18,10 @@ class ScriptController(BilliardStateMachineController):
         result = self._generate_action_result()
         if observation.is_motion_complete:
             # 固定以物理域上限出桿；上下限的單一來源在 action_bounds（#114），
-            # 此處不得硬編碼數值。
-            # Demo 桌（真實揮桿）路徑若之後把 _execute_strike 接上
-            # ArticulationAPI.execute_strike()，該處的 speed 參數語意是
-            # 「桿尖速度」不是「母球速度」，屆時這個共用常數的語意需要重新檢視。
+            # 此處不得硬編碼數值。cue_ball_speed 語意一直是「母球目標初速」；
+            # Demo 桌把這個值換算成桿尖接觸速度的邏輯在
+            # swing_trajectory_calculator.compute_required_tip_speed()，
+            # ScriptController 不需要知道換算細節。
             result.cue_ball_speed = CUE_BALL_SPEED[1]
             result.should_execute_action = True
             self._change_state(BilliardStatus.STRIKING)

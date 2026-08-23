@@ -142,6 +142,37 @@ def compute_base_pose(
     return ((base_x, base_y, base_z), base_yaw_rad)
 
 
+def compute_canonical_wrist_position(
+    base_position: tuple[float, float, float], base_yaw_rad: float
+) -> tuple[float, float, float]:
+    """`compute_base_pose()` 反推公式的正向版本：給定基座位置與 `base_yaw`，
+    算出 `CANONICAL_REST_JOINTS` 姿態下腕部（= end-effector）的世界座標。
+
+    代數上是 `compute_base_pose()` 內 `base_x = grip_x - _LOCAL_TIP_RADIUS*dx`
+    那組公式的精確反解（`dx,dy = _aim_direction(shot_angle_deg)`，
+    `base_yaw_rad = shot_angle_deg 的 radians + pi/2`代入三角函數平移可得
+    `dx=cos(base_yaw_rad)、dy=sin(base_yaw_rad)`），對同一組
+    `(base_position, base_yaw_rad)` 往返代入 `compute_base_pose()` 會得到
+    完全一致的腕部座標。
+
+    用途：像高架橋 aim 流程裡「先用 joint-space 回到安全姿態
+    `[0.0, *CANONICAL_REST_JOINTS]`」這種场景，需要一個真正正確的 Cartesian
+    目標位置餵給 `move_to_joint_position()`/`move_through_poses()` 的
+    `target_end_effector_position`，不能沿用移動前的舊位置當佔位符——那個
+    位置對應的是移動前的姿態，不是移動後 `[0.0, *CANONICAL_REST_JOINTS]`
+    真正會到達的位置，會讓 `is_motion_complete()` 永遠等不到收斂（曾經
+    踩過這個 bug，見 scripts/scan_elevated_bridge_approach.py 的 Phase 0：
+    那裡的完成判定不是靠 is_motion_complete()，是固定跑 300 步就跳過，
+    所以沒踩到；正式程式碼用 is_motion_complete() 驅動自我轉階段就會卡死）。
+    """
+    base_x, base_y, base_z = base_position
+    return (
+        base_x + _LOCAL_TIP_RADIUS * math.cos(base_yaw_rad),
+        base_y + _LOCAL_TIP_RADIUS * math.sin(base_yaw_rad),
+        base_z + _LOCAL_TIP_HEIGHT,
+    )
+
+
 def compute_joint_targets(shot_angle_deg: float) -> list[float]:
     """完整 7-DOF joint-space 位置目標，依 `assets/barrett_wam/wam7.urdf` 的
     關節順序：`[base_yaw, shoulder_pitch, shoulder_yaw, elbow_pitch, wrist_yaw,

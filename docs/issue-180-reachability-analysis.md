@@ -274,6 +274,47 @@ Xform 整體平移 `(0,-2,0)`（只動房間殼，不動 `BilliardTable`，`tabl
   排除清單、已測手法（solver iteration count、分段逼近等）見
   `docs/issue-flat-case-residual-error.md`。
 
+## 十二、#181 實作與驗證發現的新限制（2026-08-23）
+
+第十一節的高架橋公式與分階段軌跡邏輯已經整合進正式程式碼
+（`core/services/cue_pose_calculator.py`、`core/services/swing_trajectory_
+calculator.py`、`core/ports/articulation_api.py` 的 `move_through_poses()`、
+`DemoTableOrchestrator._execute_aim()`/`_execute_strike()`），並修正了一個
+從研究腳本直接搬過來的既有缺陷：Phase 0（joint-space 回安全姿態）的
+`target_end_effector_position` 原本沿用移動前的舊位置當佔位符，研究腳本
+沒踩到是因為它固定跑 300 步、從不真的檢查 `is_motion_complete()`；正式
+程式碼用收斂判定驅動自我轉階段，這個佔位符會讓判定永遠等不到，卡死。已用
+新增的 `base_placement_calculator.compute_canonical_wrist_position()`（
+`compute_base_pose()` 反推公式的正向版本）修正。
+
+### 新發現：高架橋抬高姿態在 Kitchen 母球範圍內撞到 shoulder_pitch 關節限位
+
+用 `scripts/verify_swing_trajectory.py` 對 `core/models/action_bounds.py`
+的 `CUE_BALL_PLACEMENT_X/Y`（Kitchen 母球位置範圍，整個範圍都靠近同一側
+庫邊）做端到端驗證，**20 個測試案例（座標邊界+中點交叉角度/速度/偏移量）
+0 個成功**，全部卡在瞄準階段逾時。用 `scripts/debug_ported_aim_
+regression.py` 隔離單一案例（`(0.0, -0.9382125)`，`shot_angle=0`）逐步
+追查：關節角穩定停在
+`shoulder_pitch=1.985 rad`——這正是這個關節的**硬限位**（`CANONICAL_
+REST_JOINTS` 的 `shoulder_pitch=1.9 rad`，特意只留了 0.085 rad 餘裕，見
+`base_placement_calculator.py` 的 `CANONICAL_REST_JOINTS` 註解）。高架橋
+抬高姿態需要的 shoulder_pitch 角度超出這個餘裕，差動 IK 撞到硬限位動不了，
+末端永遠差固定的 2.86cm，是**真正的運動學可達性問題，不是數值收斂 bug**
+——逾時保護（`ArticulationAPIImpl.MOTION_TIMEOUT_STEPS`）正確攔截，不會
+卡死、也不會帶著錯誤姿態去揮桿，但目前這個座標範圍的擊球會可靠地進
+`ERROR` 狀態、打不出去。
+
+作為對照，`scripts/scan_elevated_bridge_approach.py` 原本驗證的 25 點網格
+（`_CUE_BALL_X_GRID`/`_CUE_BALL_Y_GRID`，涵蓋桌面較大範圍、Y 最小值只到
+-1.1）多數案例成功，代表 Kitchen 這個範圍（整個 Y 範圍都落在 -1.24~-0.64
+之間，比原研究網格更靠近庫邊）系統性地需要比原研究網格更大的抬高角，
+更容易撞到 shoulder_pitch 餘裕不足的問題。
+
+**已知限制，留給後續 issue**：需要重新設計 `CANONICAL_REST_JOINTS`（例如
+把 shoulder_pitch 的預設值降低、換取更多抬高時可用的餘裕）或高架橋的
+接近幾何（例如縮小 `safe_altitude_margin`、改變 Phase B 的水平/垂直移動
+順序、降低所需的傾斜角），才能讓 Kitchen 範圍內的高架橋案例真正可達。
+
 ## 參考檔案
 
 - `core/models/action_bounds.py`
@@ -290,6 +331,10 @@ Xform 整體平移 `(0,-2,0)`（只動房間殼，不動 `BilliardTable`，`tabl
 - `scripts/scan_elevated_bridge_approach.py`（#233 高架橋抬高姿態公式與驗證）
 - `scripts/probe_room_clearance.py`（#233 房間隔間牆碰撞的淨空量測）
 - `docs/issue-flat-case-residual-error.md`（#233 衍生的 flat 案例殘留誤差調查）
+- `core/services/cue_pose_calculator.py`（#181 正式程式碼，高架橋幾何＋接觸點偏移）
+- `core/services/swing_trajectory_calculator.py`（#181 後擺/隨揮/桿尖速度計算）
+- `scripts/verify_swing_trajectory.py`（#181 端到端驗證，發現 Kitchen 範圍撞關節限位）
+- `scripts/debug_ported_aim_regression.py`（#181 對照除錯：定位 Phase 0 佔位符 bug 與 shoulder_pitch 限位問題）
 - `assets/barrett_wam/wam7.urdf`
 - `assets/ball_stick.usda`
 - `assets/ball_template.usda`（單位換算交叉驗證用）
