@@ -156,6 +156,34 @@ ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YE
 5. 用 `(0.0, 0.4)`（正常收斂案例）跑一次同樣的檢查當對照組，比較上述
    幾項指標在「正常」與「卡住」兩種情況下的差異，縮小根因範圍。
 
+## GUI 檢查結果（2026-08-23，(-0.25, -0.1) 案例）
+
+用 `scripts/repro_flat_case_gui.py` 在 Isaac Sim GUI 裡實際檢查：
+
+- **碰撞（第 4 項）**：肉眼換角度確認球桿確實跟 `Pocket_HeadLeft` 有幾何
+  上的穿模。但追查該 prim 的 apiSchemas 發現是
+  `["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysxTriggerAPI"]`——
+  是 **PhysX Trigger**（用來偵測球進袋），不是實體碰撞體，不會產生任何
+  反作用力。這解釋了為什麼 headless 的 `ContactReportAPI`
+  事件回報是 0（Trigger 事件跟 Contact 事件本來就是兩種不同機制，這不是
+  漏偵測的 bug）。進一步確認球桿跟旁邊實體庫邊（Cushion_HeadLeft /
+  Cushion_Left）**沒有**穿模。**結論：這個位置沒有任何實體碰撞在阻擋
+  手臂，卡住的原因不是碰撞。**
+  - 附帶發現（跟本次調查無關的獨立小問題）：球桿桿身會在這個母球位置
+    掃過 `Pocket_HeadLeft` 的 Trigger 區域，如果進球判定邏輯沒有過濾
+    「觸發 Trigger 的是球還是球桿」，可能有誤判進袋的風險，值得之後
+    另外檢查 `core/` 裡處理 Trigger 事件的邏輯。
+- **是否還在震盪（第 1 項，Joint 視覺化的替代驗證）**：肉眼觀察卡住的
+  姿態完全靜止無顫動，`CueStick` prim 的 `xformOp:translate` 也完全
+  固定不再變化。這跟 headless 測試「1000+ 步關節角位元級不變」的結果
+  一致，是第三種（視覺）獨立驗證方式，進一步排除「其實還在緩慢收斂／
+  幅度過小的震盪」的可能性。
+
+**目前狀態**：碰撞、震盪這兩條線都已排除。真正卡住的成因收斂到「PhysX
+針對這個特定 `base_yaw` 朝向、`CANONICAL_REST_JOINTS` 構型的關節鏈，數值
+上真的穩定在一個偏離目標的解」，但具體是哪個數值機制造成的仍未查明
+（drive force 面板讀值、質量比病態這兩項尚未實際驗證，見上方第 2、3 項）。
+
 ## 相關檔案
 
 - `scripts/probe_first_case_residual_error.py` — 隔離診斷、排除清單的實驗
