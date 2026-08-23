@@ -202,9 +202,77 @@ base_position = (grip.x − _LOCAL_TIP_RADIUS·d̂.x,
 ### 還沒解決的部分
 
 - **這組公式只覆蓋 fallback (b) 的窄角錐**：`base_yaw` 目標值必須落在 `wam_base_yaw_joint` 限位 [-2.6, 2.6] rad 內才有效，目前的瞄準角範圍（±30°，legal aim ±27.586°）換算後穩穩落在限位內，但 Milestone B 走位球需要的整圈方向（-180°, 180°）不在覆蓋範圍——那需要另外設計（基座本身的旋轉，不能只用這一個關節）。
-- **球檯庫邊碰撞完全沒測過**：這兩次驗證只有單一機器人＋球桿，沒有球檯庫邊幾何。基座旋轉到不同瞄準角時，手臂／基座本身的物理外型有沒有可能撞到庫邊，是 #233 完整範圍要驗證的項目，目前完全未知。
+- ~~球檯庫邊碰撞完全沒測過~~ **已完成，見第十一節**（2026-08-23）。
 - **關節限位、奇異點迴避、後擺走廊仍未驗證**：見第八節既有簡化假設清單，這輪驗證的是「這組固定姿態能不能到位」，不是「掃過整個 Kitchen 網格＋整段揮桿軌跡都合法」。
 - **基座沉到地板以下（`base_z` 為負）的問題依然存在，且與姿態固定與否無關**：肩部到桌面高度差 1.317m 本身就超過 WAM7 理論最大臂展 0.91m，這是純幾何限制，不管姿態固定不固定、不管挑哪個關節配置都無法迴避，只要基座 Z 卡在地板（0）就構不到——第九節「基座位置（含高度）逐球可變」這個決策本身沒被取代，本節只是換了達成方式。
+
+## 十一、#233 球檯庫邊碰撞檢查結果（2026-08-22～2026-08-23）
+
+### 方法
+
+用 `scripts/scan_rail_collisions.py` 對 `_CUE_BALL_X_GRID`（-0.5~0.5）×
+`_CUE_BALL_Y_GRID`（-1.1~0.9）25 點網格，套用真實 `BilliardTable` +
+`TableRobotManager`（跟正式流程同一條建構路徑），複製 `_execute_aim()` 的
+`CANONICAL_REST_JOINTS + base_yaw` joint-space 目標，開 PhysX contact
+reporting 掃碰撞。初次掃描 76% 撞庫邊（19/25）——固定姿態是平躺的，握把
+到球的直線常常會先穿過庫邊上緣才到球。
+
+### 「高架橋」抬高姿態：解法
+
+參考真人打「高架橋」（elevated bridge）技術：握把端抬高、桿頭仍貼著母球，
+讓桿身從庫邊上方通過。`scripts/scan_elevated_bridge_approach.py` 把這個
+技術公式化：
+
+- `compute_required_tilt_rad()`：握把→母球連線跟四面庫邊的交點，反推最小
+  仰角 φ，使桿身在交點處的高度剛好清過庫邊頂部 + 安全餘量。
+- `compute_tilted_wrist_pose()`：仰角 φ 決定的目標腕部位置/姿態（水平分量
+  乘 cosφ、多一個垂直分量 sinφ），外加一個繞桿身軸的 `roll` 自由度（5 維
+  冗餘，不影響擊球結果，純粹用來閃避特定關節配置卡限位）。
+- 逼近軌跡：不能從全關節 0 的預設姿態直接跑差動 IK（工作空間邊界附近會
+  失穩，見第十節），先用 joint-space 帶到 `CANONICAL_REST_JOINTS`（安全
+  起點），再分階段（轉向到「朝上」→ 平移到高處 → 原地轉到最終傾斜姿態 →
+  垂直下降）用差動 IK 逼近，避免桿頭在轉換過程中意外下探撞到桌面。
+
+不需要抬高（tilt=0，「flat」案例，全網格僅 3 點）的沿用原本水平的
+`CANONICAL_REST_JOINTS`。
+
+### 結果：25 個網格點，房間位移修正後全數無碰撞
+
+初版「高架橋」（固定 roll=90°）只解到 48%；改成逐點嘗試
+`ROLL_CANDIDATES_DEG=(90,-90,45)` 挑第一個成功的、且把 3 階段軌跡的每一段
+都做碰撞檢查（不是只查終點）後提升到 76%；再補上手臂本體（不只球桿）的
+碰撞偵測（原本只對球桿開 contact reporting，漏了手臂連桿本身撞牆/撞地板
+的案例）後到 80%。
+
+剩下的 5 個失敗案例（母球 Y=-1.1 那一整排）追查後發現是撞到球桌 Head 端
+一道室內隔間牆（`Towel_Room01_wood_wall_308~316`），離算出來的機器人基座
+位置只有 ~0.5-0.6m，且該側牆是室內隔間、不是房間外殼，Foot 端（+Y）確認
+有充足淨空。把 `assets/billiard_env.usda` 的 `SimpleRoom`
+Xform 整體平移 `(0,-2,0)`（只動房間殼，不動 `BilliardTable`，`table_center`
+相依的所有計算完全不受影響）後，這 5 個案例全部轉為無碰撞。
+
+**最終：25/25 網格點 0 碰撞（100%）。**
+
+### 已知限制（供 #181 揮桿軌跡設計參考）
+
+- **22/25 網格點需要「高架橋」抬高姿態（tilt>0）才能避開撞庫邊**：#181
+  規劃揮桿弧（後擺→加速→擊球點）時，這些位置的整段軌跡（不只是最終
+  擊球瞬間）都要維持抬高姿態、沿桿身軸方向揮動，不能直接假設水平揮桿。
+  公式與分階段軌跡邏輯見 `scripts/scan_elevated_bridge_approach.py` 的
+  `compute_required_tilt_rad()` / `compute_tilted_wrist_pose()` /
+  `_run_elevated_bridge_case()`，目前只存在研究腳本，尚未整合進
+  `core/services/base_placement_calculator.py` 或
+  `core/services/table_orchestrator.py`。
+- **3/25 網格點為 flat（tilt=0）案例，其中 2 個仍有未解的殘留定位誤差**：
+  `(-0.25, -0.1)` 與 `(0.25, -0.1)` 這兩個母球位置，用
+  `CANONICAL_REST_JOINTS + base_yaw` joint-space 目標，已排除力矩飽和、
+  關節限位、自我碰撞、DOF 順序、PD stiffness 不足、碰撞（GUI 實測確認
+  唯一的幾何重疊是進袋用的 Trigger 區域，沒有反作用力）——仍穩定卡在
+  24-27mm 誤差（`is_motion_complete()` 恆為 False），根因未查明。#181
+  規劃這兩個位置的揮桿起始姿態時，需要考慮這個已知的 ~25mm 偏移量（例如
+  用實測到位姿態而非理論值當起點），或是排入 #181 之前優先解決。完整
+  排除清單、已測手法（solver iteration count、分段逼近等）見
+  `docs/issue-flat-case-residual-error.md`。
 
 ## 參考檔案
 
@@ -218,6 +286,10 @@ base_position = (grip.x − _LOCAL_TIP_RADIUS·d̂.x,
 - `extension/billiard_digital_twin/billiard_digital_twin.py`
 - `extension/isaac_sim_impl_6_0/stage_api_impl.py`
 - `extension/isaac_sim_impl_6_0/articulation_api_impl.py`
+- `scripts/scan_rail_collisions.py`（#233 初次碰撞掃描）
+- `scripts/scan_elevated_bridge_approach.py`（#233 高架橋抬高姿態公式與驗證）
+- `scripts/probe_room_clearance.py`（#233 房間隔間牆碰撞的淨空量測）
+- `docs/issue-flat-case-residual-error.md`（#233 衍生的 flat 案例殘留誤差調查）
 - `assets/barrett_wam/wam7.urdf`
 - `assets/ball_stick.usda`
 - `assets/ball_template.usda`（單位換算交叉驗證用）
