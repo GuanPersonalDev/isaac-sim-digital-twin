@@ -281,7 +281,7 @@ class ArticulationAPIImpl(ArticulationAPI):
                 raise ValueError("preceding_joint_targets[0] 格式錯誤")
             if len(preceding_joint_targets[1]) != 3:
                 raise ValueError("preceding_joint_targets[1] 格式錯誤")
-            self._start_joint_space_motion(np.asarray(preceding_joint_targets[0]), np.asarray(preceding_joint_targets[1]))
+            self._start_joint_space_motion(np.array([preceding_joint_targets[0]]), np.asarray(preceding_joint_targets[1]))
             self._awaiting_waypoints_after_joint_motion = True
         else:
             self._activate_pose_target(waypoints[0].position, waypoints[0].orientation, waypoints[0].linear_velocity, waypoints[0].angular_velocity)

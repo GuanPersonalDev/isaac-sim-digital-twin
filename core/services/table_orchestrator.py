@@ -1,6 +1,5 @@
 import logging
 from abc import ABC, abstractmethod
-from tkinter import W
 
 from ..services.base_placement_calculator import (
     CANONICAL_REST_JOINTS, compute_base_pose, compute_canonical_wrist_position, required_grip_position,
@@ -129,7 +128,7 @@ class DemoTableOrchestrator(TableOrchestrator):
         #    table_z, ball_radius, position_offset) -> (_, _, tilt_rad, crossing)
         #    tilt_rad is None：幾何無解（即使垂直抬高也無法閃避庫邊），raise ValueError
         table_z = self._table_ball_set.get_table_z()
-        ball_radius = self._table_ball_set.get_ball_radius()
+        ball_radius = self._table_ball_set.DEFAULT_BALL_RADIUS
         cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
         base_position, base_yaw_rad = compute_base_pose(cue_ball[0], cue_ball[1], action.shot_angle, table_z, ball_radius)
         wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset)
@@ -197,7 +196,7 @@ class DemoTableOrchestrator(TableOrchestrator):
 
         cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
         table_z = self._table_ball_set.get_table_z()
-        ball_radius = self._table_ball_set.get_ball_radius()
+        ball_radius = self._table_ball_set.DEFAULT_BALL_RADIUS
 
         wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset)
         if tilt_rad is None or wrist_position is None or wrist_orientation is None:
