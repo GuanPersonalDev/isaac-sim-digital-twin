@@ -164,13 +164,20 @@ def compute_canonical_wrist_position(
     踩過這個 bug，見 scripts/scan_elevated_bridge_approach.py 的 Phase 0：
     那裡的完成判定不是靠 is_motion_complete()，是固定跑 300 步就跳過，
     所以沒踩到；正式程式碼用 is_motion_complete() 驅動自我轉階段就會卡死）。
+
+    代入 `dx=cos(base_yaw_rad)、dy=sin(base_yaw_rad)`（`base_yaw_rad =
+    shot_angle_rad + pi/2` 代入三角函數平移可得）反解
+    `base_x = grip_x - _LOCAL_TIP_RADIUS*dx` 這組公式即可。
     """
     base_x, base_y, base_z = base_position
-    return (
-        base_x + _LOCAL_TIP_RADIUS * math.cos(base_yaw_rad),
-        base_y + _LOCAL_TIP_RADIUS * math.sin(base_yaw_rad),
-        base_z + _LOCAL_TIP_HEIGHT,
-    )
+    dx = math.cos(base_yaw_rad)
+    dy = math.sin(base_yaw_rad)
+
+    grip_x = base_x + _LOCAL_TIP_RADIUS * dx
+    grip_y = base_y + _LOCAL_TIP_RADIUS * dy
+    grip_z = base_z + _LOCAL_TIP_HEIGHT
+
+    return (grip_x, grip_y, grip_z)
 
 
 def compute_joint_targets(shot_angle_deg: float) -> list[float]:

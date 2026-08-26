@@ -31,9 +31,7 @@ _FOLLOW_THROUGH_MAX_M = 0.06
 def compute_required_tip_speed(cue_ball_speed: float) -> float:
     """`v_ball = v_cue * (1+e) * M/(M+m)`（action_bounds.py CUE_BALL_SPEED
     上界推導公式）的反函式：由目標母球初速反推桿尖接觸瞬間需要的速度。"""
-    momentum_ratio = (1.0 + RESTITUTION_COEFFICIENT) * CUE_STICK_MASS_KG / (
-        CUE_STICK_MASS_KG + CUE_BALL_MASS_KG
-    )
+    momentum_ratio = (1 + RESTITUTION_COEFFICIENT) * CUE_STICK_MASS_KG / (CUE_STICK_MASS_KG + CUE_BALL_MASS_KG)
     return cue_ball_speed / momentum_ratio
 
 
@@ -45,13 +43,8 @@ def compute_follow_through_distance(required_tip_speed: float) -> float:
     （`POSITION_GAIN × distance`）相對目標速度維持在驗收容許值內。
     係數需要靠 scripts/verify_swing_trajectory.py 實測校準，這裡只是
     起始值。"""
-    return float(
-        np.clip(
-            _FOLLOW_THROUGH_COEFFICIENT * required_tip_speed,
-            _FOLLOW_THROUGH_MIN_M,
-            _FOLLOW_THROUGH_MAX_M,
-        )
-    )
+    distance = _FOLLOW_THROUGH_COEFFICIENT * required_tip_speed
+    return float(np.clip(distance, _FOLLOW_THROUGH_MIN_M, _FOLLOW_THROUGH_MAX_M))
 
 
 def compute_backswing_position(
@@ -79,27 +72,25 @@ def compute_swing_waypoints(
     兩個 waypoint 的 orientation 相同：揮桿全程桿身指向不變，只有沿桿身
     軸方向的位置變化（見 docs/WAM_IK_implementation_and_verification.md
     2.1 節「後擺/擊球姿態同一個朝向」）。
+
+    做法：`direction_unit` 正規化 → `compute_required_tip_speed()` 算目標
+    桿尖速度 → `compute_follow_through_distance()` 算隨揮距離 →
+    `compute_backswing_position()` 算後擺點 → 隨揮終點 =
+    `contact_position + follow_through_distance * direction` → 兩個
+    waypoint 的 linear_velocity 分別是 `[0,0,0]` 與
+    `required_tip_speed * direction`。
     """
-    contact = np.array(contact_position)
     direction = np.array(direction_unit)
-    direction = direction / np.linalg.norm(direction)
+    direction = direction / np.linalg.norm(direction_unit)
 
     required_tip_speed = compute_required_tip_speed(cue_ball_speed)
     follow_through_distance = compute_follow_through_distance(required_tip_speed)
 
-    backswing_position = compute_backswing_position(contact, direction, backswing_distance)
-    follow_through_position = contact + follow_through_distance * direction
-    contact_linear_velocity = (required_tip_speed * direction).tolist()
+    contact_position = np.array(contact_position)
+    backswing_position = compute_backswing_position(contact_position, direction, backswing_distance)
+    follow_through_position = contact_position + follow_through_distance * direction
 
-    return [
-        PoseWaypoint(
-            position=backswing_position.tolist(),
-            orientation=list(contact_orientation),
-            linear_velocity=[0.0, 0.0, 0.0],
-        ),
-        PoseWaypoint(
-            position=follow_through_position.tolist(),
-            orientation=list(contact_orientation),
-            linear_velocity=contact_linear_velocity,
-        ),
-    ]
+    waypoint_backswing = PoseWaypoint(position=backswing_position.tolist(), orientation=contact_orientation, linear_velocity=[0,0,0])
+    waypoint_follow_through = PoseWaypoint(position=follow_through_position.tolist(), orientation=contact_orientation, linear_velocity=(required_tip_speed * direction).tolist())
+
+    return [waypoint_backswing, waypoint_follow_through]

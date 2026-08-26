@@ -1,5 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
+from tkinter import W
 
 from ..services.base_placement_calculator import (
     CANONICAL_REST_JOINTS, compute_base_pose, compute_canonical_wrist_position, required_grip_position,
@@ -120,110 +121,93 @@ class DemoTableOrchestrator(TableOrchestrator):
         self._robot_arm.reset()
 
     def _execute_aim(self, action: Action) -> None:
+        # 1. table_z / ball_radius 從 self._table_ball_set 取得；
+        #    cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
+        # 2. compute_base_pose(cue_ball_x, cue_ball_y, shot_angle_deg, table_z)
+        #    -> (base_position, base_yaw_rad)
+        # 3. cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, shot_angle,
+        #    table_z, ball_radius, position_offset) -> (_, _, tilt_rad, crossing)
+        #    tilt_rad is None：幾何無解（即使垂直抬高也無法閃避庫邊），raise ValueError
         table_z = self._table_ball_set.get_table_z()
-        ball_radius = self._table_ball_set.DEFAULT_BALL_RADIUS
+        ball_radius = self._table_ball_set.get_ball_radius()
         cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
-
-        base_position, base_yaw_rad = compute_base_pose(
-            action.cue_ball_placement[0], action.cue_ball_placement[1], action.shot_angle, table_z
-        )
-
-        _, _, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
-            cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset
-        )
+        base_position, base_yaw_rad = compute_base_pose(cue_ball[0], cue_ball[1], action.shot_angle, table_z, ball_radius)
+        wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset)
         if tilt_rad is None:
-            raise ValueError(
-                f"cue_pose_calculator: 母球位置 {action.cue_ball_placement} "
-                f"幾何無解（即使垂直抬高也無法閃避庫邊）crossing={crossing}"
-            )
-
+            raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
+        #
+        # tilt_rad <= 1e-6：flat 案例（tilt=0）。沿用已驗證過的
+        # CANONICAL_REST_JOINTS+base_yaw joint-space 路徑，不進差動 IK 管線
+        # （見 docs/issue-flat-case-residual-error.md：差動 IK 建構出的姿態跟
+        # CANONICAL_REST_JOINTS 實際 FK 姿態即使指向相同，roll 分量不保證
+        # 一樣，會逼手臂多繞路）。這個分支目前不處理 position_offset（維持
+        # 既有行為，跟 22/25 高架橋案例的偏移支援分開處理）。
+        #   grip_position = required_grip_position(cue_ball_x, cue_ball_y, shot_angle_deg)
+        #   joint_targets = [base_yaw_rad, *CANONICAL_REST_JOINTS]
+        #   self._robot_arm.reposition(base_position)
+        #   self._articulation_api.move_to_joint_position(
+        #       joint_targets, [grip_position[0], grip_position[1], table_z + ball_radius]
+        #   )
+        #   return
         if tilt_rad <= 1e-6:
-            # flat 案例（tilt=0）：沿用已驗證過的 CANONICAL_REST_JOINTS+base_yaw
-            # joint-space 路徑，不進差動 IK 管線（見
-            # docs/issue-flat-case-residual-error.md：差動 IK 建構出的姿態跟
-            # CANONICAL_REST_JOINTS 實際 FK 姿態即使指向相同，roll 分量不保證
-            # 一樣，會逼手臂多繞路）。這個分支目前不處理 position_offset
-            # （維持既有行為，跟 22/25 高架橋案例的偏移支援分開處理）。
-            grip_position = required_grip_position(
-                action.cue_ball_placement[0], action.cue_ball_placement[1], action.shot_angle
-            )
+            grip_position = required_grip_position(cue_ball[0], cue_ball[1], action.shot_angle)
             joint_targets = [base_yaw_rad, *CANONICAL_REST_JOINTS]
-            logger.info(
-                "[AIM][expected][flat] cue_ball=%s shot_angle_deg=%.2f base_position=%s "
-                "joint_targets=%s grip_position=%s",
-                action.cue_ball_placement, action.shot_angle, base_position,
-                joint_targets, grip_position,
-            )
             self._robot_arm.reposition(base_position)
             self._articulation_api.move_to_joint_position(
                 joint_targets, [grip_position[0], grip_position[1], table_z + ball_radius]
             )
             return
-
-        # 高架橋案例（tilt>0）：Phase 0（joint-space 回安全姿態避開差動 IK
-        # 奇異點，base_yaw 固定用 0.0，不是這次瞄準角的目標值——單純只是一個
-        # 通用、跟瞄準角無關的安全起點）+ Cartesian waypoint 序列
+        #
+        # tilt_rad > 0：高架橋案例。Phase 0（joint-space 回安全姿態避開差動
+        # IK 奇異點，base_yaw 固定用 0.0，不是這次瞄準角的目標值——單純只是
+        # 一個通用、跟瞄準角無關的安全起點）+ Cartesian waypoint 序列
         # （A→B→C1→C2），一次呼叫 move_through_poses() 涵蓋整條鏈。
+        #   self._robot_arm.reposition(base_position)
+        #   safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
+        #   safe_target_position = compute_canonical_wrist_position(base_position, 0.0)
+        #   （不能沿用移動前的舊位置當佔位符——那對應的是移動前的姿態，不是
+        #    safe_joint_targets 真正會到達的位置，會讓 is_motion_complete()
+        #    永遠等不到收斂）
+        #   bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
+        #       safe_target_position, cue_ball, action.shot_angle, table_z, ball_radius,
+        #       position_offset=action.position_offset,
+        #   )
+        #   bridge_waypoints is None：高架橋姿態無解，raise ValueError
+        #   self._articulation_api.move_through_poses(
+        #       bridge_waypoints,
+        #       preceding_joint_targets=(safe_joint_targets, safe_target_position),
+        #   )
         self._robot_arm.reposition(base_position)
         safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
-        # Phase 0 的 target_end_effector_position 不能沿用移動前的舊位置當
-        # 佔位符——那對應的是移動前的姿態，不是 safe_joint_targets 真正會到
-        # 達的位置，會讓 is_motion_complete() 永遠等不到收斂（見
-        # compute_canonical_wrist_position() 的說明）。
-        safe_target_position = list(compute_canonical_wrist_position(base_position, 0.0))
+        safe_target_position = compute_canonical_wrist_position(base_position, 0.0)
         bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            safe_target_position,
-            cue_ball, action.shot_angle, table_z, ball_radius,
-            position_offset=action.position_offset,
+            [safe_target_position[0], safe_target_position[1], safe_target_position[2]], cue_ball, action.shot_angle, table_z, ball_radius, position_offset=action.position_offset
         )
         if bridge_waypoints is None:
-            raise ValueError(
-                f"cue_pose_calculator: 母球位置 {action.cue_ball_placement} 高架橋姿態無解"
-            )
-        logger.info(
-            "[AIM][expected][bridge] cue_ball=%s shot_angle_deg=%.2f base_position=%s "
-            "waypoints=%s",
-            action.cue_ball_placement, action.shot_angle, base_position,
-            [(w.position, w.orientation) for w in bridge_waypoints],
-        )
+            raise ValueError("高架橋姿態無解")
         self._articulation_api.move_through_poses(
             bridge_waypoints,
-            preceding_joint_targets=(safe_joint_targets, list(safe_target_position)),
+            preceding_joint_targets=(safe_joint_targets, [safe_target_position[0], safe_target_position[1], safe_target_position[2]])
         )
 
     def _execute_strike(self, action: Action) -> None:
+        # 上一個動作（瞄準）若逾時未收斂
         if self._articulation_api.did_last_motion_timeout():
-            raise RuntimeError(
-                f"上一個動作（瞄準）逾時未收斂，姿態可能有誤差，不揮桿。"
-                f"cue_ball={action.cue_ball_placement} shot_angle_deg={action.shot_angle}"
-            )
+            raise RuntimeError("瞄準動作逾時未收斂")
 
-        table_z = self._table_ball_set.get_table_z()
-        ball_radius = self._table_ball_set.DEFAULT_BALL_RADIUS
         cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
+        table_z = self._table_ball_set.get_table_z()
+        ball_radius = self._table_ball_set.get_ball_radius()
 
-        # 獨立重新計算瞄準姿態（不依賴 _execute_aim() 留下的任何暫存狀態）：
-        # 兩次呼叫用同一組 action 欄位重算，冪等、無隱藏耦合。
-        wrist, orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
-            cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset
-        )
-        if tilt_rad is None:
-            raise ValueError(
-                f"cue_pose_calculator: 母球位置 {action.cue_ball_placement} 幾何無解 crossing={crossing}"
-            )
+        wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset)
+        if tilt_rad is None or wrist_position is None or wrist_orientation is None:
+            raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
 
         direction_unit = cue_pose_calculator.compute_tilted_direction(action.shot_angle, tilt_rad)
         waypoints = swing_trajectory_calculator.compute_swing_waypoints(
-            contact_position=wrist.tolist(),
-            contact_orientation=orientation.tolist(),
-            direction_unit=direction_unit.tolist(),
-            cue_ball_speed=action.cue_ball_speed,
-        )
-        logger.info(
-            "[STRIKE][expected] cue_ball=%s shot_angle_deg=%.2f cue_ball_speed=%.3f "
-            "tilt_rad=%.4f waypoints=%s",
-            action.cue_ball_placement, action.shot_angle, action.cue_ball_speed,
-            tilt_rad, [(w.position, w.linear_velocity) for w in waypoints],
+            contact_position=list(wrist_position),
+            contact_orientation=list(wrist_orientation),
+            direction_unit=direction_unit, cue_ball_speed=action.cue_ball_speed
         )
         self._articulation_api.move_through_poses(waypoints)
 

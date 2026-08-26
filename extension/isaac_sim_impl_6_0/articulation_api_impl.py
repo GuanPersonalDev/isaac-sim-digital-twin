@@ -252,25 +252,51 @@ class ArticulationAPIImpl(ArticulationAPI):
         waypoints: list[PoseWaypoint],
         preceding_joint_targets: tuple[list[float], list[float]] | None = None,
     ) -> None:
-        if not waypoints:
+        """依序移動末端通過一串 Cartesian pose 目標，內部自我驅動、自我轉換
+        階段，呼叫端只需要呼叫一次。只有走到最後一個 waypoint 才視為
+        「動作完成」，is_motion_complete() 在整段序列播放期間持續回傳
+        False，語意跟 move_to_pose() 一致。
+
+        做法：waypoints 不可為空（raise ValueError）。self._pending_waypoints
+        = list(waypoints)，self._waypoint_index = 0。
+
+        preceding_joint_targets 不為 None：格式為
+        (joint_positions, target_end_effector_position)，先呼叫
+        self._start_joint_space_motion(...) 收斂到這組安全姿態（避開差動
+        IK 在奇異點附近的失穩問題），self._awaiting_waypoints_after_joint_motion
+        = True，收斂後由 _step_motion() 接著播放 self._pending_waypoints[0]。
+
+        preceding_joint_targets 為 None：直接呼叫
+        self._activate_pose_target(*waypoints[0] 的四個欄位)。
+        """
+        if waypoints is None or len(waypoints) == 0:
             raise ValueError("waypoints 不可為空")
+
         self._pending_waypoints = list(waypoints)
         self._waypoint_index = 0
         if preceding_joint_targets is not None:
-            joint_positions, target_end_effector_position = preceding_joint_targets
+            if len(preceding_joint_targets) != 2:
+                raise ValueError("preceding_joint_targets 格式錯誤")
+            if len(preceding_joint_targets[0]) != len(self._dof_limits):
+                raise ValueError("preceding_joint_targets[0] 格式錯誤")
+            if len(preceding_joint_targets[1]) != 3:
+                raise ValueError("preceding_joint_targets[1] 格式錯誤")
+            self._start_joint_space_motion(np.asarray(preceding_joint_targets[0]), np.asarray(preceding_joint_targets[1]))
             self._awaiting_waypoints_after_joint_motion = True
-            self._start_joint_space_motion(np.array([joint_positions]), np.array(target_end_effector_position))
         else:
-            self._awaiting_waypoints_after_joint_motion = False
-            first = self._pending_waypoints[0]
-            self._activate_pose_target(first.position, first.orientation, first.linear_velocity, first.angular_velocity)
+            self._activate_pose_target(waypoints[0].position, waypoints[0].orientation, waypoints[0].linear_velocity, waypoints[0].angular_velocity)
 
     def _activate_pose_target(
         self, position: list[float], orientation: list[float], linear_velocity: list[float], angular_velocity: list[float]
     ) -> None:
-        self._target_position = np.array(position)
-        self._target_orientation = np.array(orientation)
-        self._feedforward_twist = np.concatenate([np.array(linear_velocity), np.array(angular_velocity)])
+        # 設定 self._target_position/_target_orientation/_feedforward_twist，
+        # self._is_joint_space_motion = False，切到 velocity 控制模式
+        # （self._articulation.switch_dof_control_mode("velocity")），重置
+        # self._motion_step_count = 0、self._did_last_motion_timeout = False，
+        # 呼叫 self._start_motion()。
+        self._target_position = np.asarray(position)
+        self._target_orientation = np.asarray(orientation)
+        self._feedforward_twist = np.concatenate([np.asarray(linear_velocity), np.asarray(angular_velocity)])
         self._is_joint_space_motion = False
         self._articulation.switch_dof_control_mode("velocity")
         self._motion_step_count = 0
@@ -322,67 +348,28 @@ class ArticulationAPIImpl(ArticulationAPI):
 
         self._motion_step_count += 1
 
-        if not self._is_current_target_converged():
-            if self._motion_step_count >= self.MOTION_TIMEOUT_STEPS:
-                logger.warning(
-                    "[MOTION_TIMEOUT] 動作在 %d 步內未收斂，強制視為完成（可能帶著誤差）。"
-                    "target_position=%s is_joint_space_motion=%s",
-                    self.MOTION_TIMEOUT_STEPS,
-                    self._target_position.tolist() if self._target_position is not None else None,
-                    self._is_joint_space_motion,
-                )
-                self._did_last_motion_timeout = True
-                self._stop_motion()
-                # 清空目前目標，讓 is_motion_complete()／_is_current_target_
-                # converged() 的「_target_position is None」早退分支立刻回傳
-                # True——否則逾時之後 is_motion_complete() 會因為位置誤差
-                # 仍然超標而永遠回傳 False，狀態機還是會卡死，逾時保護就
-                # 失去意義了。did_last_motion_timeout() 仍然會回傳 True，
-                # 呼叫端可以自行判斷這次「完成」是否可信。
-                self._target_position = None
+        if self._motion_step_count > self.MOTION_TIMEOUT_STEPS and not self._is_current_target_converged():
+            logger.warning("motion timeout: step_count: %d", self._motion_step_count)
+            self._did_last_motion_timeout = True
+            self._stop_motion()
+            self._target_position = None
             return
 
-        # preceding_joint_targets（高架橋 aim 的 Phase 0）剛收斂：接著播放
-        # move_through_poses() 排好的 Cartesian waypoint 佇列第一項。
+        if not self._is_current_target_converged():
+            return 
+
         if self._awaiting_waypoints_after_joint_motion:
             self._awaiting_waypoints_after_joint_motion = False
-            first = self._pending_waypoints[0]
-            self._activate_pose_target(first.position, first.orientation, first.linear_velocity, first.angular_velocity)
+            wp = self._pending_waypoints[0]
+            self._activate_pose_target(wp.position, wp.orientation, wp.linear_velocity, wp.angular_velocity)
             return
-
-        # 佇列裡還有下一個 waypoint（例如揮桿的後擺→接觸、高架橋的 A→B→C1→C2）：
-        # 前進到下一段，還不算整個動作完成。
+        
         if self._waypoint_index + 1 < len(self._pending_waypoints):
             self._waypoint_index += 1
-            next_waypoint = self._pending_waypoints[self._waypoint_index]
-            self._activate_pose_target(
-                next_waypoint.position, next_waypoint.orientation,
-                next_waypoint.linear_velocity, next_waypoint.angular_velocity,
-            )
+            wp = self._pending_waypoints[self._waypoint_index]
+            self._activate_pose_target(wp.position, wp.orientation, wp.linear_velocity, wp.angular_velocity)
             return
-
-        # 走到佇列最後一個 waypoint（或非序列的單一 move_to_joint_position／
-        # move_to_home 呼叫，_pending_waypoints 為空）才是真正完成。
-        actual_joint_positions = np.asarray(self._articulation.get_dof_positions())[0]
-        end_effector_position = np.array(self.get_end_effector_position())
-        cue_tip_offset = self._rotate_vector_by_quat(
-            self._get_end_effector_world_orientation(),
-            np.array([0.0, CUE_STICK_GRIP_TO_TIP, 0.0]),
-        )
-        cue_tip_position = end_effector_position + cue_tip_offset
-        robot_prim_position = self._get_robot_prim_world_position()
-        cue_stick_actual_pose = self._get_cue_stick_world_pose()
-        logger.info(
-            "[MOTION_COMPLETE] joint_positions(actual)=%s robot_prim_position=%s "
-            "end_effector_position=%s cue_tip_position(computed)=%s "
-            "cue_tip_offset_from_end_effector=%s "
-            "cue_stick_actual_position=%s cue_stick_actual_orientation=%s",
-            actual_joint_positions.tolist(), robot_prim_position,
-            end_effector_position.tolist(), cue_tip_position.tolist(),
-            cue_tip_offset.tolist(),
-            cue_stick_actual_pose[0] if cue_stick_actual_pose else None,
-            cue_stick_actual_pose[1] if cue_stick_actual_pose else None,
-        )
+        
         self._stop_motion()
 
     def _compute_pose_tracking_twist(self) -> np.ndarray:
@@ -406,20 +393,17 @@ class ArticulationAPIImpl(ArticulationAPI):
         走最短路徑。供 `_orientation_error_to_angular_velocity()`（角速度控制）
         與 `_is_current_target_converged()`（完成判定）共用。
         """
-        cw, cx, cy, cz = current_wxyz
-        tw, tx, ty, tz = target_wxyz
-        current_conj = np.array([cw, -cx, -cy, -cz])
+        w0, x0, y0, z0 = current_wxyz
+        current_inv = np.array([w0, -x0, -y0, -z0])
 
-        aw, ax, ay, az = tw, tx, ty, tz
-        bw, bx, by, bz = current_conj
-        q_error = np.array(
-            [
-                aw * bw - ax * bx - ay * by - az * bz,
-                aw * bx + ax * bw + ay * bz - az * by,
-                aw * by - ax * bz + ay * bw + az * bx,
-                aw * bz + ax * by - ay * bx + az * bw,
-            ]
-        )
+        w1, x1, y1, z1 = target_wxyz
+        w2, x2, y2, z2 = current_inv
+        q_error = np.array([
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ])
         if q_error[0] < 0:
             q_error = -q_error
         return q_error
@@ -480,17 +464,26 @@ class ArticulationAPIImpl(ArticulationAPI):
         return self._did_last_motion_timeout
 
     def _is_current_target_converged(self) -> bool:
+        # self._target_position is None：早退回傳 True（逾時後的清空狀態）。
+        # 位置誤差 = ||get_end_effector_position() - self._target_position||，
+        # >= POSITION_TOLERANCE：回傳 False。
+        # self._is_joint_space_motion 為 True：只看位置，回傳 True。
+        # 否則（pose-tracking 模式）：用 self._quat_error() 算姿態誤差角度
+        # （2 * ||q_error.xyz||），< ORIENTATION_TOLERANCE 才算收斂。
         if self._target_position is None:
             return True
-        current_position = np.array(self.get_end_effector_position())
-        if np.linalg.norm(current_position - self._target_position) >= self.POSITION_TOLERANCE:
+
+        position_error = np.linalg.norm(np.array(self.get_end_effector_position()) - self._target_position)
+        if position_error >= self.POSITION_TOLERANCE:
             return False
+
         if self._is_joint_space_motion:
             return True
+
         current_orientation = self._get_end_effector_world_orientation()
         q_error = self._quat_error(current_orientation, self._target_orientation)
-        orientation_error_rad = 2.0 * np.linalg.norm(q_error[1:])
-        return bool(orientation_error_rad < self.ORIENTATION_TOLERANCE)
+        orientation_error = 2.0 * np.linalg.norm(q_error[1:])
+        return orientation_error < self.ORIENTATION_TOLERANCE
 
     def shutdown(self) -> None:
         pass

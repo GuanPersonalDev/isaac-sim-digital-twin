@@ -12,6 +12,7 @@
 """
 
 import math
+import re
 
 import numpy as np
 
@@ -29,6 +30,10 @@ _RAILS = [
 
 
 def _segment_rail_crossings(p0, p1, rails):
+    # 計算線段 p0→p1 跟 rails 列表（每個元素是 (axis, coord, other_range)）
+    # 的所有交點：沿線段參數化 (x,y) = p0 + t*(p1-p0)，t∈[0,1]，對每面
+    # rail 解出 t、代回另一軸座標並檢查落在 other_range 內，回傳
+    # [((x, y), 交點到 p1 的距離), ...]。
     x0, y0 = p0
     x1, y1 = p1
     dx, dy = x1 - x0, y1 - y0
@@ -44,7 +49,7 @@ def _segment_rail_crossings(p0, p1, rails):
             if other_range[0] <= y <= other_range[1]:
                 d = math.hypot(coord - x1, y - y1)
                 result.append(((coord, y), d))
-        else:
+        else: # axis == "y"
             if dy == 0:
                 continue
             t = (coord - y0) / dy
@@ -62,15 +67,18 @@ def compute_required_tilt_rad(grip_xy, ball_xy, tip_height):
     tilt_rad=None 代表無解（即使垂直也不夠高，這個交點物理上過不去）。"""
     crossings = _segment_rail_crossings(grip_xy, ball_xy, _RAILS)
     if not crossings:
-        return 0.0, None
+        return 0, None
+    
     crossing, d = min(crossings, key=lambda c: c[1])
     if d < 1e-6:
         return None, crossing
+
     required_sin = (_RAIL_TOP_HEIGHT + _SAFETY_MARGIN - tip_height) / d
     if required_sin <= 0:
-        return 0.0, crossing
+        return 0, crossing
     if required_sin >= 1.0:
         return None, crossing
+
     return math.asin(required_sin), crossing
 
 
@@ -84,25 +92,33 @@ def compute_tilted_direction(shot_angle_deg: float, tilt_rad: float) -> np.ndarr
 
 
 def _shortest_arc_quat(v_from: np.ndarray, v_to: np.ndarray) -> np.ndarray:
+    # 回傳把 v_from 最短路徑旋轉到 v_to 的四元數（wxyz）。v_from≈v_to 回傳
+    # 單位四元數；v_from≈-v_to（180°）時任取一個跟 v_from 正交的軸當旋轉軸。
     v_from = v_from / np.linalg.norm(v_from)
     v_to = v_to / np.linalg.norm(v_to)
     dot = float(np.dot(v_from, v_to))
+
     if dot > 0.999999:
-        return np.array([1.0, 0.0, 0.0, 0.0])
+        return np.array([1, 0, 0, 0])
+    
     if dot < -0.999999:
-        axis = np.cross(v_from, np.array([1.0, 0.0, 0.0]))
+        axis = np.cross(v_from, np.array([1, 0, 0]))
         if np.linalg.norm(axis) < 1e-6:
-            axis = np.cross(v_from, np.array([0.0, 1.0, 0.0]))
+            axis = np.cross(v_from, np.array([0, 1, 0]))
         axis = axis / np.linalg.norm(axis)
-        return np.array([0.0, *axis])
+        return np.array([0, *axis])
+
     half = v_from + v_to
     half = half / np.linalg.norm(half)
     w = float(np.dot(v_from, half))
     xyz = np.cross(v_from, half)
+
     return np.array([w, *xyz])
 
 
+
 def _axis_angle_quat(axis: np.ndarray, angle_rad: float) -> np.ndarray:
+    # 軸角表示法轉四元數（wxyz）：w=cos(angle/2)，xyz=axis(normalized)*sin(angle/2)。
     axis = axis / np.linalg.norm(axis)
     half = angle_rad / 2.0
     return np.array([math.cos(half), *(axis * math.sin(half))])
@@ -112,14 +128,12 @@ def _quat_multiply(q1: np.ndarray, q0: np.ndarray) -> np.ndarray:
     """q1 ⊗ q0：先套用 q0、再套用 q1（wxyz）。"""
     w1, x1, y1, z1 = q1
     w0, x0, y0, z0 = q0
-    return np.array(
-        [
-            w1 * w0 - x1 * x0 - y1 * y0 - z1 * z0,
-            w1 * x0 + x1 * w0 + y1 * z0 - z1 * y0,
-            w1 * y0 - x1 * z0 + y1 * w0 + z1 * x0,
-            w1 * z0 + x1 * y0 - y1 * x0 + z1 * w0,
-        ]
-    )
+    return np.array([
+        w1 * w0 - x1 * x0 - y1 * y0 - z1 * z0,
+        w1 * x0 + x1 * w0 + y1 * z0 - z1 * y0,
+        w1 * y0 - x1 * z0 + y1 * w0 + z1 * x0,
+        w1 * z0 + x1 * y0 - y1 * x0 + z1 * w0,
+    ])
 
 
 def compute_contact_point(
@@ -139,24 +153,25 @@ def compute_contact_point(
     `position_offset` 正負號語意一致（否則同一個 RL policy 在兩條腿上學到
     的「往上打會怎樣」語意會相反）。`position_offset=[0,0]` 時回傳值精確
     等於 `ball_center`（零偏移退化，不影響任何既有零偏移呼叫端的行為）。
+
+    `direction_unit` 接近垂直（世界 +Z 分量幾乎全部）時 `e_up` 的 Gram-Schmidt
+    取法會退化（norm≈0），需要另外取一個跟 direction_unit 正交的水平向量
+    當備援基向量。
     """
-    world_up = np.array([0.0, 0.0, 1.0])
-    e_up = world_up - np.dot(world_up, direction_unit) * direction_unit
-    up_norm = np.linalg.norm(e_up)
-    if up_norm < 1e-9:
-        # direction_unit 剛好接近垂直（理論上球桿不會垂直插向地面），退化時
-        # 任取一個跟 direction_unit 正交的水平向量當 e_up。
-        candidate = np.array([1.0, 0.0, 0.0])
-        e_up = candidate - np.dot(candidate, direction_unit) * direction_unit
-        up_norm = np.linalg.norm(e_up)
-    e_up = e_up / up_norm
+    world_z = np.array([0, 0, 1])
+    e_up_raw = world_z - np.dot(world_z, direction_unit) * direction_unit
+    norm_up = np.linalg.norm(e_up_raw)
+
+    if norm_up < 1e-6:
+        fallback = np.array([1, 0, 0])
+        e_up_raw = fallback - np.dot(fallback, direction_unit) * direction_unit
+        norm_up = np.linalg.norm(e_up_raw)
+
+    e_up = e_up_raw / norm_up
     e_side = np.cross(direction_unit, e_up)
 
-    return (
-        ball_center
-        + position_offset[0] * ball_radius * e_up
-        + position_offset[1] * ball_radius * e_side
-    )
+    return ball_center + ball_radius * (position_offset[0] * e_up + position_offset[1] * e_side)
+
 
 
 def compute_tilted_wrist_pose(
@@ -171,26 +186,37 @@ def compute_tilted_wrist_pose(
     `tilt_rad=None` 代表這個母球位置無解（純幾何上過不去，不是差動 IK 的
     問題），此時 wrist/orientation 也回傳 None。
 
+    做法：`required_grip_position()` 算水平握把點 → `compute_required_tilt_rad()`
+    判斷需不需要抬高 → `compute_tilted_direction()` 算方向 →
+    `compute_contact_point()` 算球面上實際接觸點 → 沿方向反方向退開
+    `CUE_STICK_GRIP_TO_TIP` 得腕部位置 → `_shortest_arc_quat()` 從 +Y 轉到
+    `direction` 得基礎朝向，`roll_rad` 非 0 時再疊一個繞 `direction` 軸的
+    `_axis_angle_quat()` 旋轉。
+
     `roll_rad`：球桿繞自身軸（=繞 direction 這個世界向量）額外旋轉的角度，
     是 5 維冗餘的那個自由度，不影響桿頭實際指向或位置，純粹用來閃避特定
     關節配置下的關節限位。
     """
     tip_height = table_z + ball_radius
     grip_x, grip_y = required_grip_position(cue_ball[0], cue_ball[1], shot_angle_deg)
+
     tilt_rad, crossing = compute_required_tilt_rad((grip_x, grip_y), cue_ball, tip_height)
     if tilt_rad is None:
         return None, None, None, crossing
 
     direction = compute_tilted_direction(shot_angle_deg, tilt_rad)
     ball_center = np.array([cue_ball[0], cue_ball[1], tip_height])
-    contact_point = compute_contact_point(ball_center, direction, position_offset, ball_radius)
-    wrist = contact_point - CUE_STICK_GRIP_TO_TIP * direction
-    base_orientation = _shortest_arc_quat(np.array([0.0, 1.0, 0.0]), direction)
+
+    contact = compute_contact_point(ball_center, direction, position_offset, ball_radius)
+
+    wrist = contact - CUE_STICK_GRIP_TO_TIP * direction
+
+    base_orientation = _shortest_arc_quat(np.array([0, 1, 0]), direction)
     if roll_rad != 0.0:
-        q_roll = _axis_angle_quat(direction, roll_rad)
-        orientation = _quat_multiply(q_roll, base_orientation)
+        orientation = _quat_multiply(_axis_angle_quat(direction, roll_rad), base_orientation)
     else:
         orientation = base_orientation
+    
     return wrist, orientation, tilt_rad, crossing
 
 
@@ -218,22 +244,32 @@ def compute_elevated_bridge_waypoints(
     以下（實測撞過桌面 Surface 一次）：C1 腕部不動只轉向，C2 姿態已固定
     只下降，桿頭高度隨腕部線性下降、不會中途下探。
 
-    回傳 `None` 代表 `compute_tilted_wrist_pose()` 判定幾何無解。
+    `up_orientation` 是從 +Y 轉到世界 +Z 的 `_shortest_arc_quat()`；
+    `safe_high_z` 取 `current_position` 跟目標腕部高度兩者較大值再加
+    `safe_altitude_margin`；`approach_point` 是目標腕部 xy、高度用
+    `safe_high_z`。
+
+    先呼叫 `compute_tilted_wrist_pose()` 算出最終 wrist/orientation/tilt_rad，
+    回傳 `None` 代表它判定幾何無解。
     """
     wrist, orientation, tilt_rad, crossing = compute_tilted_wrist_pose(
         cue_ball_xy, shot_angle_deg, table_z, ball_radius, position_offset, roll_rad
     )
-    if tilt_rad is None:
+    if tilt_rad is None or wrist is None or orientation is None:
         return None
 
-    start_position = np.array(current_position)
     up_orientation = _shortest_arc_quat(np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0]))
-    safe_high_z = max(float(start_position[2]), float(wrist[2])) + safe_altitude_margin
-    approach_point = np.array([wrist[0], wrist[1], safe_high_z])
+
+    safe_high_z = max(float(current_position[2]), float(wrist[2])) + safe_altitude_margin
+    approach_point = [float(wrist[0]), float(wrist[1]), safe_high_z]
+
+    wrist_list = wrist.tolist()
+    orientation_list = orientation.tolist()
+    up_orientation_list = up_orientation.tolist()
 
     return [
-        PoseWaypoint(position=start_position.tolist(), orientation=up_orientation.tolist()),
-        PoseWaypoint(position=approach_point.tolist(), orientation=up_orientation.tolist()),
-        PoseWaypoint(position=approach_point.tolist(), orientation=orientation.tolist()),
-        PoseWaypoint(position=wrist.tolist(), orientation=orientation.tolist()),
+        PoseWaypoint(position=list(current_position), orientation=up_orientation_list),
+        PoseWaypoint(position=approach_point, orientation=up_orientation_list),
+        PoseWaypoint(position=approach_point, orientation=orientation_list),
+        PoseWaypoint(position=wrist_list, orientation=orientation_list),
     ]
