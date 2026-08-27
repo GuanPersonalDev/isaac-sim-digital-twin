@@ -43,7 +43,8 @@ def _run() -> None:
     from core.models.billiard_table import BilliardTable
     from core.models.table_robot_manager import TableRobotManager
     from core.services.base_placement_calculator import (
-        CANONICAL_REST_JOINTS, compute_base_pose, compute_canonical_wrist_position, required_grip_position,
+        CANONICAL_FLAT_ORIENTATION, CANONICAL_REST_JOINTS, compute_base_pose,
+        compute_canonical_wrist_position, required_grip_position,
     )
     from core.services import cue_pose_calculator
 
@@ -99,9 +100,11 @@ def _run() -> None:
         else:
             safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
             safe_target_position = list(compute_canonical_wrist_position(base_position, 0.0))
+            roll_rad = cue_pose_calculator.lookup_roll_rad(cue_ball)
             bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-                safe_target_position,
+                safe_target_position, list(CANONICAL_FLAT_ORIENTATION),
                 cue_ball, shot_angle_deg, table_z, ball_radius, position_offset=[0.0, 0.0],
+                roll_rad=roll_rad,
             )
             articulation_api.move_through_poses(
                 bridge_waypoints, preceding_joint_targets=(safe_joint_targets, safe_target_position)

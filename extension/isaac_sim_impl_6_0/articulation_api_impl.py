@@ -49,6 +49,19 @@ class ArticulationAPIImpl(ArticulationAPI):
     # _is_current_target_converged()）。joint-space 動作不受影響，繼續只看
     # 位置。
     ORIENTATION_TOLERANCE = 0.02  # rad，四元數誤差角度
+    # joint-space 動作過去的收斂判定只看末端 Cartesian 位置（POSITION_
+    # TOLERANCE），只要末端「路過」目標位置就算完成，不保證 7 個關節個別都
+    # 已經穩定在指定角度——多數 joint-space 呼叫端（move_to_home()／單獨的
+    # move_to_joint_position()）用的是同一組固定終點，末端位置收斂跟關節
+    # 收斂幾乎同時發生，這個落差長期沒被踩到。直到高架橋 Phase 0
+    # （preceding_joint_targets）把「joint-space 剛收斂就立刻接著跑差動 IK」
+    # 這個時序第一次真正端到端跑起來，才發現：末端位置提早判定收斂時，
+    # wrist_pitch/palm_yaw 這類末端關節可能還在半路上，這個「尚未真正穩定」
+    # 的起始姿態會讓後續差動 IK 走上不同路徑，足以導致某些案例改撞
+    # shoulder_pitch 硬限位（同一組 safe_joint_targets，只因為交接時機不同
+    # 就有完全不同的下游結果）。見
+    # docs/issue-180-reachability-analysis.md 第十三節。
+    JOINT_POSITION_TOLERANCE = 0.01  # rad，joint-space 動作額外要求全部關節都收斂
     POSITION_GAIN = 5.0
     ORIENTATION_GAIN = 5.0
     MAX_LINEAR_SPEED = 2.0  # m/s，P controller 位置誤差轉速度指令的上限
@@ -75,6 +88,9 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._default_joint_positions: np.ndarray | None = None
         self._home_position: np.ndarray | None = None
         self._target_position: np.ndarray | None = None
+        # joint-space 動作的目標關節角度（見 JOINT_POSITION_TOLERANCE），
+        # 只在 _is_joint_space_motion=True 時有意義。
+        self._target_joint_positions: np.ndarray | None = None
         self._target_orientation: np.ndarray | None = None
         self._feedforward_twist = np.zeros(6)
         # move_to_home / move_to_joint_position 用 joint-space 位置控制
@@ -329,6 +345,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._articulation.switch_dof_control_mode("position")
         self._articulation.set_dof_position_targets(joint_positions)
         self._target_position = np.asarray(target_end_effector_position)
+        self._target_joint_positions = np.asarray(joint_positions).reshape(-1)
         self._is_joint_space_motion = True
         self._motion_step_count = 0
         self._did_last_motion_timeout = False
@@ -478,7 +495,9 @@ class ArticulationAPIImpl(ArticulationAPI):
             return False
 
         if self._is_joint_space_motion:
-            return True
+            actual_joints = np.asarray(self._articulation.get_dof_positions())[0]
+            joint_error = float(np.max(np.abs(actual_joints - self._target_joint_positions)))
+            return joint_error < self.JOINT_POSITION_TOLERANCE
 
         current_orientation = self._get_end_effector_world_orientation()
         q_error = self._quat_error(current_orientation, self._target_orientation)

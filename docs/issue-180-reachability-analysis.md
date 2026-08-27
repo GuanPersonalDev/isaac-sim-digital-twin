@@ -253,6 +253,24 @@ Xform 整體平移 `(0,-2,0)`（只動房間殼，不動 `BilliardTable`，`tabl
 
 **最終：25/25 網格點 0 碰撞（100%）。**
 
+### 事後修正說明（2026-08-26）
+
+上面「25/25 網格點 0 碰撞」是針對 `_CUE_BALL_X_GRID`（-0.5~0.5）×
+`_CUE_BALL_Y_GRID`（-1.1~0.9）這組研究用網格，**不等於**真實 Kitchen
+母球擺位範圍（`action_bounds.py` `CUE_BALL_PLACEMENT_X`=±0.606425、
+`CUE_BALL_PLACEMENT_Y`=-1.241425~-0.635）。兩者落差：
+
+- X 方向少測了 ±0.606425 這兩個真正的角落（研究網格只到 ±0.5）
+- Y 方向的 -0.1／0.4／0.9 三排根本不在 Kitchen 範圍內；Kitchen 最貼近庫邊
+  的極限（Y=-1.241425）也從未實測過
+
+當初 #233 關閉留言宣稱「已涵蓋 Kitchen 邊界代表性網格點（含四角與中心）」，
+對照上面的數字並不成立。這個落差直到 #181 的端到端驗證（見第十二節，
+`scripts/verify_swing_trajectory.py` 對真實 `CUE_BALL_PLACEMENT_X/Y` 測試）
+才被抓到——20 個真實 Kitchen 案例 0 個成功，全部卡在 `shoulder_pitch`
+關節限位。**上面「25/25 全數無碰撞」的結論只能代表這組研究網格本身無碰撞，
+不能直接當成真實 Kitchen 邊界已驗證過。**
+
 ### 已知限制（供 #181 揮桿軌跡設計參考）
 
 - **22/25 網格點需要「高架橋」抬高姿態（tilt>0）才能避開撞庫邊**：#181
@@ -315,6 +333,109 @@ REST_JOINTS` 的 `shoulder_pitch=1.9 rad`，特意只留了 0.085 rad 餘裕，�
 接近幾何（例如縮小 `safe_altitude_margin`、改變 Phase B 的水平/垂直移動
 順序、降低所需的傾斜角），才能讓 Kitchen 範圍內的高架橋案例真正可達。
 
+## 十三、重新設計 CANONICAL_REST_JOINTS 的嘗試：原假設被推翻，真正根因是姿態/軌跡設計 bug（2026-08-27）
+
+### 起點：第十二節的假設
+
+第十二節推測根因是 `shoulder_pitch` 餘裕不足（0.085 rad），建議重新設計
+`CANONICAL_REST_JOINTS` 換取更多餘裕。本節記錄實際動手驗證這個假設的過程
+——**結論是這個假設不成立**，`shoulder_pitch` 在絕大多數測試中幾乎沒有
+主動移動，真正卡住的是完全不同的三個獨立問題，全部已修正，過程中順便發現
+一個新的、還沒解決的獨立限制（後擺可達性，見本節最後）。
+
+### 用 `scripts/search_canonical_pose_candidates.py` 網格搜尋 `(shoulder_pitch, elbow_pitch)`
+
+新增這支腳本對 20 組候選跑 flat 合法性 + 高架橋餘裕實測。**第一個關鍵發現**：
+把 `shoulder_pitch` 從 1.9 降到 1.1（餘裕從 0.085 rad 拉到 0.7683 rad），
+Kitchen 兩個代表案例（9.91°／29.61° 抬高）**全部逾時**，且 `shoulder_pitch`
+從未真正逼近自己的新限位——代表 `shoulder_pitch` 餘裕根本不是瓶頸。
+
+### 真正根因 1：Phase A「先轉指向正上方」逼死 wrist_yaw/wrist_pitch
+
+加逐 waypoint 診斷後發現：卡在原本的 Phase A（原地轉向朝正上方，一個接近
+90° 的大幅重定向），`wrist_yaw`（卡在上限 1.25）、`wrist_pitch`（卡在
+限位）會被逼死，跟 `shoulder_pitch`/`elbow_pitch` 完全無關。
+
+**修正**：把 `cue_pose_calculator.compute_elevated_bridge_waypoints()` 的
+階段順序從「A 轉正上方→B 平移→C1 轉最終姿態→C2 下降」改成「B1 保持目前
+姿態原地爬升→B2 保持目前姿態平移→C1 原地轉最終姿態→C2 下降」，把轉向動作
+從 90° 的「轉到正上方」換成通常只有 5°~30° 的「直接轉到最終傾斜姿態」。
+新增 `current_orientation` 參數（呼叫端提供，見根因 3）。
+
+### 真正根因 2：C1 單一大跳轉向讓手臂本體掃過庫邊/袋口
+
+修正根因 1 後，Kitchen 正中心案例改撞 `Cushion_Head`/`Pocket_HeadLeft`——
+不是桿頭撞到，是手臂本體（`shoulder_yaw`/`elbow_pitch` 沿路劇烈擺盪）在
+單一大跳的 C1 轉向過程中掃過去的。
+
+**修正**：C1 從單一 waypoint 改成用 NLERP（見 `cue_pose_calculator._nlerp_quat()`）
+拆成 `rotate_steps`（預設 8）個中繼姿態，讓差動 IK 不需要走極端關節配置。
+
+### 真正根因 3（最關鍵）：Phase 0 結束後的姿態分析佔位符完全錯誤
+
+即使修正根因 1、2，用跟正式程式碼一模一樣的 `preceding_joint_targets` 打包
+呼叫方式測試，Kitchen 案例依然失敗（`shoulder_pitch` 卡在 1.985）；但用
+「手動兩步驟，等固定 200 步後直接讀真實姿態」的方式測試同一個案例卻成功。
+追查發現：正式程式碼原本假設 Phase 0（`base_yaw=0` 時的 `CANONICAL_REST_
+JOINTS`）結束後，腕部朝向是單位四元數 `[1,0,0,0]`（`_shortest_arc_quat
+([0,1,0],[0,1,0])` 的計算結果）。**這個假設是錯的**：`_shortest_arc_quat`
+構造的是「最短弧」旋轉，對繞目標軸的 roll 分量完全沒有約束；實際量到的
+姿態是 `[0.00006, 0.68216, 0.73120, -0.00017]`，跟單位四元數差了將近
+**180°**。高架橋 B1/B2 階段（應該只是純位置爬升/平移，姿態不變）因此被迫
+在背景多做一個接近 180° 的意外轉向去「修正」一個根本不存在的姿態誤差，
+把 `shoulder_pitch` 逼到硬限位。
+
+**修正**：`base_placement_calculator.py` 新增 `CANONICAL_FLAT_ORIENTATION =
+(0.0, 0.68216, 0.73120, 0.0)` 常數（跟 `_LOCAL_TIP_RADIUS`/`_LOCAL_TIP_
+HEIGHT` 一樣是實測值，不是理論推導——改資產或關節角度時必須重新量測），
+取代 `table_orchestrator.py`／`scripts/verify_swing_trajectory.py`／
+`scripts/debug_ported_aim_regression.py` 裡原本的 `[1.0,0.0,0.0,0.0]`
+佔位符。**這是把 `verify_swing_trajectory.py` 的 `aim_timeout` 從 17/20
+壓到 0/20 的關鍵修正。**
+
+### 真正根因 4（獨立、跟高架橋無關）：`verify_swing_trajectory.py` 自己的量測 bug
+
+上面三個根因修正後，STRIKE 階段回報位置誤差 ~1.4 公尺、方向誤差 ~90°——
+追查發現這是驗證腳本自己的 bug，不是正式程式碼的問題：`_run_strike()` 把
+`get_end_effector_position()`（腕部位置）直接當桿尖位置去跟母球比對距離，
+漏了 `CUE_STICK_GRIP_TO_TIP=1.35m` 的偏移量。已修正（加回 `direction_unit
+* CUE_STICK_GRIP_TO_TIP` 偏移）。
+
+### 順帶解決：C1 轉向撞庫邊沒有簡單公式，改用離線查表
+
+roll（球桿繞自身軸的閃避自由度）能解決 C1 撞庫邊的問題，但對 9 個 Kitchen
+代表點掃描後發現**沒有簡單規則**（同一個 X 在不同 Y 需要的 roll 不一致，
+例如 `(0,-0.9382125)` 需要 15°、`(0,-0.7)` 需要 60°、`(0.606425,-1.15)`
+需要 45°）。改用 `cue_pose_calculator.lookup_roll_rad()`：離線掃描出的
+9 點最近鄰查表，已接進 `_execute_aim()`/`_execute_strike()`（兩邊查同一個
+函式，保證瞄準跟擊球用同一個 roll）。
+
+### 目前驗收結果（`scripts/verify_swing_trajectory.py`，20 案例）
+
+- **AIM**：0 逾時（原本 17/20）、5/20 完全成功、12/20 撞庫邊、3/20 幾何無解
+  （母球最貼近庫邊的角落，純幾何無解，預期中）。
+- **撞庫邊的 12 個案例**：roll 查表只有 9 個粗網格點，`shot_angle≠0` 的
+  案例查到的 roll 值大多不適用——這是查表覆蓋率不足，不是新 bug，需要更密
+  的網格或更聰明的選擇方式，留給後續 issue。
+- **STRIKE：0/20 成功**——修正上述 4 個根因後才第一次真正跑到 STRIKE 階段
+  （之前 AIM 全部逾時，STRIKE 從未被端到端驗證過）。發現一個新的、獨立的
+  運動學可達性問題：
+
+### 新發現、尚未解決：後擺（backswing）距離超出可達範圍
+
+`swing_trajectory_calculator.compute_swing_waypoints()` 的後擺目標是
+`contact_position - DEFAULT_BACKSWING_DISTANCE_M(0.15) * direction_unit`——
+沿桿身方向（握把→桿尖）反方向退開。但 `contact_position` 本身已經是握把
+沿這個方向退開 `CUE_STICK_GRIP_TO_TIP(1.35m)` 算出來的，這條延伸線在
+Kitchen 範圍內普遍已經逼近可達範圍邊界（AIM 階段能收斂只是剛好夠用）；
+後擺再往同一方向多退 0.15m，會讓 `base_yaw`（卡在硬限位 2.6）、
+`shoulder_pitch`（卡在 1.985）、`palm_yaw`（卡在 3.0）**三個關節同時撞死**
+，逾時保護正確攔截（不會卡死狀態機），但揮桿動作完全無法完成。
+
+留給後續 issue：可能需要動態調整後擺距離（依剩餘關節餘裕縮小）、改變後擺
+方向（不一定要沿桿身軸線）、或重新檢視 `DEFAULT_BACKSWING_DISTANCE_M` 這個
+常數本身的設計假設。
+
 ## 參考檔案
 
 - `core/models/action_bounds.py`
@@ -335,6 +456,7 @@ REST_JOINTS` 的 `shoulder_pitch=1.9 rad`，特意只留了 0.085 rad 餘裕，�
 - `core/services/swing_trajectory_calculator.py`（#181 後擺/隨揮/桿尖速度計算）
 - `scripts/verify_swing_trajectory.py`（#181 端到端驗證，發現 Kitchen 範圍撞關節限位）
 - `scripts/debug_ported_aim_regression.py`（#181 對照除錯：定位 Phase 0 佔位符 bug 與 shoulder_pitch 限位問題）
+- `scripts/search_canonical_pose_candidates.py`（第十三節：`(shoulder_pitch, elbow_pitch)` 網格搜尋、B1/B2/C1/C2 waypoint 診斷、roll 候選掃描）
 - `assets/barrett_wam/wam7.urdf`
 - `assets/ball_stick.usda`
 - `assets/ball_template.usda`（單位換算交叉驗證用）

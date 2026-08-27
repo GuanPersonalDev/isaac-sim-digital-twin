@@ -46,7 +46,7 @@ _DIRECTION_TOLERANCE_DEG = 5.0
 _SPEED_TOLERANCE_RATIO = 0.15
 
 _AIM_MAX_STEPS = 1200
-_STRIKE_MAX_STEPS = 800
+_STRIKE_MAX_STEPS = 1200
 
 
 def _build_test_cases():
@@ -90,7 +90,7 @@ def _run() -> None:
     from core.models.table_robot_manager import TableRobotManager
     from core.models.contact_event import ContactEvent
     from core.services.base_placement_calculator import (
-        CANONICAL_REST_JOINTS, compute_base_pose, compute_canonical_wrist_position,
+        CANONICAL_FLAT_ORIENTATION, CANONICAL_REST_JOINTS, compute_base_pose, compute_canonical_wrist_position,
     )
     from core.services import cue_pose_calculator, swing_trajectory_calculator
 
@@ -162,10 +162,13 @@ def _run() -> None:
         else:
             safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
             safe_target_position = list(compute_canonical_wrist_position(base_position, 0.0))
+            # 跟 table_orchestrator._execute_aim() 用同一支查表函式選 roll，
+            # 保證這支驗證腳本忠實代表正式流程的行為。
+            roll_rad = cue_pose_calculator.lookup_roll_rad(cue_ball)
             bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-                safe_target_position,
+                safe_target_position, list(CANONICAL_FLAT_ORIENTATION),
                 cue_ball, shot_angle_deg, table_z, _BALL_RADIUS,
-                position_offset=position_offset,
+                position_offset=position_offset, roll_rad=roll_rad,
             )
             if bridge_waypoints is None:
                 return {"status": "GEOMETRICALLY_INFEASIBLE"}
@@ -194,6 +197,13 @@ def _run() -> None:
         )
         if tilt_rad is None:
             return {"status": "GEOMETRICALLY_INFEASIBLE"}
+        if tilt_rad > 1e-6:
+            # 跟 table_orchestrator._execute_strike() 一樣：flat 案例維持
+            # roll_rad=0，高架橋案例查表重算一次拿正確的 wrist/orientation。
+            roll_rad = cue_pose_calculator.lookup_roll_rad(cue_ball)
+            wrist, orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
+                cue_ball, shot_angle_deg, table_z, _BALL_RADIUS, position_offset, roll_rad=roll_rad
+            )
 
         direction_unit = cue_pose_calculator.compute_tilted_direction(shot_angle_deg, tilt_rad)
         waypoints = swing_trajectory_calculator.compute_swing_waypoints(
@@ -204,12 +214,35 @@ def _run() -> None:
         contacts.clear()
         articulation_api.move_through_poses(waypoints)
 
+        # 桿尖相對握把（=end-effector）的偏移向量：direction_unit *
+        # CUE_STICK_GRIP_TO_TIP。之前這裡直接把 get_end_effector_position()
+        # （腕部位置）當桿尖位置跟母球比距離，漏了這個 1.35m 的偏移量，
+        # 算出的 position_error 整個對不上（誤差量級剛好落在 1.35m 附近）；
+        # contact_index 也因此選到「腕部離球最近」而不是「桿尖離球最近」的
+        # 錯誤時間點，連帶讓 actual_speed 量到不相干時刻的速度。
+        from core.services.base_placement_calculator import CUE_STICK_GRIP_TO_TIP as _CUE_STICK_GRIP_TO_TIP
+        tip_offset = direction_unit * _CUE_STICK_GRIP_TO_TIP
         tip_positions = []
         for step in range(_STRIKE_MAX_STEPS):
             simulation_app.update()
-            tip_positions.append(np.array(articulation_api.get_end_effector_position()))
+            tip_positions.append(np.array(articulation_api.get_end_effector_position()) + tip_offset)
+            if step % 100 == 0:
+                current_joints = np.asarray(articulation_api._articulation.get_dof_positions())[0]
+                target_pos = articulation_api._target_position
+                target_orient = articulation_api._target_orientation
+                actual_pos = np.array(articulation_api.get_end_effector_position())
+                actual_orient = articulation_api._get_end_effector_world_orientation()
+                print(
+                    f"    [strike diag] step={step} waypoint_index={articulation_api._waypoint_index} "
+                    f"is_complete={articulation_api.is_motion_complete()} "
+                    f"pos_err={float(np.linalg.norm(actual_pos - target_pos)):.5f} "
+                    f"target_pos={target_pos.tolist()} actual_pos={actual_pos.tolist()} "
+                    f"target_orient={target_orient.tolist()} actual_orient={actual_orient.tolist()} "
+                    f"joints={np.round(current_joints, 4).tolist()}"
+                )
             if articulation_api.is_motion_complete():
                 break
+        print(f"    [strike diag] FINAL step={step} waypoint_index={articulation_api._waypoint_index} timed_out={articulation_api.did_last_motion_timeout()}")
 
         ball_center = np.array([cue_ball[0], cue_ball[1], table_z + _BALL_RADIUS])
         distances = [np.linalg.norm(p - ball_center) for p in tip_positions]

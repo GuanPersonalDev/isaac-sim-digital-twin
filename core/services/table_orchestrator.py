@@ -2,7 +2,8 @@ import logging
 from abc import ABC, abstractmethod
 
 from ..services.base_placement_calculator import (
-    CANONICAL_REST_JOINTS, compute_base_pose, compute_canonical_wrist_position, required_grip_position,
+    CANONICAL_FLAT_ORIENTATION, CANONICAL_REST_JOINTS, compute_base_pose,
+    compute_canonical_wrist_position, required_grip_position,
 )
 from ..services import cue_pose_calculator, swing_trajectory_calculator
 from ..controllers.controller_base import ControllerBase
@@ -160,16 +161,21 @@ class DemoTableOrchestrator(TableOrchestrator):
         # tilt_rad > 0：高架橋案例。Phase 0（joint-space 回安全姿態避開差動
         # IK 奇異點，base_yaw 固定用 0.0，不是這次瞄準角的目標值——單純只是
         # 一個通用、跟瞄準角無關的安全起點）+ Cartesian waypoint 序列
-        # （A→B→C1→C2），一次呼叫 move_through_poses() 涵蓋整條鏈。
+        # （B1 爬升→B2 平移→C1 轉向→C2 下降），一次呼叫 move_through_poses()
+        # 涵蓋整條鏈。
         #   self._robot_arm.reposition(base_position)
         #   safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
         #   safe_target_position = compute_canonical_wrist_position(base_position, 0.0)
         #   （不能沿用移動前的舊位置當佔位符——那對應的是移動前的姿態，不是
         #    safe_joint_targets 真正會到達的位置，會讓 is_motion_complete()
         #    永遠等不到收斂）
+        #   safe_orientation = list(CANONICAL_FLAT_ORIENTATION)（base_yaw=0
+        #   時 CANONICAL_REST_JOINTS 姿態的實測世界朝向——不是單位四元數，
+        #   兩者差了將近 180° roll，同樣不能用 get_end_effector_orientation()
+        #   讀移動前的舊姿態）
         #   bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-        #       safe_target_position, cue_ball, action.shot_angle, table_z, ball_radius,
-        #       position_offset=action.position_offset,
+        #       safe_target_position, safe_orientation, cue_ball, action.shot_angle,
+        #       table_z, ball_radius, position_offset=action.position_offset,
         #   )
         #   bridge_waypoints is None：高架橋姿態無解，raise ValueError
         #   self._articulation_api.move_through_poses(
@@ -179,8 +185,25 @@ class DemoTableOrchestrator(TableOrchestrator):
         self._robot_arm.reposition(base_position)
         safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
         safe_target_position = compute_canonical_wrist_position(base_position, 0.0)
+        # Phase 0 的 base_yaw 固定用 0.0——CANONICAL_FLAT_ORIENTATION 是這組
+        # 姿態下腕部的真實世界朝向（實測值，不是單位四元數！見該常數註解：
+        # _shortest_arc_quat 構造出的單位四元數對 roll 沒有約束，跟真實姿態
+        # 差了將近 180°，這正是高架橋 B1/B2 階段被迫多轉一圈、shoulder_pitch
+        # 卡死的根因）。不能用 get_end_effector_orientation() 讀（跟
+        # safe_target_position 同一個道理：Phase 0 這時候還沒真的執行，讀到
+        # 的會是移動前的舊姿態）。
+        safe_orientation = list(CANONICAL_FLAT_ORIENTATION)
+        # C1 轉向時手臂本體可能掃過球檯庫邊/袋口，roll_rad 是用來閃避這個
+        # 問題的自由度（不影響擊球結果）——lookup_roll_rad() 是離線掃描真實
+        # Kitchen 網格找出的最近鄰查表，見該函式與
+        # docs/issue-180-reachability-analysis.md 第十三節。_execute_strike()
+        # 必須用同一顆 cue_ball 座標查同一個值，才能保證瞄準跟擊球算出同一個
+        # 目標姿態。
+        roll_rad = cue_pose_calculator.lookup_roll_rad(cue_ball)
         bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            [safe_target_position[0], safe_target_position[1], safe_target_position[2]], cue_ball, action.shot_angle, table_z, ball_radius, position_offset=action.position_offset
+            [safe_target_position[0], safe_target_position[1], safe_target_position[2]], safe_orientation,
+            cue_ball, action.shot_angle, table_z, ball_radius, position_offset=action.position_offset,
+            roll_rad=roll_rad,
         )
         if bridge_waypoints is None:
             raise ValueError("高架橋姿態無解")
@@ -198,9 +221,25 @@ class DemoTableOrchestrator(TableOrchestrator):
         table_z = self._table_ball_set.get_table_z()
         ball_radius = self._table_ball_set.DEFAULT_BALL_RADIUS
 
-        wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset)
+        # 先用 roll_rad=0 算一次只為了拿 tilt_rad 判斷 flat/bridge——roll 只
+        #在高架橋 C1 轉向階段用來閃避手臂本體撞庫邊/袋口有意義，flat 案例
+        # （tilt_rad<=1e-6）套用非零 roll 反而會讓 orientation 繞著水平桿身
+        # 軸多轉一個跟原本行為無關的角度，所以 flat 案例維持 roll_rad=0，
+        # 不查表。
+        wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
+            cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset
+        )
         if tilt_rad is None or wrist_position is None or wrist_orientation is None:
             raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
+
+        if tilt_rad > 1e-6:
+            # 高架橋案例：跟 _execute_aim() 的高架橋分支用同一顆 cue_ball
+            # 座標查同一個 roll_rad（見該處註解），保證瞄準跟擊球算出同一個
+            # 目標姿態，重算一次拿套用 roll 後的正確 wrist/orientation。
+            roll_rad = cue_pose_calculator.lookup_roll_rad(cue_ball)
+            wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
+                cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset, roll_rad=roll_rad
+            )
 
         direction_unit = cue_pose_calculator.compute_tilted_direction(action.shot_angle, tilt_rad)
         waypoints = swing_trajectory_calculator.compute_swing_waypoints(

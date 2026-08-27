@@ -94,6 +94,27 @@ _LOCAL_TIP_RADIUS = 0.38511
 _LOCAL_TIP_HEIGHT = 0.78731
 """base_yaw=0、基座 z=0 時，桿尖的世界 Z 高度（m）。"""
 
+CANONICAL_FLAT_ORIENTATION = (0.0, 0.68216, 0.73120, 0.0)
+"""base_yaw=0 時，`CANONICAL_REST_JOINTS` 姿態下腕部（=end-effector）的真實
+世界朝向（wxyz）。
+
+⚠️ **不能**用 `_shortest_arc_quat([0,1,0],[0,1,0])`（即單位四元數
+`[1,0,0,0]`）當這個姿態的分析近似值——那個公式構造出的是「最短弧」旋轉，
+對繞目標軸（這裡是世界 +Y）的 roll 分量完全沒有約束，物理上真實的
+`CANONICAL_REST_JOINTS` 關節角度解出來的 roll 落在完全不同的地方，實測量到
+`[0.00006, 0.68216, 0.73120, -0.00017]`（w/z 是量測噪聲，四捨五入視為 0），
+跟單位四元數差了將近 **180°**。
+
+`cue_pose_calculator.compute_elevated_bridge_waypoints()` 的 B1/B2 階段
+（保持「目前姿態」原地爬升/平移，姿態應該完全不變）如果拿單位四元數當
+`current_orientation` 分析佔位符，會讓差動 IK 在這兩個應該只是純位置變化的
+階段裡，被迫額外做一個接近 180° 的意外轉向去「修正」根本不存在的姿態誤差，
+把 `shoulder_pitch` 逼到硬限位卡死——這是
+docs/issue-180-reachability-analysis.md 第十三節記錄的根因。跟
+`_LOCAL_TIP_RADIUS`/`_LOCAL_TIP_HEIGHT` 一樣用 `scripts/probe_canonical_pose.py`
+量出來，改資產或關節角度時必須重新量測，不能沿用。
+"""
+
 
 def _aim_direction(shot_angle_deg: float) -> tuple[float, float]:
     """瞄準方向單位向量。0°朝桌台 +Y，正角朝 -X（見 action_bounds.py SHOT_ANGLE）。"""

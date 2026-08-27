@@ -150,24 +150,46 @@ class TestComputeElevatedBridgeWaypoints:
     # 這面庫邊相交（d=1.295m），需要一個很小但非零的抬高角（~2.7°），是個
     # 乾淨、可行的「需要抬高」測試案例。
     _FEASIBLE_TILT_KWARGS = dict(cue_ball_xy=(0.0, 0.0), shot_angle_deg=0.0, table_z=0.0, ball_radius=0.028575)
+    # 單位四元數：代表 Phase 0 結束後（base_yaw=0）CANONICAL_REST_JOINTS
+    # 水平指向世界 +Y 的姿態，見 table_orchestrator._execute_aim() 的
+    # safe_orientation。
+    _CURRENT_ORIENTATION = [1.0, 0.0, 0.0, 0.0]
 
-    def test_returns_four_waypoints_in_order(self):
+    def test_returns_waypoints_in_order(self):
         current_position = [0.0, 0.0, 1.0]
+        rotate_steps = 8
 
         waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            current_position, **self._FEASIBLE_TILT_KWARGS
+            current_position, self._CURRENT_ORIENTATION, rotate_steps=rotate_steps, **self._FEASIBLE_TILT_KWARGS
         )
 
         assert waypoints is not None
-        assert len(waypoints) == 4
-        assert waypoints[0].position == pytest.approx(current_position)
-        assert waypoints[1].position == pytest.approx(waypoints[2].position)
-        assert waypoints[2].orientation == pytest.approx(waypoints[3].orientation)
-        assert waypoints[3].position != pytest.approx(waypoints[2].position)
+        # B1 + B2 + rotate_steps 個 C1 中繼點 + C2。
+        assert len(waypoints) == 2 + rotate_steps + 1
+        # B1：xy 沿用 current_position，姿態沿用 current_orientation，只有
+        # z 抬到安全高度（不等於原本的 current_position）。
+        assert waypoints[0].position[:2] == pytest.approx(current_position[:2])
+        assert waypoints[0].position != pytest.approx(current_position)
+        assert waypoints[0].orientation == pytest.approx(self._CURRENT_ORIENTATION)
+        # B2：跟 B1 同一個安全高度，姿態仍是 current_orientation，只有
+        # xy 平移到最終腕部位置正上方。
+        assert waypoints[1].position[2] == pytest.approx(waypoints[0].position[2])
+        assert waypoints[1].orientation == pytest.approx(self._CURRENT_ORIENTATION)
+        # C1 中繼點（index 2..2+rotate_steps-1）：位置全部固定在 B2 那一點，
+        # 姿態逐步從 current_orientation 內插到最終傾斜姿態，最後一個中繼點
+        # 姿態要等於最終傾斜姿態。
+        c1_waypoints = waypoints[2 : 2 + rotate_steps]
+        for wp in c1_waypoints:
+            assert wp.position == pytest.approx(waypoints[1].position)
+        assert c1_waypoints[0].orientation != pytest.approx(self._CURRENT_ORIENTATION)
+        assert c1_waypoints[-1].orientation == pytest.approx(waypoints[-1].orientation)
+        # C2：姿態不動（跟最後一個 C1 中繼點一致），純垂直下降到最終腕部位置。
+        assert waypoints[-1].orientation == pytest.approx(c1_waypoints[-1].orientation)
+        assert waypoints[-1].position != pytest.approx(c1_waypoints[-1].position)
 
     def test_infeasible_geometry_returns_none(self):
         waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0], self._CURRENT_ORIENTATION,
             cue_ball_xy=(0.0, -1.29), shot_angle_deg=0.0, table_z=-1.3, ball_radius=0.0,
         )
 
@@ -177,10 +199,10 @@ class TestComputeElevatedBridgeWaypoints:
         current_position = [0.0, 0.0, 1.0]
 
         low = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            current_position, safe_altitude_margin=0.1, **self._FEASIBLE_TILT_KWARGS
+            current_position, self._CURRENT_ORIENTATION, safe_altitude_margin=0.1, **self._FEASIBLE_TILT_KWARGS
         )
         high = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            current_position, safe_altitude_margin=0.5, **self._FEASIBLE_TILT_KWARGS
+            current_position, self._CURRENT_ORIENTATION, safe_altitude_margin=0.5, **self._FEASIBLE_TILT_KWARGS
         )
 
         assert high[1].position[2] > low[1].position[2]

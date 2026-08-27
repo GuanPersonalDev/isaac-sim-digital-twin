@@ -28,6 +28,38 @@ _RAILS = [
     ("y", 1.295, (-0.635, 0.635)),
 ]
 
+# 高架橋轉向（C1）時手臂本體（不是桿頭）可能掃過球檯庫邊/袋口，用
+# `roll_rad` 這個閃避自由度可以避開，但實測發現同一個 X 在不同 Y 需要的
+# roll 並不一致，找不到簡單公式，只能離線查表——用
+# `scripts/search_canonical_pose_candidates.py` 對真實 Kitchen 網格
+# （`action_bounds.CUE_BALL_PLACEMENT_X/Y`）逐點掃描 roll 候選值找出來的
+# 最近鄰查表（見 docs/issue-180-reachability-analysis.md 第十三節）。
+# (cue_ball_x, cue_ball_y, roll_deg)
+_ROLL_LOOKUP_GRID = [
+    (-0.606425, -1.15, 0),
+    (-0.606425, -0.9382125, 0),
+    (-0.606425, -0.7, 45),
+    (0.0, -1.15, 0),
+    (0.0, -0.9382125, 15),
+    (0.0, -0.7, 60),
+    (0.606425, -1.15, 45),
+    (0.606425, -0.9382125, 0),
+    (0.606425, -0.7, 0),
+]
+
+
+def lookup_roll_rad(cue_ball_xy: tuple[float, float]) -> float:
+    """回傳離查表座標歐氏距離最近的網格點的 `roll_rad`。這是 9 點粗網格的
+    最近鄰查表，不是連續公式——網格點之間的座標實際覆蓋率（是否也剛好落在
+    正確的 roll 範圍內）要靠 `scripts/verify_swing_trajectory.py` 對更密的
+    真實 Action 網格驗證，不能假設一定成立。"""
+    cue_x, cue_y = cue_ball_xy
+    _, _, roll_deg = min(
+        _ROLL_LOOKUP_GRID,
+        key=lambda p: (p[0] - cue_x) ** 2 + (p[1] - cue_y) ** 2,
+    )
+    return math.radians(roll_deg)
+
 
 def _segment_rail_crossings(p0, p1, rails):
     # 計算線段 p0→p1 跟 rails 列表（每個元素是 (axis, coord, other_range)）
@@ -122,6 +154,18 @@ def _axis_angle_quat(axis: np.ndarray, angle_rad: float) -> np.ndarray:
     axis = axis / np.linalg.norm(axis)
     half = angle_rad / 2.0
     return np.array([math.cos(half), *(axis * math.sin(half))])
+
+
+def _nlerp_quat(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
+    # 四元數線性內插＋正規化（NLERP，不是精確的球面內插 SLERP，但角度差
+    # 不大、切成夠多段時誤差可忽略，用來把 compute_elevated_bridge_waypoints()
+    # 的 C1 轉向階段拆成多個中繼姿態，見該函式 2026-08-27 改版說明。
+    # q0/q1 可能差了正負號（同一個旋轉的兩種表示），內積為負時先取反 q1
+    # 走最短路徑，否則內插會繞遠路甚至反向轉。
+    if np.dot(q0, q1) < 0:
+        q1 = -q1
+    q = (1 - t) * q0 + t * q1
+    return q / np.linalg.norm(q)
 
 
 def _quat_multiply(q1: np.ndarray, q0: np.ndarray) -> np.ndarray:
@@ -222,6 +266,7 @@ def compute_tilted_wrist_pose(
 
 def compute_elevated_bridge_waypoints(
     current_position: list[float],
+    current_orientation: list[float],
     cue_ball_xy: tuple[float, float],
     shot_angle_deg: float,
     table_z: float,
@@ -229,25 +274,56 @@ def compute_elevated_bridge_waypoints(
     position_offset: list[float] = [0.0, 0.0],
     roll_rad: float = 0.0,
     safe_altitude_margin: float = 0.3,
+    rotate_steps: int = 8,
 ) -> list[PoseWaypoint] | None:
-    """把 `scan_elevated_bridge_approach.py` 的 Phase A/B/C1/C2 幾何轉成
-    4 個 `PoseWaypoint`（不含 Phase 0——Phase 0 是先用 joint-space 回安全姿態
-    避開差動 IK 奇異點，由呼叫端透過 `ArticulationAPI.move_through_poses()`
-    的 `preceding_joint_targets` 參數處理，不在這支函式的職責內）：
+    """把「先垂直爬升、再水平平移、最後才轉向」的高架橋逼近幾何轉成一串
+    `PoseWaypoint`（不含 Phase 0——Phase 0 是先用 joint-space 回安全姿態避開
+    差動 IK 奇異點，由呼叫端透過 `ArticulationAPI.move_through_poses()` 的
+    `preceding_joint_targets` 參數處理，不在這支函式的職責內）：
 
-      A  (current_position, up_orientation)   —— 原地轉向朝上
-      B  (approach_point,   up_orientation)   —— 平移到接觸點正上方安全高度
-      C1 (approach_point,   final_orientation) —— 安全高度先轉到最終傾斜姿態
+      B1 (climb_point,    current_orientation) —— 保持目前姿態原地垂直爬升到安全高度
+      B2 (approach_point, current_orientation) —— 保持目前姿態水平平移到最終腕部 xy 正上方
+      C1×rotate_steps (approach_point, NLERP(current→final, i/rotate_steps))
+          —— 安全高度原地轉到最終傾斜姿態，拆成 `rotate_steps` 個中繼姿態
       C2 (final_wrist_position, final_orientation) —— 純垂直下降
 
-    C1/C2 拆兩段是為了避免「位置與姿態同時收斂」導致桿頭中途掃過安全高度
-    以下（實測撞過桌面 Surface 一次）：C1 腕部不動只轉向，C2 姿態已固定
-    只下降，桿頭高度隨腕部線性下降、不會中途下探。
+    ⚠️ 2026-08-27 二次修正：C1 原本是單一個大跳躍 waypoint（一次性把姿態
+    從 `current_orientation` 直接下差動 IK 的目標改成 `final_orientation`），
+    實測發現即使腕部位置全程沒動，差動 IK 為了在單一 waypoint 內達成這個
+    姿態變化，會讓 `shoulder_yaw`/`elbow_pitch` 沿路劇烈擺盪（走過中間一段
+    不必要的極端關節配置），導致手臂本體（不是桿頭）掃過球檯庫邊/袋口，
+    在 Kitchen 正中心案例撞到 `Cushion_Head`／`Pocket_HeadLeft`（見
+    docs/issue-180-reachability-analysis.md 第十三節）。改成跟舊版
+    `scan_elevated_bridge_approach.py` 的 `_move_through_waypoints()` 同一個
+    做法：用 NLERP 把這段轉向拆成多個中繼姿態，每個中繼點角度差小很多，
+    差動 IK 不需要走極端關節配置就能追上，手臂本體的運動軌跡也更貼近
+    「原地小角度轉」而不是「大幅度甩動」。
 
-    `up_orientation` 是從 +Y 轉到世界 +Z 的 `_shortest_arc_quat()`；
+    ⚠️ 2026-08-27 一次修正：舊版第一階段是「原地轉向朝正上方」（Phase A），
+    目的是保證轉向過程中桿頭（離腕部 1.35m）不會掃低撞到桌面。但實測發現
+    這個「轉到正上方」是接近 90° 的大幅重新定向，會把 `wrist_yaw`（總行程
+    只有 5.8 rad，起點在 0）／`wrist_pitch`（總行程只有 π rad≈180°，起點在
+    -32°）逼到硬限位卡死收斂不了，且跟 `shoulder_pitch`/`elbow_pitch` 的
+    固定姿態餘裕無關——不管怎麼調 `CANONICAL_REST_JOINTS` 都救不了（見
+    docs/issue-180-reachability-analysis.md 第十三節，`shoulder_pitch` 從
+    1.9 降到 1.5 對這個瓶頸完全沒有幫助，殘留誤差幾乎不變）。
+
+    改用「保持目前姿態原地爬升」取代「先轉正上方再爬升」：目前姿態是水平
+    （`tip_z = wrist_z`，桿頭跟腕部同高，沒有額外墊高），爬升與平移全程
+    桿頭都跟著腕部一起在安全高度，同樣安全；轉向動作延後到 C1，此時只需要
+    從水平姿態直接轉到最終傾斜姿態（`compute_required_tilt_rad()` 算出來
+    通常只有 5°~30°），比原本的 ~90° 小得多，不會逼死 wrist_yaw/wrist_pitch。
+
+    `current_orientation`：呼叫端在真正下達 Phase 0（joint-space 回安全
+    姿態）之前，這個姿態還沒真的在場景裡發生，不能用
+    `ArticulationAPI.get_end_effector_orientation()` 讀（讀到的是移動前的
+    舊姿態）。呼叫端應該用分析算出的目標姿態（跟 Phase 0 的
+    `target_end_effector_position` 用 `compute_canonical_wrist_position()`
+    算出來、不能沿用移動前舊值同一個道理），不是靠 runtime 讀值。
+
     `safe_high_z` 取 `current_position` 跟目標腕部高度兩者較大值再加
-    `safe_altitude_margin`；`approach_point` 是目標腕部 xy、高度用
-    `safe_high_z`。
+    `safe_altitude_margin`；`climb_point` 是目前腕部 xy、高度用
+    `safe_high_z`；`approach_point` 是目標腕部 xy、高度用 `safe_high_z`。
 
     先呼叫 `compute_tilted_wrist_pose()` 算出最終 wrist/orientation/tilt_rad，
     回傳 `None` 代表它判定幾何無解。
@@ -258,18 +334,21 @@ def compute_elevated_bridge_waypoints(
     if tilt_rad is None or wrist is None or orientation is None:
         return None
 
-    up_orientation = _shortest_arc_quat(np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0]))
-
     safe_high_z = max(float(current_position[2]), float(wrist[2])) + safe_altitude_margin
+    climb_point = [float(current_position[0]), float(current_position[1]), safe_high_z]
     approach_point = [float(wrist[0]), float(wrist[1]), safe_high_z]
 
     wrist_list = wrist.tolist()
     orientation_list = orientation.tolist()
-    up_orientation_list = up_orientation.tolist()
+    current_orientation_array = np.array(current_orientation, dtype=float)
 
-    return [
-        PoseWaypoint(position=list(current_position), orientation=up_orientation_list),
-        PoseWaypoint(position=approach_point, orientation=up_orientation_list),
-        PoseWaypoint(position=approach_point, orientation=orientation_list),
-        PoseWaypoint(position=wrist_list, orientation=orientation_list),
+    waypoints = [
+        PoseWaypoint(position=climb_point, orientation=list(current_orientation)),
+        PoseWaypoint(position=approach_point, orientation=list(current_orientation)),
     ]
+    for step in range(1, rotate_steps + 1):
+        t = step / rotate_steps
+        interpolated = _nlerp_quat(current_orientation_array, orientation, t)
+        waypoints.append(PoseWaypoint(position=approach_point, orientation=interpolated.tolist()))
+    waypoints.append(PoseWaypoint(position=wrist_list, orientation=orientation_list))
+    return waypoints
