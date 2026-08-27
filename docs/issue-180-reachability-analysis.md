@@ -412,29 +412,91 @@ roll（球桿繞自身軸的閃避自由度）能解決 C1 撞庫邊的問題，
 
 ### 目前驗收結果（`scripts/verify_swing_trajectory.py`，20 案例）
 
-- **AIM**：0 逾時（原本 17/20）、5/20 完全成功、12/20 撞庫邊、3/20 幾何無解
-  （母球最貼近庫邊的角落，純幾何無解，預期中）。
-- **撞庫邊的 12 個案例**：roll 查表只有 9 個粗網格點，`shot_angle≠0` 的
-  案例查到的 roll 值大多不適用——這是查表覆蓋率不足，不是新 bug，需要更密
-  的網格或更聰明的選擇方式，留給後續 issue。
-- **STRIKE：0/20 成功**——修正上述 4 個根因後才第一次真正跑到 STRIKE 階段
-  （之前 AIM 全部逾時，STRIKE 從未被端到端驗證過）。發現一個新的、獨立的
-  運動學可達性問題：
+⚠️ **這一節的數字已被第十四節推翻，留著只是記錄當時（用了有瑕疵的測試方法）
+看到的表面現象，實際情況遠比這裡描述的嚴峻，請直接看第十四節。**
 
-### 新發現、尚未解決：後擺（backswing）距離超出可達範圍
+- ~~**AIM**：0 逾時（原本 17/20）、5/20 完全成功、12/20 撞庫邊、3/20 幾何無解~~
+- ~~**STRIKE：0/20 成功**~~
 
-`swing_trajectory_calculator.compute_swing_waypoints()` 的後擺目標是
-`contact_position - DEFAULT_BACKSWING_DISTANCE_M(0.15) * direction_unit`——
-沿桿身方向（握把→桿尖）反方向退開。但 `contact_position` 本身已經是握把
-沿這個方向退開 `CUE_STICK_GRIP_TO_TIP(1.35m)` 算出來的，這條延伸線在
-Kitchen 範圍內普遍已經逼近可達範圍邊界（AIM 階段能收斂只是剛好夠用）；
-後擺再往同一方向多退 0.15m，會讓 `base_yaw`（卡在硬限位 2.6）、
-`shoulder_pitch`（卡在 1.985）、`palm_yaw`（卡在 3.0）**三個關節同時撞死**
-，逾時保護正確攔截（不會卡死狀態機），但揮桿動作完全無法完成。
+## 十四、STRIKE 0/20 的深入調查：測試方法本身有假陽性，真正根因是更深層的多關節可達性問題（2026-08-27）
 
-留給後續 issue：可能需要動態調整後擺距離（依剩餘關節餘裕縮小）、改變後擺
-方向（不一定要沿桿身軸線）、或重新檢視 `DEFAULT_BACKSWING_DISTANCE_M` 這個
-常數本身的設計假設。
+### 起點
+
+依使用者要求調查 STRIKE 0/20 失敗的原因。先用 `scripts/search_backswing_
+distance.py`（新增）對已知 AIM 成功的 Kitchen 代表案例測試不同的
+`backswing_distance`，本以為問題就是第十三節記錄的「後擺距離超出可達
+範圍」，過程中卻先挖出一個影響範圍更大的問題。
+
+### 關鍵發現：`_AIM_MAX_STEPS`/`_STRIKE_MAX_STEPS` 太短，導致大量假陽性
+
+`verify_swing_trajectory.py`（含第十三節所有驗收數字）用的
+`_AIM_MAX_STEPS=1200`。但高架橋序列有 11~27 個 waypoint（B1+B2+`rotate_
+steps`×C1+C2），每個 waypoint 最壞情況要跑到自己的
+`ArticulationAPIImpl.MOTION_TIMEOUT_STEPS=1000` 才會真正標記逾時
+（`did_last_motion_timeout()=True`）。如果外層測試迴圈的步數預算比這個
+「最壞情況下才會揭曉真相」的時間點還短，迴圈會在**逾時真正發生之前**就
+把 `is_motion_complete()` 仍是 `False`、`did_last_motion_timeout()` 也還是
+`False` 的中間狀態當成「沒逾時＝成功」回傳——這正是第十三節「AIM 0 逾時、
+5/20 成功」的成因：**不是真的成功，是測試預算不夠長，還沒等到失敗發生**。
+
+用 `search_backswing_distance.py` 把預算拉大到 `_AIM_MAX_STEPS=4000` 重測
+第十三節記錄「成功」的兩個代表案例，兩個都在更晚的 waypoint 卡住並真正
+逾時。`verify_swing_trajectory.py` 的 `_AIM_MAX_STEPS`/`_STRIKE_MAX_STEPS`
+已修正為 4000／2500（保留在正式驗證腳本裡，這是這次調查最重要、最確定的
+產出——**任何未來要驗證這條路徑的人，必須用夠大的步數預算，否則會重複
+踩到同一個假陽性**）。
+
+### 用足夠的預算重新誠實驗證，發現真正的根因：多關節同時撞死限位，不是單一常數的問題
+
+對兩個代表案例（Kitchen 正中心 `(0,-0.9382125)`、最嚴苛角落
+`(0.606425,-0.635)`）分別追查卡住的位置：
+
+1. **中繼 NLERP 轉向 waypoint 卡住**：`orient_err` 穩定停在遠超過
+   `ORIENTATION_TOLERANCE(0.02)` 的值（例如 0.32 rad≈18°），對應的關節
+   （`shoulder_pitch`、`wrist_yaw`、`wrist_pitch`——依案例與 roll 不同而
+   不同）卡在自己的硬限位。把 `rotate_steps` 從 8 加到 24（轉向切更細）
+   能讓序列往後推進更遠，但終究還是在某個中繼點或最終 waypoint 撞死，
+   不是「切更細」就能根治。
+2. **最終接觸姿態（C2）本身撞死三個關節**：對最嚴苛角落案例，序列真的
+   走到最後一個 waypoint（C2）時，`pos_err≈0.10m`、`orient_err≈0.59 rad
+   （≈34°）`，`shoulder_pitch`（1.985）、`wrist_pitch`（-1.5707）、
+   `palm_yaw`（3.0）**三個關節同時卡在硬限位**——代表這個案例真正的
+   接觸姿態，用目前的 `CANONICAL_REST_JOINTS` 起點，物理上就是不可達。
+3. **換 roll 值只是把問題從一個關節轉移到另一個關節**：對同一個角落案例
+   試了 `roll=0°`（卡 shoulder_pitch/wrist_pitch/palm_yaw）、`roll=45°`
+   （卡 wrist_yaw，在序列更早的地方就卡住）——沒有一個測過的 roll 值能
+   讓這個案例真正收斂。
+4. **放寬 `POSITION_TOLERANCE`/`ORIENTATION_TOLERANCE` 只能解決「差一點點」
+   的案例，解決不了「差很多」的案例**：Kitchen 正中心案例的某個中繼
+   waypoint 只差一點點（`orient_err=0.023` vs 門檻 `0.02`），放寬到 0.035
+   後這個點真的過了，但緊接著在下一個 waypoint（原本被這個更早的卡點
+   掩蓋住）又卡住，而且差距更大——這證實放寬容許值只是「延後暴露問題」，
+   不是解法，兩個實驗值已還原（`POSITION_TOLERANCE=0.005`、
+   `ORIENTATION_TOLERANCE=0.02`，不要沿用診斷時暫時調過的值）。
+
+### 結論
+
+STRIKE（以及很大一部分 AIM）目前打不出去，根因不是後擺距離、不是 roll
+查表覆蓋率、也不是任何單一容許值——是 `CANONICAL_REST_JOINTS` 這組固定
+起始姿態，對高架橋案例需要的最終接觸姿態而言，**在 `shoulder_pitch`、
+`wrist_pitch`、`wrist_yaw`、`palm_yaw` 這幾個關節上的餘裕普遍不足**，這正是
+最早（第十三節開頭）被推翻的假設所懷疑的方向，只是當初只看了
+`shoulder_pitch`/`elbow_pitch` 兩個關節，範圍不夠全面，而且用來驗證的
+測試本身有假陽性，才會一路得出「已經解決」的錯誤印象。
+
+**真正需要做的（留給後續 issue，工作量遠超過本次調查範圍）**：重新設計
+`CANONICAL_REST_JOINTS`，這次要同時考慮 `shoulder_pitch`、`elbow_pitch`、
+`wrist_yaw`、`wrist_pitch`、`palm_yaw` 全部關節的餘裕，並且要用修正過的
+`verify_swing_trajectory.py`（`_AIM_MAX_STEPS=4000`）＋
+`search_backswing_distance.py` 這類誠實的收斂驗證方式，不能重蹈第十三節
+的覆轍。在這個重新設計完成之前，Kitchen 範圍的高架橋擊球應該視為**已知
+不可達**，不建議在目前狀態下宣稱「AIM 已修好」。
+
+### 參考檔案（本節新增）
+
+- `scripts/search_backswing_distance.py`（第十四節：後擺距離掃描、AIM/
+  STRIKE 誠實收斂驗證、roll 掃描、逐 waypoint 位置/姿態誤差與關節數值
+  診斷）
 
 ## 參考檔案
 

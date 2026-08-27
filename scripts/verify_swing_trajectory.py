@@ -45,8 +45,12 @@ _POSITION_TOLERANCE_M = _BALL_RADIUS / 10.0
 _DIRECTION_TOLERANCE_DEG = 5.0
 _SPEED_TOLERANCE_RATIO = 0.15
 
-_AIM_MAX_STEPS = 1200
-_STRIKE_MAX_STEPS = 1200
+_AIM_MAX_STEPS = 4000  # 高架橋序列有 11 段 waypoint（B1+B2+8×C1+C2），每段最壞
+# 情況要跑到自己的 MOTION_TIMEOUT_STEPS=1000 才會真的標記逾時。1200 太短，
+# 會在真相揭曉前就把測試迴圈跑完，把「還沒逾時」誤判成「成功」（見
+# docs/issue-180-reachability-analysis.md 第十四節，scripts/search_
+# backswing_distance.py 診斷出的假陽性）。
+_STRIKE_MAX_STEPS = 2500  # 2 段 waypoint，同樣道理，1200 可能不夠讓內部逾時真正發生。
 
 
 def _build_test_cases():
