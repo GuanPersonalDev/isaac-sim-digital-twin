@@ -873,7 +873,8 @@ iterations being added to a TGS scene」，尚未深入調查是否與此有關�
    放大）——證實碰撞物理／材質設定本身完全正常，問題精準定位在**球桿
    透過 `FixedJoint` 掛在受驅動的 articulation 上**這個環節。
 
-**結論**：這不是控制器參數、碰撞開關、或求解器設定的問題，是結構性的
+**結論（初版，2026-08-28——⚠️ 已被第十七節推翻，留著僅供對照調查
+過程）**：這不是控制器參數、碰撞開關、或求解器設定的問題，是結構性的
 ——PhysX 的 articulation 求解器（reduced-coordinate 公式）在處理「外部
 碰撞力通過 FixedJoint 傳回一個正在被關節速度驅動的運動鏈」這件事上，
 疑似無法正確把碰撞反作用力整合進同一個求解迭代，導致衝量在傳遞路徑上
@@ -894,6 +895,71 @@ PhysX 的動量傳遞在某些情境下不是靠單一次事件的 impulse 完�
    附掛剛體對外碰撞」是否為已知限制、有沒有建議的替代連接方式（例如
    直接用 D6 Joint 鎖死所有自由度，測試看看求解路徑是否不同）。
 
+**⚠️ 2026-08-29 更新：上面這個「PhysX 結構性限制」的結論是錯的**，
+真正根因跟 PhysX 求解器完全無關，見第十七節——是 AIM／搭橋收斂目標點
+精確落在母球球心（零間距），慢速 P 控制器收斂時把球推走，STRIKE 執行
+時打的是已經滾開的空氣。上面 1-3 點修法方向都不需要，也沒有實施。
+
+### 假說 5～9 的排除（同日續三）
+
+在決定性實驗（自由剛體撞球正常）之後，繼續逐一排除更多機制假說，
+方法都是同一套：`timeline.play()` 前用 USD attribute 直接覆寫、對照
+組跑完整的 AIM→STRIKE 流程，用 `RigidPrim.get_velocities()` 量真實
+母球速度＋`ContactEvent` 回報比對。逐一結果：
+
+5. **`excludeFromArticulation`**（官方文件「Exclude Joints from
+   Articulations」章節描述的案例正是「用 FixedJoint 接 swappable
+   manipulator 到機器人手臂」）設為 `True`：無效，且一開始造成
+   CueStick 跟機器人自身連桿的災難性自碰撞（impulse 一度衝到
+   2095），因為原本的 `filter_collision_pair()` 只排除了跟末端執行器
+   的碰撞，沒涵蓋其他連桿；補上跟機器人「全部」剛體/碰撞 prim 的過濾
+   後自碰撞解決，但 CueStick↔Ball 的衝量依舊精準是 0。
+6. **隨揮終點停留時間太短**：隨揮距離從設計值 2-6cm 拉長到 30cm，
+   桿尖確認接近到 10.8mm，依舊沒有觸發任何新的碰撞事件——排除「動量
+   還沒累積就已經拉開」這個假說。
+7. **TGS 求解器預設只在 frame 開頭套用一次外力**：開啟
+   `physxScene:enableExternalForcesEveryIteration`（讓外力/joint
+   efforts 按比例套用到每個 TGS 內部子步）：無效。
+8. **PhysX 官方文件「Articulation Drive Stability」章節**：Gauss-Seidel
+   迭代求解耦合約束時「最後被解算的約束會贏」，`move_swing()` 用
+   velocity-drive（`damping=174.53293`、`maxForce` 未設=無限）本身是
+   無上限硬約束，懷疑同一 solver sub-step 內蓋掉 contact 算出的衝量。
+   分別把 `damping` 降到 20、`maxForce` 限制在 URDF 額定的 50N·m：
+   無效，但發現比先前紀錄更精確的現象——揮桿階段桿尖確認幾何重疊到
+   **7.8mm**（遠小於球半徑），卻**連 `CONTACT_FOUND` 事件本身都沒有
+   觸發**，不是「事件觸發但衝量算成 0」。這代表問題更像窄相位碰撞
+   偵測在高速通過時漏判（穿透/tunneling 類現象），而不是「已求解的
+   contact 衝量被 drive 蓋掉」——先前測過的 CCD（假說 3）理應處理這類
+   穿透問題卻仍無效，懷疑 CCD 對「透過 FixedJoint 掛在受驅動
+   articulation 上的剛體」的支援方式跟自由剛體不同，是下一輪調查的
+   方向。
+9. **針對假說 8 的懷疑追查**：查 PhysX 官方文件確認「CCD interactions
+   are automatically disabled between links in an articulation」這句話
+   只適用於「同一個 articulation 內部 link 彼此之間」（例如 ragdoll
+   肢體互撞），跟本案「articulation link 對外部一般剛體（母球）碰撞」
+   是兩回事，文件沒有額外限制記載；另外發現 `CueStick/Cylinder`／
+   `Ball` 都沒有明確設定 `physxCollision:contactOffset`（`Ball` 實測
+   預設 0.005m），懷疑揮桿桿尖單步移動量遠大於這個 margin。把兩者
+   `contactOffset` 都放大到 0.05m（10 倍）測試：無效——AIM 階段多偵測
+   到 2 個額外的（跟桌面/庫邊）接觸事件，但揮桿階段依舊完全沒有
+   CueStick↔Ball 的接觸事件，所有事件衝量依舊是 0。
+
+搜尋官方文件與社群過程中，唯一找到直接相關的線索是 Unity Issue
+Tracker 上一則類似的已知 PhysX 限制（[Fixed Joint Component doesn't
+restrict movement when connected between a RigidBody and an
+Articulation Body Components](https://issuetracker.unity3d.com/issues/fixed-joint-component-doesnt-restrict-movement-when-connected-between-a-rigidbody-and-an-articulation-body-components)），
+但沒有提供可行的修法，只印證這類「剛體 FixedJoint 接到受驅動
+articulation」的組合在 PhysX 生態系裡是已知會出問題的模式。
+
+**值得重新檢視的一點**：官方教學（Tutorial 6／Robot Assembler）描述的
+FixedJoint 掛夾爪模式，正是 Isaac Sim 裡末端夾爪能夠感知/回應抓取
+碰撞力的標準做法，大量真實專案靠這個模式運作正常——代表「FixedJoint
+附掛 articulation link 對外碰撞完全失效」不太可能是普遍性的 PhysX
+限制，更可能是本案「桿身極細（半徑 0.01m）＋極高速通過（單步位移
+遠超過球半徑）＋接觸只維持 1-2 步」這個組合的邊界情況。下一輪如果要
+繼續參數調查，優先方向可以是刻意加粗碰撞代理幾何做排查，而不是繼續
+泛用的 PhysX 場景層級設定。
+
 ### 參考檔案（本節新增）
 
 - `scripts/search_collision_free_roll.py`（碰撞感知 roll 搜尋，已改成
@@ -906,13 +972,156 @@ PhysX 的動量傳遞在某些情境下不是靠單一次事件的 impulse 完�
   揮桿速度線性規劃+IK margin 排序）
 - `scripts/diagnose_move_swing.py`（`move_swing()` 的逐步驗證腳本：
   桿尖到球距離、關節速度、球桿剛體位置對照、碰撞事件回報、階段標記、
-  求解器/剛性/CCD 覆寫測試開關）
+  求解器/剛性/CCD/`excludeFromArticulation`/隨揮距離/
+  `enableExternalForcesEveryIteration`/關節 drive `damping`／
+  `maxForce`（`SWING_JOINT_DAMPING`／`SWING_JOINT_MAX_FORCE`）/
+  碰撞 `contactOffset`（`SWING_CONTACT_OFFSET`）覆寫測試開關）
 - `scripts/minimal_repro_cue_impact.py`（最小重現案例：自由剛體撞球，
   證實碰撞物理本身正常，問題在 articulation 附掛結構）
 - `extension/isaac_sim_impl_6_0/articulation_api_impl.py`
   `move_swing()`／`_step_swing_motion()`／`_skew_matrix()`（新增的
   揮桿專用速度最優控制器本體）
 - `core/ports/articulation_api.py`（`move_swing()` 抽象方法定義）
+
+## 十七、零衝量問題的真正根因：AIM 收斂目標點沒有安全間距，STRIKE 打的是空氣（2026-08-29）
+
+### 起點：用「位置」而非「PhysX 參數」重新檢查
+
+前一節排除完 9 個 PhysX 求解器/碰撞參數假說後，使用者提示「用位置檢查
+球桿尖端與母球的位置是否重疊」——跳出「調 PhysX 參數」這個框架，改用
+**真實幾何**驗證：不再用「桿尖單點（由腕部姿態+固定偏移量推算）vs
+球心，只跟球半徑比較」這種近似公式，而是直接從 USD 讀 `Cylinder` 的
+真實半徑/高度/軸向，配合 `CueStick` 剛體自己每步回報的真實世界姿態，
+重建整條桿身的世界座標線段，算「母球即時位置（不是靜態的 nominal
+座標）到這條線段的最近距離」減去「兩者半徑和」——真正的表面間距。
+
+### 決定性發現：揮桿階段桿尖跟母球實際相差 28 公分
+
+用這個嚴謹的位置檢查跑 `scripts/diagnose_move_swing.py`（`(0.0,
+-0.9382125)` 案例），結果：**揮桿階段桿尖跟母球實際表面間距高達
+0.28m，完全沒有重疊**。但奇怪的是，揮桿一開始（`swing` 迴圈 step=0）
+母球就已經有 `0.27 m/s` 的殘留速度，且全程緩慢衰減（滾動摩擦），不是
+新加速——代表母球在揮桿執行「之前」就已經被撞動、正在滾走。
+
+回頭追蹤整個 AIM 收斂過程（400 步）逐步的母球位置/速度：
+
+| AIM step | 母球狀態 |
+|---|---|
+| 0～366 | 完全靜止，位置精準等於原始擺放座標 |
+| **367** | `ball_speed` 瞬間跳到 `0.1185 m/s`——正是先前追蹤的那個 `CueStick/Cylinder <-> Ball`、`impulse=0.0` 的接觸事件發生的那一步 |
+| 397（AIM 收斂完成） | 母球已偏移原始位置 1.74cm，仍在滾動 |
+| 揮桿真正執行時（又過了退桿 90 步＋揮桿 60 步） | 母球已偏移原始位置 28cm 以上 |
+
+**母球真的被撞到、真的獲得了速度**——`ContactEvent.impulse=0.0` 這個
+欄位本身是誤導性的（物理上動量確實有轉移，這點本身是另一個獨立、
+次要的觀察，不影響這裡的根因結論）。
+
+### 撞球機制：不是單次誤觸，是 AIM 收斂持續把球往前推
+
+追蹤 `aim_step=355~380` 逐步的真實表面間距（見上表 step 367 附近），
+畫面非常清楚：
+
+- step 355→366：間距從 8.9cm 平滑遞減到 1.0cm——桿尖正常逼近球，球
+  完全靜止（P 控制器正常收斂中）。
+- step 367：間距僅剩 6mm（用嚴謹計算，尚未真正觸碰），球速卻已跳到
+  0.12 m/s——PhysX 的 speculative contact margin 提前產生作用力，這是
+  正常/預期的行為，不是 bug。
+- step 370～380：間距貼在 ±0.3mm 內反覆穿越零（真的頂在球面上），
+  球速持續攀升到 **0.32 m/s**。
+
+**這不是一次性的誤觸，是桿尖在持續推球**：AIM／搭橋（bridge）姿態的
+最終目標點，設計上精確落在母球球心（見下方「根因」），P 控制器單純
+朝這個固定目標點收斂——但目標點的位置正好被球佔住，於是控制器一路
+把球往前推、追著球面收斂，直到位置誤差終於在容許範圍內才判定
+`is_motion_complete()`（第 397 步），過程中已經把球推了近 30 步、
+衝到 0.32 m/s。等到退桿＋揮桿真正執行時，球早已滾到別處，桿尖打的是
+空氣——完全解釋「揮桿階段桿尖幾何上真的重疊（不可能，實際差 28cm）」
+跟「PhysX 完全沒有觸發任何 CONTACT_FOUND 事件」看似矛盾的現象：不是
+PhysX 漏判，是真的沒有重疊。
+
+### 根因：`compute_contact_point()`/`compute_tilted_wrist_pose()` 的「目標點=球心」慣例，AIM 慢速收斂時沒有安全餘量
+
+`core/services/cue_pose_calculator.py` 的 `compute_contact_point()`：
+
+```python
+return ball_center + ball_radius * (position_offset[0] * e_up + position_offset[1] * e_side)
+```
+
+`position_offset=[0,0]`（無偏移，AIM／搭橋／STRIKE 的預設案例）時，
+回傳值精確等於 `ball_center`——這是刻意的既有慣例（docstring 明確
+記載「零偏移退化，不影響任何既有零偏移呼叫端的行為」，`required_
+grip_position()` 也是同一慣例），`compute_tilted_wrist_pose()` 的
+`wrist = contact - CUE_STICK_GRIP_TO_TIP * direction` 因此讓桿尖目標
+精確落在球心，而不是球面（球心比球面深 `ball_radius`≈2.86cm）。
+
+這個慣例對 **STRIKE 揮桿本身無妨**：揮桿是高速通過，真正的物理碰撞
+遠早於軟體目標點被打到就已經發生，`wrist`／`contact_position` 只是
+方向與隨揮終點計算的參考點，揮桿從不會真的停在那個點上。但對
+**AIM／搭橋這種慢速、真的會收斂並停下來的 P 控制器**是致命的——控制器
+不知道路徑上有一顆物理的球擋著，只看位置誤差夠不夠小，於是持續頂著
+球面往目標點（球心）推，直到「用力把球往前推走」湊出足夠小的位置
+誤差為止。
+
+前一節排除的 9 個 PhysX 求解器/碰撞參數假說，全部是在**錯誤的層級**
+調查——它們預設「母球位置正確、只是碰撞力沒有正確傳遞」，但真正的
+問題是「母球位置在 STRIKE 執行前，已經被 AIM 自己的收斂過程推走了」，
+跟 PhysX 的 articulation 求解器、FixedJoint 結構完全無關。
+
+### 修法與驗證
+
+`compute_elevated_bridge_waypoints()` 新增 `contact_clearance_m` 參數
+（預設 `0.05`），只調整 AIM／搭橋收斂的**最終**（C2）目標點——沿
+`-direction` 方向退開這個距離，讓收斂終點停在母球表面外側，不影響
+`compute_tilted_wrist_pose()` 本身或 STRIKE 揮桿路徑。
+
+用 `scripts/diagnose_move_swing.py` 新增的 `AIM_CONTACT_CLEARANCE_M`
+覆寫開關實測校準（真實 Isaac Sim 物理模擬，非解析推算）：
+
+| `contact_clearance_m` | AIM 階段母球殘留速度 | STRIKE 階段結果 |
+|---|---|---|
+| 0（原本行為） | 0.32 m/s（持續被推） | 桿尖跟母球間距 28cm，完全打空 |
+| 0.01m | 0.15 m/s（仍被推，只是變輕） | 未驗證到底 |
+| 0.03m | ~0.10 m/s（仍有極小觸碰） | `impulse=0.201`，母球 `1.06 m/s` |
+| **0.05m（採用值）** | **0.0000 m/s（全程零觸碰事件）** | **`impulse=0.201`，母球 `1.05 m/s`** |
+
+`contact_clearance_m=0.05` 的最終驗證（不帶任何實驗性覆寫）：AIM 全程
+`ball_speed=0.0000`，`contact_events_count` 裡完全沒有 `aim:xxx` 階段
+的 `CueStick/Cylinder <-> Ball` 事件；揮桿階段 `swing:51` 出現**真實
+非零衝量 `impulse=0.20078956438243786`**——整個調查過程第一次在揮桿
+階段量到非零衝量，母球真實速度 `max_ball_speed=1.0545 m/s`
+（`required_tip_speed=1.5116 m/s`，達成率約 70%，是揮桿控制器可達
+最大速度的另一個獨立問題，不影響這次「有沒有打到球」的結論）。
+`core/tests/` 652 個單元測試全過。
+
+### 已知缺口（留給後續）
+
+1. 母球實際速度比需求速度低約 30%——`move_swing()` 線性規劃揮桿速度
+   上限問題，見第十六節「STRIKE：不是 waypoint 設計問題，是真正的
+   運動學速度上限」，是獨立問題。
+2. `contact_clearance_m=0.05` 只在最難的 Kitchen 案例上實測，尚未跑
+   完整 X×Y 網格回歸確認所有案例都不會因為多退開 5cm 反而撞到別的
+   東西或 IK 不可達。
+3. 只修了「高架橋」（`tilt_rad>0`）分支；`_execute_aim()` 的 flat 案例
+   （`tilt_rad<=1e-6`，用 `required_grip_position()`+
+   `CANONICAL_REST_JOINTS`）用同一個「目標點=球心」慣例，理論上有
+   類似風險，這次沒有動它（flat 案例跟 Kitchen 母球擺位範圍幾乎不
+   重疊，見 `docs/issue-flat-case-residual-error.md`，且未實測證實
+   有沒有實際發生）。
+4. `DemoTableOrchestrator._execute_strike()`（正式生產路徑）目前呼叫
+   的是舊版 `swing_trajectory_calculator.compute_swing_waypoints()` +
+   `move_through_poses()`，還沒接上 `move_swing()` 速度最優控制器——
+   這次的修法對兩條路徑都有效（都依賴同一個被推走的母球位置），但
+   `move_swing()` 本身要正式派上用場還需要另外把 `_execute_strike()`
+   接上它。
+
+### 參考檔案（本節新增）
+
+- `core/services/cue_pose_calculator.py`
+  （`compute_elevated_bridge_waypoints()` 新增 `contact_clearance_m`
+  參數，此為本節修法的唯一正式程式碼變更）
+- `scripts/diagnose_move_swing.py`（新增：`_real_surface_gap()` 嚴謹
+  幾何重疊檢查、AIM 收斂全程母球位置/速度追蹤、
+  `AIM_CONTACT_CLEARANCE_M` 校準開關）
 
 ## 參考檔案
 

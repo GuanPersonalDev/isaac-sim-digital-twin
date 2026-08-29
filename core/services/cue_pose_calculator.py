@@ -308,6 +308,7 @@ def compute_elevated_bridge_waypoints(
     roll_rad: float = 0.0,
     safe_altitude_margin: float = 0.3,
     rotate_steps: int = 8,
+    contact_clearance_m: float = 0.05,
 ) -> list[PoseWaypoint] | None:
     """把「先垂直爬升、再水平平移、最後才轉向」的高架橋逼近幾何轉成一串
     `PoseWaypoint`（不含 Phase 0——Phase 0 是先用 joint-space 回安全姿態避開
@@ -360,6 +361,31 @@ def compute_elevated_bridge_waypoints(
 
     先呼叫 `compute_tilted_wrist_pose()` 算出最終 wrist/orientation/tilt_rad，
     回傳 `None` 代表它判定幾何無解。
+
+    ⚠️ `contact_clearance_m`（2026-08-29 新增，見 docs/issue-180-
+    reachability-analysis.md 第十七節「AIM 收斂實際推球」根因調查）：
+    `compute_tilted_wrist_pose()` 回傳的 `wrist`（配合 `CUE_STICK_GRIP_TO_TIP`
+    反推出的桿尖位置）精確落在**母球球心**，不是球面——這是
+    `compute_contact_point()`／`required_grip_position()` 共用的既有慣例
+    （`position_offset=[0,0]` 退化為 `ball_center`，STRIKE 用同一個 `wrist`
+    當揮桿參考點時無妨，因為揮桿是高速通過、真正的物理碰撞遠早於軟體
+    目標點被打到就已經發生）。但 AIM／搭橋是慢速 P 控制器收斂到這個固定
+    目標，一路收斂會把桿尖持續往球心推、真的把母球往前推走（實測會推到
+    0.3m/s、母球在揮桿真正執行前就已經滾開 28cm，揮桿因此打空）——不是
+    PhysX 碰撞求解器的問題。這裡把 AIM／搭橋收斂的**最終**（C2）目標點
+    沿 `-direction` 方向退開 `contact_clearance_m`，讓收斂終點停在母球表面
+    外側，而不是球心，此為唯一改動 wrist 目標的地方，`wrist`／
+    `compute_tilted_wrist_pose()` 本身與 STRIKE 揮桿路徑都不受影響。
+
+    數值是用 `scripts/diagnose_move_swing.py` 的
+    `AIM_CONTACT_CLEARANCE_M` 覆寫開關實測校準出來的（真實 Isaac Sim
+    物理模擬，非解析推算）：0.01m 仍會被 P 控制器的收斂爬升「追上」
+    （母球殘留速度從無間距的 0.32m/s 降到 0.15m/s，但沒有歸零）；0.03m
+    AIM 階段仍有一次極小的觸碰（母球殘留 ~0.1m/s），但已經足以讓
+    STRIKE 揮桿階段量到真實非零衝量（`impulse=0.201`、母球
+    `1.06m/s`）；**0.05m 完全消除 AIM 階段的碰撞事件**（全程 `ball_speed
+    =0.0000`），STRIKE 同樣量到真實非零衝量（`impulse=0.201`、母球
+    `1.05m/s`）——採用 0.05m 當預設值。
     """
     wrist, orientation, tilt_rad, crossing = compute_tilted_wrist_pose(
         cue_ball_xy, shot_angle_deg, table_z, ball_radius, position_offset, roll_rad
@@ -367,11 +393,14 @@ def compute_elevated_bridge_waypoints(
     if tilt_rad is None or wrist is None or orientation is None:
         return None
 
+    direction = compute_tilted_direction(shot_angle_deg, tilt_rad)
+    safe_wrist = wrist - contact_clearance_m * direction
+
     safe_high_z = max(float(current_position[2]), float(wrist[2])) + safe_altitude_margin
     climb_point = [float(current_position[0]), float(current_position[1]), safe_high_z]
-    approach_point = [float(wrist[0]), float(wrist[1]), safe_high_z]
+    approach_point = [float(safe_wrist[0]), float(safe_wrist[1]), safe_high_z]
 
-    wrist_list = wrist.tolist()
+    wrist_list = safe_wrist.tolist()
     orientation_list = orientation.tolist()
     current_orientation_array = np.array(current_orientation, dtype=float)
 
