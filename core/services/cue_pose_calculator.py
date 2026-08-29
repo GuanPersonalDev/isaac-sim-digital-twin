@@ -29,22 +29,55 @@ _RAILS = [
 ]
 
 # 高架橋轉向（C1）時手臂本體（不是桿頭）可能掃過球檯庫邊/袋口，用
-# `roll_rad` 這個閃避自由度可以避開，但實測發現同一個 X 在不同 Y 需要的
-# roll 並不一致，找不到簡單公式，只能離線查表——用
-# `scripts/search_canonical_pose_candidates.py` 對真實 Kitchen 網格
-# （`action_bounds.CUE_BALL_PLACEMENT_X/Y`）逐點掃描 roll 候選值找出來的
-# 最近鄰查表（見 docs/issue-180-reachability-analysis.md 第十三節）。
+# `roll_rad` 這個閃避自由度可以避開。
+#
+# ⚠️ 2026-08-28 全面重建：舊表（0°/15°/45°/60° 這種小角度）是用物理模擬
+# 手動試誤選出來的、只確認「無碰撞」，從未真正驗證「AIM 差動 IK 收得斂」；
+# 見 docs/issue-180-reachability-analysis.md 第十四節，20 案例 STRIKE 0/20
+# 全滅的根因追到最後，就是這個查表逼 shoulder_pitch／wrist_pitch／palm_yaw
+# 同時頂死關節限位。用 `scripts/wam7_kinematics.py` 的純數值 IK（不跑物理，
+# 秒級可測數百組候選）重新搜尋，發現正確的 roll 落在完全不同的範圍
+# （-180°~165°），而且——關鍵發現——**roll 只跟 cue_ball_y 有關，跟
+# cue_ball_x 無關**（base_yaw 關節會吸收 X 方向的差異，同一個 Y、不同 X
+# 的三個案例算出來的最佳 roll 完全一致，見 scripts/search_roll_for_full_
+# swing.py 的實測輸出）。
+#
+# 這個表不是只驗證「AIM 目標本身可達」，是用
+# `scripts/search_roll_for_full_swing.py` 模擬真實差動 IK「不會跳關節分支」
+# 的行為——AIM 解當後擺的起點、後擺解當隨揮終點的起點，確認整條
+# AIM→後擺→隨揮終點軌跡在同一分支內都收斂、且沒有任何關節被逼到限位
+# （margin < 0.05rad）——比舊表更貼近真實 `ArticulationAPIImpl._step_motion()`
+# 的行為。
+#
+# ⚠️ 2026-08-28 二次修正：純數值 IK 沒有建模手臂本體碰撞（C1 轉向時手臂
+# 本體可能掃過庫邊/袋口，這正是 roll 這個自由度原本要解決的問題），只用
+# IK 餘裕排序的表在完整 20 案例網格上大多數是 COLLISION。改用
+# `scripts/search_collision_free_roll.py`：對每個候選點依 IK 餘裕由高到
+# 低嘗試候選（候選清單來自 `search_roll_for_full_swing.py`），逐一用真實
+# Isaac Sim 物理模擬＋正式的 `enable_contact_reporting`／`ContactEvent`
+# 碰撞回報驗證，取第一個「IK 收斂 + 無碰撞」都成立的候選。
+#
+# ⚠️ 三次修正：「roll 只跟 cue_ball_y 有關」只在**數值 IK 可達性**這個
+# 面向成立（`wam_base_yaw_joint` 會吸收 X 方向的關節構型差異）——但**碰撞
+# 跟世界座標系裡離哪個庫邊/袋口近有關，不是只看關節構型**，同一個 Y、不同
+# X 的三個案例常常需要不同的 roll 才能避開碰撞（見下表 y=-0.9382125／
+# y=-0.635 兩列，X 不同時 roll 並不總是一樣）。下表因此改成對
+# `action_bounds.CUE_BALL_PLACEMENT_X/Y` 的完整 3×3 網格逐點驗證，不再假設
+# X 無關。`y=-1.241425`（`CUE_BALL_PLACEMENT_Y` 下界）純幾何無解
+# （`compute_required_tilt_rad()` 回傳 `None`），roll 用不到，沿用鄰近列的
+# 值只是讓 nearest-neighbor 查表有合理落點。
+#
 # (cue_ball_x, cue_ball_y, roll_deg)
 _ROLL_LOOKUP_GRID = [
-    (-0.606425, -1.15, 0),
-    (-0.606425, -0.9382125, 0),
-    (-0.606425, -0.7, 45),
-    (0.0, -1.15, 0),
-    (0.0, -0.9382125, 15),
-    (0.0, -0.7, 60),
-    (0.606425, -1.15, 45),
-    (0.606425, -0.9382125, 0),
-    (0.606425, -0.7, 0),
+    (-0.606425, -1.241425, 165),
+    (-0.606425, -0.9382125, 165),
+    (-0.606425, -0.635, 165),
+    (0.0, -1.241425, -180),
+    (0.0, -0.9382125, -180),
+    (0.0, -0.635, 150),
+    (0.606425, -1.241425, 165),
+    (0.606425, -0.9382125, 165),
+    (0.606425, -0.635, 165),
 ]
 
 

@@ -543,6 +543,318 @@ STRIKE（以及很大一部分 AIM）目前打不出去，根因不是後擺距�
   STRIKE 誠實收斂驗證、roll 掃描、逐 waypoint 位置/姿態誤差與關節數值
   診斷）
 
+## 十五、數值 IK 工具找到 AIM 真正根因並修復（0/20 → 6/6）；STRIKE 隨揮終點的新根因：控制律結構性穩態誤差（2026-08-28）
+
+第十四節結論「累計 30+ 組候選全部失敗，手動試誤已經走不通」之後，依照
+提出的兩條路線之一——**寫一套不跑物理模擬的數值 IK 工具**——實作了
+`scripts/wam7_kinematics.py`：直接照 `assets/barrett_wam/wam7.urdf` 的
+`<joint>` 標籤（全部 7 個 revolute joint 都繞各自局部座標系的 Z 軸）手刻
+4×4 齊次變換鏈的正向運動學（FK），加上有限差分 Jacobian 的阻尼最小二乘法
+（DLS）數值 IK，用 `_validate_against_known_constants()` 對照真實量測的
+`_LOCAL_TIP_RADIUS`/`_LOCAL_TIP_HEIGHT`/`CANONICAL_FLAT_ORIENTATION` 驗證
+FK 誤差 <0.3mm 才採信。這支工具讓「測試一組候選」從物理模擬的 1-2 分鐘
+降到毫秒級，才有可能做真正窮盡的系統化搜尋。
+
+### AIM 根因：`_ROLL_LOOKUP_GRID` 選錯值，不是關節限位/姿態設計問題
+
+用 `scripts/search_ik_reachability.py` 對 Kitchen 代表案例做 400 組隨機
+起點的數值 IK 掃描後發現：**目標姿態本身在關節限位內是可達的**（找得到
+收斂解），但用舊的 `_ROLL_LOOKUP_GRID` 查表值（0°/15°/45°/60° 這種小
+角度）時 0/400 收斂——問題出在 roll 選錯了。改用
+`scripts/build_roll_lookup_table.py`／`scripts/search_roll_for_full_swing.py`
+系統化掃描 roll∈[-180°,180°] 後發現：
+
+1. **正確的 roll 落在完全不同的範圍**（-180°~165°附近，收斂率 20-50%，
+   解的盆地相當寬，不是知識邊緣的窄解）。
+2. **關鍵發現：roll 只跟 `cue_ball_y` 有關，跟 `cue_ball_x` 無關**——
+   `wam_base_yaw_joint` 會吸收 X 方向的差異，同一個 Y、三個不同 X 算出來
+   的最佳 roll 完全一致（見 `scripts/search_roll_for_full_swing.py` 實測
+   輸出）。這讓查表從「9 點各自獨立」簡化成「只跟 Y 座標所在的行有關」。
+3. 用 `scripts/search_roll_for_full_swing.py`（**局部延續 IK**：AIM 解
+   當後擺起點、後擺解當隨揮終點起點，模仿真實 `ArticulationAPIImpl.
+   _step_motion()` 差動 IK 不會跳關節分支的行為，不是隨機起點）確認整條
+   AIM→後擺→隨揮終點軌跡在同一分支內都收斂、且沒有任何關節被逼到限位。
+
+新查表（`core/services/cue_pose_calculator.py` `_ROLL_LOOKUP_GRID`，已
+更新並附完整推導註解）：`y=-1.15→roll=-180°`、`y=-0.9382125→165°`、
+`y=-0.7→150°`、`y=-0.635→150°`（`x` 不影響）。
+
+用 `scripts/verify_new_roll_table.py` 對真實 Isaac Sim 物理模擬重新驗證：
+**AIM 從 0/20（第十四節基準）修到 6/6 真正收斂**（`pos_diff<5mm`、
+`orient_diff<0.02rad`，非假陽性——用的是第十四節已修正的
+`_AIM_MAX_STEPS=4000` 誠實逾時偵測）。這是本次調查最終確認的 AIM 根因與
+修復。
+
+### STRIKE 新根因：隨揮終點（follow-through waypoint）有結構性穩態誤差，跟關節限位無關
+
+AIM 修好後 STRIKE 仍然 0/6 逾時。用 `scripts/diagnose_strike_followthrough.py`
+逐步印出位置誤差／關節餘裕／`_compute_pose_tracking_twist()` 與
+`_feedforward_twist` 的實際數值後找到精確機制：
+
+`compute_swing_waypoints()` 的隨揮終點（follow-through waypoint）是**靜態
+目標位置 + 非零目標速度**（`linear_velocity = required_tip_speed *
+direction`，全速案例 ≈1.51 m/s）。`ArticulationAPIImpl._step_motion()` 的
+控制律是 `twist = P控制器(POSITION_GAIN=5.0 × 位置誤差, clip 2.0) +
+feedforward`——**P 項只對自己單獨 clip，跟 feedforward 相加之後不會再
+clip**，且更關鍵的是：**這個相加後的和只有在位置誤差 ×
+POSITION_GAIN 剛好抵銷 feedforward 時才會趨近 0**，也就是系統會自然收斂
+到一個穩態誤差：
+
+```
+steady_state_error ≈ |feedforward_velocity| / POSITION_GAIN
+```
+
+實測驗證：全速案例（`required_tip_speed≈1.511 m/s`）穩態誤差理論值
+1.511/5.0≈0.302m，實測穩定在 pos_err≈0.305m；额外測試最低速案例
+（`cue_ball_speed=0.65` → `required_tip_speed≈0.492 m/s`）理論值
+0.492/5.0≈0.098m，實測穩定在 pos_err≈0.098m——**兩個獨立案例都精確吻合
+公式，不是巧合**。`POSITION_TOLERANCE=0.005m` 在這個結構下**永遠不可能
+達成**（除非 `required_tip_speed` 小到 <0.025 m/s，等同不揮桿），逾時是
+必然結果，跟關節限位、roll 選擇、`CANONICAL_REST_JOINTS` 都無關（低速
+測試中途出現的 `wrist_yaw margin≈0` 是穩態平衡點附近的巧合伴生現象，
+不是成因——關節餘裕後來持續回升，但位置誤差仍凍結在穩態值不動）。
+
+**這是一個控制律架構層級的問題**，影響 `ArticulationAPIImpl`（所有呼叫端
+共用），修法需要新的設計決策，不是本次調查能單方面決定：
+
+1. **改變隨揮終點的完成判定**：帶有非零 feedforward 速度的 waypoint
+   不應該用「靜態位置收斂」判定完成，改成「桿尖以正確方向通過目標點
+   附近」或改成固定步數（時間到）就視為完成——影響
+   `_is_current_target_converged()`／`is_motion_complete()` 的語意，
+   波及所有呼叫端。
+2. **改變控制律本身**：相加後的 twist 再做一次 clip、或幫「有 feedforward
+   的 waypoint」加大 `POSITION_TOLERANCE`／改用不同的收斂判定公式——同樣
+   影響共用類別。
+3. **改變 `compute_swing_waypoints()` 的設計**：不要求隨揮終點是「靜態點+
+   固定速度」，改成一系列多個遞增位置的中繼 waypoint（真正的軌跡追蹤，
+   逐點都是零 feedforward 的靜態收斂目標）——影響範圍侷限在
+   `swing_trajectory_calculator.py`，波及面較小，但終點軌跡的擬真度／
+   球桿實際觸球瞬間速度需要重新驗證。
+
+在其中一條路線確定之前，STRIKE 的隨揮終點應視為**已知結構性限制**，不是
+可以靠調整 roll／`CANONICAL_REST_JOINTS`／後擺距離參數解決的問題。
+
+### 參考檔案（本節新增）
+
+- `scripts/wam7_kinematics.py`（純數值 FK/IK，已用已知常數驗證）
+- `scripts/search_ik_reachability.py`（隨機起點可達性掃描＋roll 掃描）
+- `scripts/build_roll_lookup_table.py`（3×3 Kitchen 網格 roll 查表重建）
+- `scripts/search_roll_for_full_swing.py`（局部延續 IK：AIM→後擺→隨揮
+  終點單一分支驗證，發現 roll 只跟 Y 有關）
+- `scripts/verify_new_roll_table.py`（新查表的真實物理模擬驗證，AIM 6/6）
+- `scripts/diagnose_strike_followthrough.py`（STRIKE 隨揮終點逐步 twist/
+  關節診斷，定位穩態誤差公式）
+- `scripts/search_backswing_ik.py`（後擺距離數值 IK 可達性測試）
+
+### ⚠️ 重要修正（2026-08-28 同日）：完整 20 案例驗收測試揭露兩個更嚴重的問題
+
+用 `scripts/verify_swing_trajectory.py`（正式 20 案例驗收，跟本節前段用的
+6 點手選案例不同——手選案例只涵蓋 Y 座標三個代表值，這支才是完整
+`action_bounds` 網格＋角度/速度/偏移量變化）重新驗證後，發現上面的
+「AIM 6/6、STRIKE 6/6」是**過度樂觀的結論**，原因是兩支自寫的驗證腳本
+（`verify_new_roll_table.py`／`diagnose_strike_followthrough.py`）都沒有
+接上真正的碰撞回報，也沒有量測真實桿尖擊球速度：
+
+**問題一：新 roll 查表在完整網格上大多數案例是 COLLISION，不是逾時。**
+`scripts/build_roll_lookup_table.py`／`search_roll_for_full_swing.py` 的
+搜尋目標函式只看「數值 IK 在關節限位內能不能收斂」，**完全沒有建模手臂
+本體碰撞**（C1 轉向時手臂本體可能掃過庫邊/袋口，這正是 roll 這個自由度
+原本要解決的問題，見 `_ROLL_LOOKUP_GRID` 上方註解）。20 案例網格顯示
+大部分候選點在真實物理模擬中造成碰撞。6 點手選案例之所以看起來全過，
+是因為那 6 點剛好落在無碰撞的子集、加上自寫驗證腳本沒開碰撞偵測，兩個
+因素疊加造成的假陽性，不是新查表真的解決了問題。
+
+**問題二：「放寬 `_is_current_target_converged()` 位置容許值」的修法是
+錯的，已還原。** 用 `verify_swing_trajectory.py` 的真實桿尖速度量測（
+`actual_speed` vs `required_tip_speed`）驗證那個修法時發現：放寬後的容許
+值剛好等於 P 控制器+feedforward 疊加控制律的**穩態平衡點**，這個平衡點
+的物理意義是合力趨近 0、關節速度也趨近 0——系統會在那裡「宣告完成」，
+但桿尖當下幾乎靜止（`speed_error_ratio≈0.98`，只有應有速度的 ~2%），
+等於沒有真正揮桿。這個修法已在 `extension/isaac_sim_impl_6_0/
+articulation_api_impl.py` 還原，`_is_current_target_converged()` 恢復
+原本行為。STRIKE 隨揮終點的正確修法**不能只是放寬位置容許值**，需要
+上一段列的三個選項中會產生「桿尖真的在移動」結果的那種（例如把隨揮
+拆成多段零 feedforward 的位置 waypoint，靠 P 控制器自然的高增益追蹤
+產生連續高速移動；或改成不等待收斂、改用足夠長的固定步數讓桿尖自然
+通過目標區域時仍保有高速）——這需要新的設計決策，且要用「真實桿尖
+速度」而非「位置有沒有收斂」當驗收標準，避免重蹈本節的覆轍。
+
+**目前唯一確定、經得起完整 20 案例驗收考驗的成果**：
+`docs/issue-180-reachability-analysis.md` 前段記錄的三個 bug 修復（Phase A
+重排、C1 NLERP 細分、`CANONICAL_FLAT_ORIENTATION` 常數）、
+`scripts/wam7_kinematics.py` 這套數值 FK/IK 工具本身（FK 已驗證準確、
+可以繼續拿來做「排除掉不可能的候選」的快速篩選，但**搜尋出來的候選必須
+回真實物理模擬做碰撞+速度雙重驗證，不能只信任數值 IK 的收斂結果**）、
+以及本節對 STRIKE 隨揮終點問題根因（結構性穩態誤差公式）的精確定位——
+這個診斷本身是對的，只是「放寬容許值」這個特定修法被證明無效。
+`_ROLL_LOOKUP_GRID` 的新表**尚未證實在完整網格上無碰撞**，下一步需要
+針對碰撞問題重新搜尋（roll 候選需要同時滿足「數值 IK 可達」+「物理模擬
+無碰撞」兩個條件，後者目前只能靠真實物理模擬逐點驗證，無法用純數值方法
+加速）。
+
+## 十六、碰撞感知的 roll 查表修正（AIM 收斂+無碰撞雙重驗證）；STRIKE 揮桿速度的深層運動學限制（2026-08-28 續）
+
+### AIM：roll 查表改成逐點碰撞驗證，核心 6 點網格確認可行
+
+第十五節結尾指出「碰撞沒辦法用純數值方法加速篩選」。實作
+`scripts/search_collision_free_roll.py`：對每個候選點，依
+`search_roll_for_full_swing.py` 算出的 IK 全程餘裕由高到低嘗試候選，
+每個候選用真實 Isaac Sim 物理模擬＋正式的 `enable_contact_reporting`／
+`ContactEvent` 機制驗證是否收斂、是否碰撞，取第一個「兩者都成立」的候選。
+
+先對 4 個 Y 值代表點（X=0）測試，全部一次到位（每個 Y 只需試 1-2 個候選）。
+但拿去跑完整 `verify_swing_trajectory.py` 20 案例後發現：**碰撞跟世界
+座標系裡離哪個庫邊/袋口近有關，不是只看關節構型**——`wam_base_yaw_joint`
+確實會讓不同 X 的關節構型完全一致（IK 可達性因此跟 X 無關，第十五節已
+驗證），但同一組關節構型在世界座標系裡對應到的絕對位置隨 X 平移，會
+掃到不同的庫邊/袋口，所以「同一個 Y、不同 X」常常需要不同的 roll 才能
+避開碰撞。改成對 `action_bounds.CUE_BALL_PLACEMENT_X/Y` 的完整 3×3 網格
+（扣掉 `y=-1.241425` 這個純幾何無解的邊界列）逐點驗證，6 個點都在 1-2
+個候選內找到「IK 收斂+無碰撞」都成立的解，`_ROLL_LOOKUP_GRID` 已更新。
+`shot_angle≠0`／`position_offset≠0` 的案例目前仍沿用最近鄰查到的
+`shot_angle=0` 候選，尚未針對這些變化量各自搜尋（20 案例網格裡這些
+變化量案例目前仍會 COLLISION，是已知、有明確修法路徑但還沒做的缺口）。
+
+### STRIKE：不是 waypoint 設計問題，是真正的運動學速度上限
+
+依你的指示直接嘗試 STRIKE 隨揮終點的修法：先實作
+`scripts/prototype_moving_target_strike.py`（「移動目標點」——每個物理步
+把目標沿 `direction_unit` 前進 `required_tip_speed × PHYSICS_DT`
+（`core/services/rolling_resistance_service.py` 的 `PHYSICS_DT=1/60`），
+讓 P 控制器的角色只剩修正微小追蹤誤差，不會像靜態目標點那樣被
+feedforward「越過」後反向煞車）。這個修法在**呼叫端**實作（重複呼叫
+`move_to_pose()` 更新目標），不需要碰共用的 `ArticulationAPIImpl` 控制律
+本身。
+
+用 `scripts/diagnose_ball_impact.py`（直接 `RigidPrim(paths=ball_prim_
+path).get_velocities()` 量測母球真實物理速度，不透過任何軟體的完成
+判定）驗收後發現：**移動目標點修法一樣沒用**——追蹤誤差隨時間從 2cm
+惡化到 11cm，母球最高速只有 0.22 m/s（該有 1.51 m/s）。逐步印出關節
+速度後看到 `wrist_yaw`／`wrist_pitch`／`palm_yaw` 等關節持續頂在
+±2.0 rad/s（`_dof_limits`）的速度上限。
+
+用線性規劃驗算後找到精確原因：在 `(0.0,-0.635)` 案例、`roll=150°`（原本
+查表選中的值）這組關節構型下，**純追求揮桿方向最大平移速度**（不管
+姿態）理論上可以到 1.63 m/s（超過所需的 1.51 m/s），但這樣做會產生
+6.93 rad/s 的角速度——等於揮桿全程桿身瘋狂亂轉。若改成正確約束
+「角速度必須精確為 0」（模擬 `compute_swing_waypoints()` 要求全程桿身
+指向不變的設計），沿揮桿方向真正能達到的最大速度只剩 **0.81 m/s**——
+只有所需速度的 54%。**這是這個關節構型本身的速度可操作性
+（manipulability）上限，不是控制律、waypoint 設計或收斂判定的問題**，
+換哪種完成判定或哪種 waypoint 拆法都無法突破。
+
+線性規劃公式：`max (direction_unit · J_linear) @ qdot`，限制式
+`J_angular @ qdot = 0`（角速度鎖零）且 `qdot ∈ [-2, 2]^7`
+（`_dof_limits`），`J` 用 `wam7_kinematics._numerical_jacobian()` 在
+AIM 收斂到的關節構型上算。
+
+**掃過全部 24 個 roll 候選後的結果**（`scripts/search_roll_swing_
+capable.py`，`required_tip_speed=1.5116`，`cue_ball_speed` 用
+`action_bounds.CUE_BALL_SPEED` 稀疏網格中點 1.995）：
+
+- `y=-0.9382125`（Kitchen 較遠列，3 個 X 都一樣，跟 IK/碰撞一樣是
+  X 無關的性質）：**24 個候選裡沒有任何一個能達到 1.51 m/s**，最好的是
+  `roll=-45°` 的 1.33 m/s（且該解 IK margin=0.0000，貼著關節限位，是
+  否穩健存疑）。
+- `y=-0.635`（Kitchen 較近列）：只有 `roll=-60°` 達標（1.53 m/s），
+  但同樣 IK margin=0.0000。次佳 `roll=-75°` 是 1.47 m/s，未達標。
+
+margin=0.0000 的候選是我的 `solve_ik()` 從固定起點（`CANONICAL_REST_
+JOINTS`）收斂時剛好卡在關節邊界的數值產物，不代表「這個目標唯一的解
+一定要頂到限位」——換一組隨機起點也許能找到 margin>0 又保有高揮桿速度
+的解，但這需要對每個候選重新做隨機起點搜尋（第十五節 `search_ik_
+reachability.py` 的方法），還沒做。
+
+### 結論：STRIKE 高速揮桿目前是真正的運動學限制，需要新的設計決策
+
+這不是能單靠參數搜尋解決的問題。可能的方向（都有實質的設計/範圍取捨，
+不建議自行拍板）：
+
+1. **降低 `cue_ball_speed` 的有效上限**（或針對特定 Kitchen 子範圍收緊
+   `action_bounds.CUE_BALL_SPEED`）——`required_tip_speed` 隨
+   `cue_ball_speed` 線性下降，`y=-0.9382125` 最佳解 1.33 m/s 反推大約
+   對應 `cue_ball_speed≈1.76`（原上界 3.3392 的一半左右），影響 RL
+   action 空間，需要跟 #183 的既有「clamp 行動空間」決策放在一起考慮。
+2. **放寬「揮桿全程姿態不變」的要求**，允許小角度姿態漂移換取平移速度
+   ——`swing_trajectory_calculator.py` 的既有設計說明（見該檔案 docstring）
+   明確是刻意鎖定姿態的，放寬會改變擊球的物理真實度，需要重新驗證球的
+   實際飛行/旋轉行為有沒有受影響。
+3. **對每個候選做隨機起點 IK 搜尋**，找 margin>0 又保有高揮桿速度的解
+   （见上段）——範圍最小、最有可能是純粹的搜尋不夠深，但也可能徒勞
+   （`y=-0.9382125` 24 個角度都不夠，換起點未必能無中生有出額外速度
+   餘裕，因為 manipulability 上限主要取決於目標姿態本身的幾何，不是
+   起點選擇）。
+4. **提高關節速度上限**（`_dof_limits`，來自 `get_dof_max_velocities()`）
+   ——如果這是軟體可調的參數（不是實體致動器硬限制），直接放寬可能是
+   最一勞永逸的解法，但需要先確認這組限速的來源與是否有物理意義上的
+   限制依據，範圍可能波及所有動作的速度上限，不是只影響 STRIKE。
+
+### `move_swing()`：揮桿專用速度最優控制器的實作與發現（同日續）
+
+依使用者指示（選項 3「寫揮桿專用的速度最優控制器」）在
+`ArticulationAPIImpl` 新增 `move_swing()`／`_step_swing_motion()`：先用
+一般 pose-tracking 收斂到後擺點，再切換成每個 physics tick 用線性規劃
+（`scipy.optimize.linprog`）直接求「姿態修正在有限額度內、沿揮桿方向
+最大化桿尖速度」的關節速度指令，取代 P控制器+feedforward 那條會產生
+結構性穩態誤差的路徑。`core/ports/articulation_api.py` 同步新增抽象
+方法。過程中用真實母球物理速度（`RigidPrim.get_velocities()`，不透過
+任何軟體完成判定）反覆驗證，抓到三個真實 bug：
+
+1. **等式約束又把角速度鎖回 0**：第一版把姿態修正寫成
+   `Jang@qdot == orientation_gain × 目前姿態誤差`，揮桿剛開始姿態誤差
+   是 0，這個等式因此一直逼近 0，`max_angular_speed` 給的額度完全沒被
+   用上——跟原本 STRIKE 卡住的病徵一樣，只是換了個地方重演。改成
+   `restore_bias ± max_angular_speed` 的**不等式箱型約束**才修正。
+2. **目標函式用了「腕部」的線性 Jacobian，不是桿尖的**：桿尖在
+   `CUE_STICK_GRIP_TO_TIP`（1.35m）之外，角速度會透過剛體速度合成
+   `v_tip = v_wrist + ω × tip_offset` 讓桿尖產生遠比腕部本身位移更大的
+   側向偏移。第一版線性規劃找到的「腕部方向最優」角速度反而讓桿尖越
+   轉越偏，完全沒碰到球。改用 `Jv_tip = Jv - skew(tip_offset) @ Jang`
+   （`_skew_matrix()`）才是正確的桿尖速度目標函式。
+3. **只優化沿揮桿方向的速度，沒約束側向漂移**：目標函式只看 1D 投影
+   進度（`traveled`），線性規劃可以讓投影進度正常推進、同時桿尖在垂直
+   方向越飄越遠，兩者不衝突。加一個側向位置回正項（`lateral_gain=5.0`
+   的箱型約束，模式跟角速度的 `restore_bias` 一致）才讓桿尖真正貼著
+   後擺→揮桿終點這條直線走。
+
+修完三個 bug 後，對最難的 `y=-0.9382125` 案例（roll=-180，24 個角度中
+唯一在完全鎖死姿態下都無法達標的那組）實測：關節速度全程 4+ rad/s
+（真的在高速移動）、桿尖到球最近距離 **12.6mm**（遠小於球半徑
+28.575mm，桿尖確實深入球體範圍）、姿態誤差控制在 <8°（相對「貼近人類
+擊球姿態」的要求是合理範圍）。開啟正式的
+`enable_contact_reporting`／`ContactEvent` 機制後**確認 PhysX 真的有
+偵測到 `CueStick/Cylinder <-> Ball` 的接觸事件**——證實桿尖幾何計算是
+對的，桿子真的碰到球了。
+
+**但這個接觸事件的 `impulse=0.0`**——母球全程沒有獲得任何速度（維持
+AIM 階段殘留的緩慢滾動衰減，`max_ball_speed=0.2703m/s` 全程不變，
+`required_tip_speed=1.5116m/s`）。這是一個新的、更深層的問題：幾何/
+運動學層面（桿尖有沒有碰到球）已經解決，卡住的是物理引擎的碰撞響應
+（碰到了為什麼沒有力）。可能相關的線索：整個 session 每次啟動模擬都會
+印出一條警告「Detected an articulation ... with more than 4 velocity
+iterations being added to a TGS scene」，尚未深入調查是否與此有關；也
+可能是 `physxCollision:contactOffset=0.005`／`restOffset=0` 這類 PhysX
+碰撞邊界參數，或桿尖掠過球體的相對速度/接觸持續時間太短，solver 來不及
+累積衝量。這是 PhysX 求解器/碰撞參數層級的問題，不是控制器邏輯或運動
+學計算的問題，需要另外一輪聚焦在物理引擎設定的調查。
+
+### 參考檔案（本節新增）
+
+- `scripts/search_collision_free_roll.py`（碰撞感知 roll 搜尋，已改成
+  完整 X×Y 網格逐點驗證）
+- `scripts/prototype_moving_target_strike.py`（移動目標點修法原型，
+  已證實無效）
+- `scripts/diagnose_ball_impact.py`（直接量測母球真實物理速度，不透過
+  軟體完成判定）
+- `scripts/search_roll_swing_capable.py`（三條件 roll 搜尋：AIM 可達+
+  揮桿速度線性規劃+IK margin 排序）
+- `scripts/diagnose_move_swing.py`（`move_swing()` 的逐步驗證腳本：
+  桿尖到球距離、關節速度、球桿剛體位置對照、碰撞事件回報）
+- `extension/isaac_sim_impl_6_0/articulation_api_impl.py`
+  `move_swing()`／`_step_swing_motion()`／`_skew_matrix()`（新增的
+  揮桿專用速度最優控制器本體）
+- `core/ports/articulation_api.py`（`move_swing()` 抽象方法定義）
+
 ## 參考檔案
 
 - `core/models/action_bounds.py`

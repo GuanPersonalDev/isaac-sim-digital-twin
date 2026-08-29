@@ -1,8 +1,10 @@
 import logging
+import os
 
 import numpy as np
 import omni.usd
 from pxr import Usd, UsdGeom
+from scipy.optimize import linprog
 
 from isaacsim.core.experimental.prims import Articulation, RigidPrim
 from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
@@ -116,6 +118,21 @@ class ArticulationAPIImpl(ArticulationAPI):
         # None 代表「尚未註冊」或「已觸發並清空」，供 cancel_pending_home_capture()
         # 判斷是否還需要取消
         self._capture_callback_id: int | None = None
+
+        # move_swing() 的狀態：見該方法與 _step_swing_motion() 的說明
+        # （docs/issue-180-reachability-analysis.md 第十六節）。
+        # _awaiting_swing_after_backswing：正在跑後擺（一般 pose-tracking，
+        # 姿態鎖死）子階段，收斂後才切到揮桿速度最優控制。
+        self._awaiting_swing_after_backswing: bool = False
+        self._is_swing_motion: bool = False
+        self._swing_complete: bool = False
+        self._swing_start: np.ndarray | None = None
+        self._swing_direction: np.ndarray | None = None
+        self._swing_total_distance: float = 0.0
+        self._swing_end_position: np.ndarray | None = None
+        self._swing_orientation: np.ndarray | None = None
+        self._swing_orientation_gain: float = 1.0
+        self._swing_max_angular_speed: float = 0.5
 
     def initialize(self) -> None:
         # 在 timeline play 之後呼叫
@@ -314,10 +331,173 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._target_orientation = np.asarray(orientation)
         self._feedforward_twist = np.concatenate([np.asarray(linear_velocity), np.asarray(angular_velocity)])
         self._is_joint_space_motion = False
+        self._is_swing_motion = False
         self._articulation.switch_dof_control_mode("velocity")
         self._motion_step_count = 0
         self._did_last_motion_timeout = False
         self._start_motion()
+
+    def move_swing(
+        self,
+        backswing_position: list[float],
+        orientation: list[float],
+        swing_end_position: list[float],
+        orientation_gain: float = 1.0,
+        max_angular_speed: float = 0.5,
+    ) -> None:
+        """揮桿專用速度最優控制。先用一般 pose-tracking（姿態鎖死、
+        `linear_velocity=[0,0,0]`）移動到 `backswing_position` 收斂，之後
+        自動切換成揮桿模式：每個 physics tick 用線性規劃求「姿態修正角
+        速度不超過 `max_angular_speed`（`orientation_gain` 控制修正力道）
+        的前提下，沿直線方向最大化平移速度」的關節速度指令，直線移動到
+        `swing_end_position`。呼叫端只需要呼叫一次，`is_motion_complete()`
+        在後擺+揮桿全程持續回傳 False，語意跟 `move_through_poses()` 一致。
+
+        背景：`_compute_pose_tracking_twist()` 的 P控制器+feedforward 為了
+        把姿態鎖死在單一目標點，對某些 Kitchen 案例會讓可達平移速度大幅
+        低於運動學理論上限（實測：完全鎖死姿態時最高只能到目標速度的
+        ~50-90%，取消姿態約束後理論上限能覆蓋更高的目標速度）——原因是
+        P控制器解的是「讓姿態誤差趨近 0」，不是「在容許範圍內最大化平移
+        速度」，兩者是不同的最佳化目標，用同一組 DLS 偽逆求解自然無法
+        同時達到兩者最優。這裡改用線性規劃直接針對「最大化揮桿方向速度」
+        求解，姿態修正只是一個有限額度的約束，不是主要目標，讓擊球時桿身
+        姿態盡量貼近目標朝向（不是完全鎖死，允許 `max_angular_speed` 內的
+        自然修正，模擬真人揮桿桿身大致穩定但非絕對靜止的手感）而不是把
+        平移速度硬吃掉。見 docs/issue-180-reachability-analysis.md 第十六
+        節的線性規劃分析與實測數據。
+
+        `orientation_gain`／`max_angular_speed`：跟 `ORIENTATION_GAIN`
+        （目前 5.0）同單位但通常小很多，兩者共同決定姿態修正力道上限——
+        `orientation_gain` 太大會跟一般 pose-tracking 一樣把速度吃光，
+        太小則姿態可能持續緩慢漂移；`max_angular_speed` 直接封頂瞬時角
+        速度，避免修正力道在誤差大時暴衝。
+
+        ⚠️ `backswing_position`／`swing_end_position` 沿用
+        `swing_trajectory_calculator.compute_swing_waypoints()` 既有慣例，
+        是**腕部**（= end-effector 參考點）座標，不是桿尖座標——桿尖在
+        `CUE_STICK_GRIP_TO_TIP`（1.35m）之外，姿態鎖死時「腕部走直線」
+        跟「桿尖走直線」等價，但這裡姿態允許漂移，兩者不再等價：角速度
+        會透過 `ω × tip_offset` 讓桿尖產生遠比腕部本身位移更大的側向
+        偏移（見 docs/issue-180-reachability-analysis.md 第十六節——
+        沒算這項時，線性規劃找到的「腕部方向最優」角速度反而讓桿尖越轉
+        越偏，完全沒碰到球）。這個方法內部會依 `CUE_STICK_GRIP_TO_TIP`
+        换算成桿尖座標，用桿尖的實際位置/速度做直線規劃與完成判定，
+        呼叫端不需要自己處理這個轉換。
+        """
+        self._swing_orientation = np.asarray(orientation, dtype=float)
+        nominal_tip_direction = self._rotate_vector_by_quat(self._swing_orientation, np.array([0.0, 1.0, 0.0]))
+        self._swing_end_position = np.asarray(swing_end_position, dtype=float) + nominal_tip_direction * CUE_STICK_GRIP_TO_TIP
+        self._swing_orientation_gain = orientation_gain
+        self._swing_max_angular_speed = max_angular_speed
+        self._is_swing_motion = False
+        self._awaiting_swing_after_backswing = True
+        # 清空舊的 waypoint 佇列狀態——如果呼叫端在這之前用過
+        # move_through_poses()（例如 AIM 的高架橋序列），_pending_waypoints/
+        # _waypoint_index 會留著舊值。揮桿完成後 _step_motion() 落到「還有
+        # 沒播完的 waypoint 嗎」這個分支判斷時，沒清空就會誤把舊序列的下一
+        # 個 waypoint 當成揮桿後的下一步去追，讓揮桿看起來遲遲沒有真正
+        # 完成（實測：真正只需要 ~14 步的揮桿被拖到 57 步，姿態也跟著在
+        # 那段多出來的時間裡亂飄——這是 docs/issue-180-reachability-
+        # analysis.md 第十六節除錯過程中發現的另一個 bug，不是揮桿本身的
+        # 問題）。
+        self._pending_waypoints = []
+        self._waypoint_index = 0
+        self._awaiting_waypoints_after_joint_motion = False
+        self._activate_pose_target(backswing_position, orientation, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+
+    def _step_swing_motion(self) -> None:
+        current_wrist_position = np.array(self.get_end_effector_position())
+        current_orientation = self._get_end_effector_world_orientation()
+        current_tip_direction = self._rotate_vector_by_quat(current_orientation, np.array([0.0, 1.0, 0.0]))
+        tip_offset = current_tip_direction * CUE_STICK_GRIP_TO_TIP
+        current_tip_position = current_wrist_position + tip_offset
+
+        # 沿方向投影出「桿尖」目前已走的距離（不是腕部，也不是跟終點的
+        # 歐氏距離）——姿態修正過程中允許有限度的側向漂移，用投影距離
+        # 判斷「有沒有走完全程」比較符合這裡的完成語意（側向漂移不該讓
+        # 完成判定卡住），而且真正需要碰到球的是桿尖，不是腕部。
+        traveled = float(np.dot(current_tip_position - self._swing_start, self._swing_direction))
+        if traveled >= self._swing_total_distance:
+            self._swing_complete = True
+            self._articulation.set_dof_velocity_targets(np.zeros((1, len(self._dof_limits))))
+            return
+
+        # ⚠️ 第一版曾經把姿態修正做成「等式約束＝目前偏差的 P 修正量」
+        # （Jang@qdot == orientation_gain * 目前姿態誤差），實測發現這其實
+        # 等同又把角速度鎖回接近 0——揮桿一開始姿態誤差是 0（後擺剛收斂），
+        # 這個等式約束因此一直逼近 0，`max_angular_speed` 給的額度完全沒被
+        # 用上，平移速度依舊很慢（見 docs/issue-180-reachability-
+        # analysis.md 第十六節）。改成**不等式箱型約束**：角速度可以在
+        # `restore_bias ± max_angular_speed` 範圍內自由選擇，讓線性規劃
+        # 真正能拿這個額度去換取平移速度，`restore_bias`（用
+        # `orientation_gain` 縮放、且限制在額度一半內）只當一個溫和的
+        # 回正偏置，避免姿態朝單一方向無止盡漂移，不是硬性鎖定。
+        restore_bias = self._swing_orientation_gain * self._orientation_error_to_angular_velocity(
+            current_orientation, self._swing_orientation
+        )
+        restore_bias = np.clip(
+            restore_bias, -0.5 * self._swing_max_angular_speed, 0.5 * self._swing_max_angular_speed
+        )
+
+        jacobians = np.asarray(self._articulation.get_jacobian_matrices().numpy())[0]
+        J = jacobians[self._jac_link_index]
+        Jv = J[:3, :]
+        Jang = J[3:, :]
+        # ⚠️ 關鍵修正：`Jv` 是「腕部」的線性 Jacobian，不是桿尖的。桿尖在
+        # `tip_offset`（CUE_STICK_GRIP_TO_TIP=1.35m）之外，角速度會透過
+        # 剛體速度合成 v_tip = v_wrist + ω × tip_offset 讓桿尖產生遠比腕部
+        # 本身位移更大的側向偏移——第一版沒算這項，線性規劃找到的「腕部
+        # 方向最優」角速度反而讓桿尖越轉越偏，完全沒碰到球（實測：揮桿
+        # 過程中桿尖到球的距離不減反增）。用桿尖的真正線性 Jacobian
+        # `Jv_tip = Jv - skew(tip_offset) @ Jang` 取代，才是真正「讓桿尖
+        # 沿揮桿方向最大化速度」的目標函式。
+        Jv_tip = Jv - self._skew_matrix(tip_offset) @ Jang
+
+        # ⚠️ 第二個關鍵修正：只優化「沿揮桿方向的速度」，完全沒有限制
+        # 「垂直於揮桿方向的側向漂移」——目標函式只看 1D 投影進度
+        # （`traveled`），線性規劃可以在完全不管側向誤差的情況下讓投影
+        # 進度持續增加（沿線前進），同時桿尖在垂直方向越飄越遠，兩者不
+        # 矛盾。實測：`traveled` 正常推進到完成，但桿尖到球的實際 3D
+        # 距離不減反增，跟垂直分量的角速度沒被約束住直接對應。加一個
+        # 側向位置回正項：把桿尖目前偏離「後擺→揮桿終點這條直線」的側向
+        # 誤差，轉換成一個有限速度上限的修正目標，跟角速度的 restore_bias
+        # 同一個做法——用不等式箱型約束（給線性規劃一點自由度，不是硬性
+        # 鎖死），不是把側向速度完全交給最佳化自由發揮。
+        lateral_gain = 5.0  # 跟 POSITION_GAIN 同量級，確保側向誤差被積極修正
+        lateral_error = (current_tip_position - self._swing_start) - traveled * self._swing_direction
+        lateral_restore_velocity = np.clip(-lateral_gain * lateral_error, -0.5, 0.5)
+        lateral_tolerance = 0.1  # m/s，側向修正目標附近的自由度
+
+        projection_perp = np.eye(3) - np.outer(self._swing_direction, self._swing_direction)
+        Jv_tip_lateral = projection_perp @ Jv_tip
+
+        c = self._swing_direction @ Jv_tip
+        bounds = [(-limit, limit) for limit in self._dof_limits]
+        A_ub = np.vstack([Jang, -Jang, Jv_tip_lateral, -Jv_tip_lateral])
+        b_ub = np.concatenate([
+            restore_bias + self._swing_max_angular_speed,
+            -restore_bias + self._swing_max_angular_speed,
+            lateral_restore_velocity + lateral_tolerance,
+            -lateral_restore_velocity + lateral_tolerance,
+        ])
+        result = linprog(c=-c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+        if result.success:
+            qdot = result.x
+        else:
+            # 理論上不該發生（箱型約束＋線性不等式對 7 個自由度來說通常
+            # 有解）——真的求不到解時保守回傳零速度，不要下達沒驗證過的
+            # 指令。
+            logger.warning("move_swing linprog 求解失敗，本步維持不動")
+            qdot = np.zeros(len(self._dof_limits))
+
+        if os.environ.get("DEBUG_MOVE_SWING"):
+            predicted_speed = float(c @ qdot)
+            print(
+                f"[move_swing DEBUG] qdot={np.round(qdot, 4).tolist()} predicted_speed={predicted_speed:.4f} "
+                f"traveled={traveled:.4f}/{self._swing_total_distance:.4f} linprog_success={result.success}"
+            )
+
+        self._articulation.set_dof_velocity_targets(qdot[None, :])
 
     def _start_motion(self) -> None:
         if not self._motion_active:
@@ -347,12 +527,15 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._target_position = np.asarray(target_end_effector_position)
         self._target_joint_positions = np.asarray(joint_positions).reshape(-1)
         self._is_joint_space_motion = True
+        self._is_swing_motion = False
         self._motion_step_count = 0
         self._did_last_motion_timeout = False
         self._start_motion()
 
     def _step_motion(self, step_dt, context) -> None:
-        if not self._is_joint_space_motion:
+        if self._is_swing_motion:
+            self._step_swing_motion()
+        elif not self._is_joint_space_motion:
             twist = self._compute_pose_tracking_twist() + self._feedforward_twist
 
             jacobians = np.asarray(self._articulation.get_jacobian_matrices().numpy())[0]
@@ -373,14 +556,32 @@ class ArticulationAPIImpl(ArticulationAPI):
             return
 
         if not self._is_current_target_converged():
-            return 
+            return
+
+        if self._awaiting_swing_after_backswing:
+            self._awaiting_swing_after_backswing = False
+            self._is_swing_motion = True
+            # _swing_start 用「真正量到的」桿尖位置（不是 move_swing() 呼叫
+            # 時的 nominal 佔位符），比照既有的
+            # compute_canonical_wrist_position() 那類「後擺剛收斂，用實測
+            # 位置當下一階段起點」慣例。
+            current_wrist_position = np.array(self.get_end_effector_position())
+            current_orientation = self._get_end_effector_world_orientation()
+            current_tip_direction = self._rotate_vector_by_quat(current_orientation, np.array([0.0, 1.0, 0.0]))
+            self._swing_start = current_wrist_position + current_tip_direction * CUE_STICK_GRIP_TO_TIP
+            delta = self._swing_end_position - self._swing_start
+            self._swing_total_distance = float(np.linalg.norm(delta))
+            self._swing_direction = delta / self._swing_total_distance
+            self._swing_complete = False
+            self._motion_step_count = 0
+            return
 
         if self._awaiting_waypoints_after_joint_motion:
             self._awaiting_waypoints_after_joint_motion = False
             wp = self._pending_waypoints[0]
             self._activate_pose_target(wp.position, wp.orientation, wp.linear_velocity, wp.angular_velocity)
             return
-        
+
         if self._waypoint_index + 1 < len(self._pending_waypoints):
             self._waypoint_index += 1
             wp = self._pending_waypoints[self._waypoint_index]
@@ -454,6 +655,18 @@ class ArticulationAPIImpl(ArticulationAPI):
         t = 2.0 * np.cross(q_xyz, vec)
         return vec + w * t + np.cross(q_xyz, t)
 
+    @staticmethod
+    def _skew_matrix(v: np.ndarray) -> np.ndarray:
+        """向量叉積的反對稱矩陣表示：skew(v) @ x == v × x。供
+        `_step_swing_motion()` 把「腕部」的線性 Jacobian 換算成「桿尖」的
+        線性 Jacobian 用（剛體速度合成 v_tip = v_wrist + ω × tip_offset，
+        寫成矩陣形式即 v_tip = (Jv - skew(tip_offset) @ Jang) @ qdot）。"""
+        return np.array([
+            [0.0, -v[2], v[1]],
+            [v[2], 0.0, -v[0]],
+            [-v[1], v[0], 0.0],
+        ])
+
     def move_to_home(self) -> None:
         self._pending_waypoints = []
         self._awaiting_waypoints_after_joint_motion = False
@@ -487,6 +700,28 @@ class ArticulationAPIImpl(ArticulationAPI):
         # self._is_joint_space_motion 為 True：只看位置，回傳 True。
         # 否則（pose-tracking 模式）：用 self._quat_error() 算姿態誤差角度
         # （2 * ||q_error.xyz||），< ORIENTATION_TOLERANCE 才算收斂。
+        #
+        # ⚠️ 2026-08-28 曾經在這裡加過「帶 feedforward 速度的 waypoint 放寬
+        # 容許值」的修正（見 docs/issue-180-reachability-analysis.md 第十五
+        # 節的穩態誤差公式），但用 scripts/verify_swing_trajectory.py 的
+        # 真實桿尖速度量測（不是只看位置有沒有收斂）驗證後發現：那個放寬
+        # 容許值的門檻剛好落在 P控制器+feedforward 的穩態平衡點，這個平衡
+        # 點的物理意義是「合力趨近 0，關節速度也趨近 0」——也就是說系統會
+        # 在那裡「宣告完成」，但桿尖當下幾乎是靜止的（實測 speed_error_
+        # ratio≈0.98，實際速度只有該有速度的 ~2%），等於沒真正揮桿。這個
+        # 修正已還原，STRIKE 隨揮終點的根因修法改成 move_swing()（見文件
+        # 第十六節）：真正下令一個沿揮桿方向速度最優的關節速度指令，不是
+        # 放寬既有 pose-tracking 的完成判定。
+        #
+        # move_swing() 的揮桿子階段用 self._swing_complete（由
+        # _step_swing_motion() 依「沿方向投影出的移動距離」設定，不是靠
+        # 這裡的 POSITION_TOLERANCE/ORIENTATION_TOLERANCE）判斷完成，
+        # 必須在 self._target_position 的早退檢查之前處理——揮桿階段
+        # self._target_position 還留著後擺子階段的舊值（不是 None），不
+        # 特別處理會誤用下面的位置/姿態收斂邏輯。
+        if self._is_swing_motion:
+            return self._swing_complete
+
         if self._target_position is None:
             return True
 

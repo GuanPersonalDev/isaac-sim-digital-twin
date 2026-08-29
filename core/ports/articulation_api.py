@@ -47,6 +47,29 @@ class ArticulationAPI(ABC):
         ...
 
     @abstractmethod
+    def move_swing(
+        self,
+        backswing_position: list[float],
+        orientation: list[float],
+        swing_end_position: list[float],
+        orientation_gain: float = 1.0,
+        max_angular_speed: float = 0.5,
+    ) -> None:
+        """
+        揮桿專用速度最優控制：先移動到 backswing_position（姿態鎖死，跟
+        move_to_pose 一樣）收斂後，自動切換成揮桿模式，沿直線移動到
+        swing_end_position，姿態修正角速度限制在 max_angular_speed 內
+        （orientation_gain 控制修正力道），不強制全程鎖死姿態，換取更高
+        的可達平移速度。呼叫端只需呼叫一次，is_motion_complete() 在後擺+
+        揮桿全程持續回傳 False。
+
+        見 docs/issue-180-reachability-analysis.md 第十六節：一般
+        move_to_pose/move_through_poses 的姿態鎖死策略，對某些案例會讓
+        可達平移速度大幅低於運動學理論上限。
+        """
+        ...
+
+    @abstractmethod
     def move_to_home(self) -> None:
         """
         回到待機姿態
