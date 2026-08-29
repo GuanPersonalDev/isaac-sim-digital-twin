@@ -198,16 +198,18 @@ tick 用線性規劃（`scipy.optimize.linprog`）直接求「姿態修正角速
 
 ### 已知缺口
 
-- **母球實際速度（1.05 m/s）比需求速度（1.51 m/s）低約 30%——已確認
-  就是第二節記錄過的運動學可操作性（manipulability）上限，不是這次
-  修法引入的新問題**：`DEBUG_MOVE_SWING=1` 印出的線性規劃每步
-  `predicted_speed`（桿尖沿揮桿方向的理論最大速度）峰值只有
-  0.68 m/s，全程 7 個關節裡有 5 個持續頂在 `_dof_limits` 的
-  ±2.0 rad/s 硬限速上——已經是這個關節構型能榨出的極限，換算成球速
-  約 0.90 m/s，跟實測 1.05 m/s 同量級。解法方向見
-  `docs/issue-180-reachability-analysis.md` 第十六節列出的 4 個選項
-  （降 `cue_ball_speed` 上界／進一步放寬姿態漂移／換 margin>0 的
-  roll 候選／放寬 `_dof_limits`），都涉及設計取捨，不建議自行拍板。
+- ⚠️ **待處理／未解決（母球目標速度落差，暫不處理）**：母球實際速度
+  （1.05 m/s）比需求速度（1.51 m/s）低約 30%——已確認就是第二節記錄過
+  的運動學可操作性（manipulability）上限，不是這次修法引入的新問題：
+  `DEBUG_MOVE_SWING=1` 印出的線性規劃每步 `predicted_speed`（桿尖沿
+  揮桿方向的理論最大速度）峰值只有 0.68 m/s，全程 7 個關節裡有 5 個
+  持續頂在 `_dof_limits` 的 ±2.0 rad/s 硬限速上——已經是這個關節構型
+  能榨出的極限，換算成球速約 0.90 m/s，跟實測 1.05 m/s 同量級。
+  **#181 issue body 自己定義的 Fallback 決策點（2026-08-20：若軌跡
+  無法在擊球點達到目標速度向量 → 降至檔位 (c)）已過期**，觸發條件
+  疑似已成立，但要選哪個解法方向（降 `cue_ball_speed` 上界／進一步
+  放寬姿態漂移／換 margin>0 的 roll 候選／放寬 `_dof_limits`／降檔位
+  (c)）需要使用者決定，這裡先記錄不處理，維持現狀。
 - `contact_clearance_m=0.05` 只在最難的 Kitchen 案例上實測驗證過，
   尚未跑第一節提到的完整 X×Y 網格回歸測試確認所有案例都不會反而因為
   多退開 5cm 導致新的碰撞或 IK 不可達。
@@ -217,12 +219,15 @@ tick 用線性規劃（`scipy.optimize.linprog`）直接求「姿態修正角速
   「目標點=球心」慣例，理論上有類似風險，但這次沒有動它（flat 案例
   跟 Kitchen 母球擺位範圍幾乎不重疊，見 `docs/issue-flat-case-residual-
   error.md`，優先度較低，且未實測證實有沒有實際發生）。
-- 調查過程中發現 `DemoTableOrchestrator._execute_strike()`（正式生產
-  路徑）目前呼叫的是舊版 `swing_trajectory_calculator.compute_swing_
-  waypoints()` + `move_through_poses()`，**還沒接上這次驗證的
-  `move_swing()` 速度最優控制器**——這次的修法對兩條路徑都有效（都
-  依賴同一個被推走的母球位置），但 `move_swing()` 本身要正式派上用場
-  還需要另外把 `_execute_strike()` 接上它。
+- ✅ **已解決（2026-08-29）**：`DemoTableOrchestrator._execute_strike()`
+  （正式生產路徑）原本呼叫的是舊版 `swing_trajectory_calculator.
+  compute_swing_waypoints()` + `move_through_poses()`，已改接上這次
+  驗證過的 `move_swing()` 速度最優控制器（`orientation_gain=1.0`／
+  `max_angular_speed=1.0`，跟診斷腳本驗證過的數值一致）。`core/tests/
+  test_table_orchestrator.py` 已更新對應測試（改斷言 `move_swing()`
+  被正確呼叫），`core/tests/` 652 個測試全過。flat 案例
+  （`tilt_rad<=1e-6`）走同一段程式碼但尚未針對性實測，架構上跟已驗證
+  的高架橋案例走同一套邏輯，風險低。
 
 ---
 

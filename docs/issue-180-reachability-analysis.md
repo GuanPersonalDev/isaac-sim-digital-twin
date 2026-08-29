@@ -1095,23 +1095,25 @@ grip_position()` 也是同一慣例），`compute_tilted_wrist_pose()` 的
 
 ### 已知缺口（留給後續）
 
-1. 母球實際速度比需求速度低約 30%——**已確認就是第十六節記錄過的
-   運動學可操作性（manipulability）上限，不是這次修法引入的新問題**。
-   用 `DEBUG_MOVE_SWING=1` 開關印出 `move_swing()` 每個 physics tick
-   線性規劃算出的 `predicted_speed`（桿尖沿揮桿方向的理論最大速度）：
-   整段揮桿（17 個 tick，`traveled` 從 0 走到 `swing_total_distance
-   =0.1756`）`predicted_speed` 峰值只有 **0.68 m/s**，全程 7 個關節裡
-   有 5 個持續頂在 `_dof_limits` 的 ±2.0 rad/s 硬限速上——即使線性規劃
-   已經用滿全部關節速度額度＋`max_angular_speed` 允許的姿態漂移額度，
-   這個關節構型（`roll_rad` 查表選中的值）能榨出的最大桿尖速度就是
-   0.68 m/s，換算成球速（`compute_required_tip_speed()` 的反函式：
-   `v_ball=v_tip×1.3198`）約 0.90 m/s，跟實測 `max_ball_speed=1.05 m/s`
-   同量級（差距在真實碰撞動力學跟單步 LP 快照的正常誤差範圍內）。
-   跟第十六節「`y=-0.9382125`，`max_angular_speed` 相關但完全鎖定角速度
-   時上限只有 0.81 m/s」的結論一致，屬於同一個已知限制，解法方向同
-   第十六節列出的 4 個選項（降 `cue_ball_speed` 上界／進一步放寬姿態
-   漂移／換 margin>0 的 roll 候選／放寬 `_dof_limits`），不在這次
-   零衝量修法範圍內。
+1. ⚠️ **待處理／未解決（暫不處理）**：母球實際速度比需求速度低約
+   30%——**已確認就是第十六節記錄過的運動學可操作性（manipulability）
+   上限，不是這次修法引入的新問題**。用 `DEBUG_MOVE_SWING=1` 開關印出
+   `move_swing()` 每個 physics tick 線性規劃算出的 `predicted_speed`
+   （桿尖沿揮桿方向的理論最大速度）：整段揮桿（17 個 tick，`traveled`
+   從 0 走到 `swing_total_distance=0.1756`）`predicted_speed` 峰值只有
+   **0.68 m/s**，全程 7 個關節裡有 5 個持續頂在 `_dof_limits` 的
+   ±2.0 rad/s 硬限速上——即使線性規劃已經用滿全部關節速度額度＋
+   `max_angular_speed` 允許的姿態漂移額度，這個關節構型（`roll_rad`
+   查表選中的值）能榨出的最大桿尖速度就是 0.68 m/s，換算成球速
+   （`compute_required_tip_speed()` 的反函式：`v_ball=v_tip×1.3198`）
+   約 0.90 m/s，跟實測 `max_ball_speed=1.05 m/s` 同量級（差距在真實
+   碰撞動力學跟單步 LP 快照的正常誤差範圍內）。跟第十六節
+   「`y=-0.9382125`，完全鎖定角速度時上限只有 0.81 m/s」的結論一致，
+   屬於同一個已知限制。**#181 issue body 自訂的 Fallback 決策點
+   （2026-08-20：若軌跡無法在擊球點達到目標速度向量 → 降至檔位 (c)）
+   已過期，觸發條件疑似已成立**，解法方向（降 `cue_ball_speed` 上界／
+   進一步放寬姿態漂移／換 margin>0 的 roll 候選／放寬 `_dof_limits`／
+   降檔位 (c)）需要使用者決定，這裡先記錄、暫不處理。
 2. `contact_clearance_m=0.05` 只在最難的 Kitchen 案例上實測，尚未跑
    完整 X×Y 網格回歸確認所有案例都不會因為多退開 5cm 反而撞到別的
    東西或 IK 不可達。
@@ -1121,12 +1123,15 @@ grip_position()` 也是同一慣例），`compute_tilted_wrist_pose()` 的
    類似風險，這次沒有動它（flat 案例跟 Kitchen 母球擺位範圍幾乎不
    重疊，見 `docs/issue-flat-case-residual-error.md`，且未實測證實
    有沒有實際發生）。
-4. `DemoTableOrchestrator._execute_strike()`（正式生產路徑）目前呼叫
-   的是舊版 `swing_trajectory_calculator.compute_swing_waypoints()` +
-   `move_through_poses()`，還沒接上 `move_swing()` 速度最優控制器——
-   這次的修法對兩條路徑都有效（都依賴同一個被推走的母球位置），但
-   `move_swing()` 本身要正式派上用場還需要另外把 `_execute_strike()`
-   接上它。
+4. ✅ **已解決（2026-08-29）**：`DemoTableOrchestrator._execute_strike()`
+   （正式生產路徑）原本呼叫的是舊版 `swing_trajectory_calculator.
+   compute_swing_waypoints()` + `move_through_poses()`，已改接上
+   `move_swing()` 速度最優控制器（`orientation_gain=1.0`／
+   `max_angular_speed=1.0`，跟診斷腳本驗證過的數值一致，不是
+   `move_swing()` 方法本身較保守的預設值 `max_angular_speed=0.5`）。
+   `core/tests/test_table_orchestrator.py` 已更新對應測試斷言，
+   `core/tests/` 652 個測試全過。flat 案例走同一段程式碼但尚未針對性
+   實測。
 
 ### 參考檔案（本節新增）
 

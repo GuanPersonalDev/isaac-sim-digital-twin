@@ -1,6 +1,8 @@
 import logging
 from abc import ABC, abstractmethod
 
+import numpy as np
+
 from ..services.base_placement_calculator import (
     CANONICAL_FLAT_ORIENTATION, CANONICAL_REST_JOINTS, compute_base_pose,
     compute_canonical_wrist_position, required_grip_position,
@@ -242,12 +244,31 @@ class DemoTableOrchestrator(TableOrchestrator):
             )
 
         direction_unit = cue_pose_calculator.compute_tilted_direction(action.shot_angle, tilt_rad)
-        waypoints = swing_trajectory_calculator.compute_swing_waypoints(
-            contact_position=list(wrist_position),
-            contact_orientation=list(wrist_orientation),
-            direction_unit=direction_unit, cue_ball_speed=action.cue_ball_speed
+        # ⚠️ 2026-08-29：改用 move_swing()（見 core/ports/articulation_api.py
+        # 抽象方法／extension/isaac_sim_impl_6_0/articulation_api_impl.py
+        # 實作），取代原本的 compute_swing_waypoints()+move_through_poses()
+        # 兩段式呼叫——後者是靜態目標點的 P 控制器+feedforward pose
+        # tracking，有結構性穩態誤差，隨揮終點永遠差一截到不了（見
+        # docs/issue-180-reachability-analysis.md 第十五節）。move_swing()
+        # 改成每個 physics tick 用線性規劃求「姿態修正在有限額度內、沿
+        # 揮桿方向最大化速度」，是真正驗證過能讓桿尖碰到球、量到真實非零
+        # 碰撞衝量的版本（第十七節，diagnose_move_swing.py 實測
+        # impulse=0.201、母球 1.05m/s）。
+        #
+        # orientation_gain=1.0／max_angular_speed=1.0 是實測驗證用的數值
+        # （比 move_swing() 方法本身的預設 max_angular_speed=0.5 更寬），
+        # 沿用同一組數值才能保證跟已驗證過的行為一致。
+        required_tip_speed = swing_trajectory_calculator.compute_required_tip_speed(action.cue_ball_speed)
+        follow_through_distance = swing_trajectory_calculator.compute_follow_through_distance(required_tip_speed)
+        contact_position = np.array(wrist_position)
+        backswing_position = swing_trajectory_calculator.compute_backswing_position(
+            contact_position, direction_unit, swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M
         )
-        self._articulation_api.move_through_poses(waypoints)
+        follow_through_position = contact_position + follow_through_distance * direction_unit
+        self._articulation_api.move_swing(
+            backswing_position.tolist(), list(wrist_orientation), follow_through_position.tolist(),
+            orientation_gain=1.0, max_angular_speed=1.0,
+        )
 
 class TrainingTableOrchestrator(TableOrchestrator):
     def __init__(

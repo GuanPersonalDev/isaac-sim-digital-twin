@@ -451,7 +451,7 @@ class TestDemoTableOrchestratorExecuteStrike:
         table_ball_set.DEFAULT_BALL_RADIUS = 0.028575
         articulation_api.did_last_motion_timeout.return_value = False
 
-    def test_calls_move_through_poses_with_calculator_waypoints(
+    def test_calls_move_swing_with_calculator_backswing_and_follow_through(
         self,
         demo_orchestrator: DemoTableOrchestrator,
         table_ball_set: MagicMock,
@@ -463,14 +463,7 @@ class TestDemoTableOrchestratorExecuteStrike:
         wrist = np.array([0.0, -1.35, 0.028575])
         orientation = np.array([1.0, 0.0, 0.0, 0.0])
         direction = np.array([0.0, 1.0, 0.0])
-        waypoints = [
-            PoseWaypoint(position=[0.0, -1.5, 0.028575], orientation=[1.0, 0.0, 0.0, 0.0]),
-            PoseWaypoint(
-                position=[0.0, -1.3, 0.028575],
-                orientation=[1.0, 0.0, 0.0, 0.0],
-                linear_velocity=[0.0, 1.0, 0.0],
-            ),
-        ]
+        backswing = np.array([0.0, -1.5, 0.028575])
 
         with patch(
             "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
@@ -479,13 +472,26 @@ class TestDemoTableOrchestratorExecuteStrike:
             "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_direction",
             return_value=direction,
         ), patch(
-            "core.services.table_orchestrator.swing_trajectory_calculator.compute_swing_waypoints",
-            return_value=waypoints,
-        ) as mock_compute_waypoints:
+            "core.services.table_orchestrator.swing_trajectory_calculator.compute_required_tip_speed",
+            return_value=1.5,
+        ), patch(
+            "core.services.table_orchestrator.swing_trajectory_calculator.compute_follow_through_distance",
+            return_value=0.03,
+        ), patch(
+            "core.services.table_orchestrator.swing_trajectory_calculator.compute_backswing_position",
+            return_value=backswing,
+        ) as mock_backswing:
             demo_orchestrator._execute_strike(action)
 
-        mock_compute_waypoints.assert_called_once()
-        articulation_api.move_through_poses.assert_called_once_with(waypoints)
+        mock_backswing.assert_called_once()
+        articulation_api.move_swing.assert_called_once()
+        call = articulation_api.move_swing.call_args
+        assert call.args[0] == pytest.approx(backswing.tolist())
+        assert call.args[1] == pytest.approx(orientation.tolist())
+        # follow_through = wrist + follow_through_distance(0.03) * direction([0,1,0])
+        assert call.args[2] == pytest.approx([0.0, -1.32, 0.028575])
+        assert call.kwargs["orientation_gain"] == pytest.approx(1.0)
+        assert call.kwargs["max_angular_speed"] == pytest.approx(1.0)
 
     def test_raises_without_calling_calculators_when_aim_timed_out(
         self,
@@ -504,7 +510,7 @@ class TestDemoTableOrchestratorExecuteStrike:
                 demo_orchestrator._execute_strike(action)
 
         mock_compute_pose.assert_not_called()
-        articulation_api.move_through_poses.assert_not_called()
+        articulation_api.move_swing.assert_not_called()
 
     def test_infeasible_geometry_raises(
         self,
