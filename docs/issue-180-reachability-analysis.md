@@ -1095,9 +1095,23 @@ grip_position()` 也是同一慣例），`compute_tilted_wrist_pose()` 的
 
 ### 已知缺口（留給後續）
 
-1. 母球實際速度比需求速度低約 30%——`move_swing()` 線性規劃揮桿速度
-   上限問題，見第十六節「STRIKE：不是 waypoint 設計問題，是真正的
-   運動學速度上限」，是獨立問題。
+1. 母球實際速度比需求速度低約 30%——**已確認就是第十六節記錄過的
+   運動學可操作性（manipulability）上限，不是這次修法引入的新問題**。
+   用 `DEBUG_MOVE_SWING=1` 開關印出 `move_swing()` 每個 physics tick
+   線性規劃算出的 `predicted_speed`（桿尖沿揮桿方向的理論最大速度）：
+   整段揮桿（17 個 tick，`traveled` 從 0 走到 `swing_total_distance
+   =0.1756`）`predicted_speed` 峰值只有 **0.68 m/s**，全程 7 個關節裡
+   有 5 個持續頂在 `_dof_limits` 的 ±2.0 rad/s 硬限速上——即使線性規劃
+   已經用滿全部關節速度額度＋`max_angular_speed` 允許的姿態漂移額度，
+   這個關節構型（`roll_rad` 查表選中的值）能榨出的最大桿尖速度就是
+   0.68 m/s，換算成球速（`compute_required_tip_speed()` 的反函式：
+   `v_ball=v_tip×1.3198`）約 0.90 m/s，跟實測 `max_ball_speed=1.05 m/s`
+   同量級（差距在真實碰撞動力學跟單步 LP 快照的正常誤差範圍內）。
+   跟第十六節「`y=-0.9382125`，`max_angular_speed` 相關但完全鎖定角速度
+   時上限只有 0.81 m/s」的結論一致，屬於同一個已知限制，解法方向同
+   第十六節列出的 4 個選項（降 `cue_ball_speed` 上界／進一步放寬姿態
+   漂移／換 margin>0 的 roll 候選／放寬 `_dof_limits`），不在這次
+   零衝量修法範圍內。
 2. `contact_clearance_m=0.05` 只在最難的 Kitchen 案例上實測，尚未跑
    完整 X×Y 網格回歸確認所有案例都不會因為多退開 5cm 反而撞到別的
    東西或 IK 不可達。
