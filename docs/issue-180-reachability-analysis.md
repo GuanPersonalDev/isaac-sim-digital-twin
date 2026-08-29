@@ -838,6 +838,62 @@ iterations being added to a TGS scene」，尚未深入調查是否與此有關�
 累積衝量。這是 PhysX 求解器/碰撞參數層級的問題，不是控制器邏輯或運動
 學計算的問題，需要另外一輪聚焦在物理引擎設定的調查。
 
+### 零衝量問題的深入調查與決定性發現（同日續二）
+
+依使用者指示（「檢查看看環境中球桿跟球的碰撞是否有被開啟」）逐一排查，
+過程與結論：
+
+1. **碰撞本身確實有開啟、沒有被過濾**：直接查詢執行時的 USD attribute，
+   `CueStick/Cylinder`／`Ball` 的 `physics:collisionEnabled` 都是
+   `True`，`physics:filteredPairs` 都是空的——`table_robot_manager.py`
+   唯一的 `filter_collision_pair()` 呼叫（CueStick vs 機器人末端執行器）
+   精準地只排除自碰撞，沒有波及母球。
+2. **排除三個機制假說**（都在 `timeline.play()` 前用 USD attribute
+   直接覆寫測試，逐一證實無效）：
+   - `solverVelocityIterationCount` 255→4（對應 TGS 警告的建議值）：
+     衝量依舊 0。
+   - 每個關節 drive `stiffness` 1745→0：衝量依舊 0，且 AIM／揮桿的
+     收斂步數跟改之前逐位元相同——證實 `stiffness` 在 velocity 控制
+     模式下根本不影響任何東西，這條假說的機制推論本身是錯的。
+   - `physxRigidBody:enableCCD`（連續碰撞偵測，整個專案從未設定過）
+     開啟：衝量依舊 0。
+3. **關鍵時序發現**：把每個 `ContactEvent` 標記上發生的階段/步數後
+   發現，`CueStick/Cylinder <-> Ball` 這個接觸**只在 AIM 收斂階段
+   （`aim:367`）發生過一次**——揮桿階段（`swing:44~61`，桿尖確認高速
+   逼近球到 12.6mm）**完全沒有觸發任何新的碰撞事件**。進一步比對
+   「用腕部姿態算的桿尖位置」跟「用球桿剛體自己回報的姿態算的桿尖
+   位置」，兩者在每一步都逐位元一致——`FixedJoint` 精準同步位置＋
+   姿態，排除了「姿態不同步」這個假說。
+4. **決定性實驗**：`scripts/minimal_repro_cue_impact.py`——完全不接
+   機器人/articulation，只用一個獨立的自由剛體圓柱（跟 CueStick 同一份
+   `assets/ball_stick.usda` 幾何/質量，直接用
+   `RigidPrim.set_velocities()` 下達速度）撞同一顆球。**在 1.0 m/s 與
+   1.5 m/s（跟揮桿實際需要的速度同量級）下，自由剛體都正確把動量傳給
+   母球**（分別量到 `max_ball_speed=0.53`／`0.79 m/s`，隨速度提高等比
+   放大）——證實碰撞物理／材質設定本身完全正常，問題精準定位在**球桿
+   透過 `FixedJoint` 掛在受驅動的 articulation 上**這個環節。
+
+**結論**：這不是控制器參數、碰撞開關、或求解器設定的問題，是結構性的
+——PhysX 的 articulation 求解器（reduced-coordinate 公式）在處理「外部
+碰撞力通過 FixedJoint 傳回一個正在被關節速度驅動的運動鏈」這件事上，
+疑似無法正確把碰撞反作用力整合進同一個求解迭代，導致衝量在傳遞路徑上
+消失（有趣的是，母球本身也觀察到同樣的「單次 CONTACT_FOUND 事件
+impulse=0，但持續多步的重疊/推擠仍能讓球速真實改變」現象——這代表
+PhysX 的動量傳遞在某些情境下不是靠單一次事件的 impulse 完成，而是靠
+接觸維持的時間長度累積，揮桿的桿尖到球距離只在 2-3 步內夠近，可能還沒
+累積到足夠動量就已經又拉開了）。可能的修法方向（都是結構性改動，需要
+使用者決定）：
+
+1. **把 CueStick 改成 articulation 本身的一個 link**（用關節，不是外部
+   FixedJoint 連接），讓它完全在 reduced-coordinate 求解範圍內，而不是
+   混合式的「articulation + 一般 joint constraint」系統。
+2. **拉長桿尖在碰撞範圍內停留的時間**（例如揮桿末段刻意放慢通過球的
+   那一小段距離，用時間換取動量累積的機會），跟目前「全程盡量维持高速」
+   的設計思路有取捨。
+3. 查 PhysX/Isaac Sim 官方文件或社群，確認「articulation 上 FixedJoint
+   附掛剛體對外碰撞」是否為已知限制、有沒有建議的替代連接方式（例如
+   直接用 D6 Joint 鎖死所有自由度，測試看看求解路徑是否不同）。
+
 ### 參考檔案（本節新增）
 
 - `scripts/search_collision_free_roll.py`（碰撞感知 roll 搜尋，已改成
@@ -849,7 +905,10 @@ iterations being added to a TGS scene」，尚未深入調查是否與此有關�
 - `scripts/search_roll_swing_capable.py`（三條件 roll 搜尋：AIM 可達+
   揮桿速度線性規劃+IK margin 排序）
 - `scripts/diagnose_move_swing.py`（`move_swing()` 的逐步驗證腳本：
-  桿尖到球距離、關節速度、球桿剛體位置對照、碰撞事件回報）
+  桿尖到球距離、關節速度、球桿剛體位置對照、碰撞事件回報、階段標記、
+  求解器/剛性/CCD 覆寫測試開關）
+- `scripts/minimal_repro_cue_impact.py`（最小重現案例：自由剛體撞球，
+  證實碰撞物理本身正常，問題在 articulation 附掛結構）
 - `extension/isaac_sim_impl_6_0/articulation_api_impl.py`
   `move_swing()`／`_step_swing_motion()`／`_skew_matrix()`（新增的
   揮桿專用速度最優控制器本體）
