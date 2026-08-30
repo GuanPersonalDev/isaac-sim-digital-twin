@@ -51,6 +51,7 @@ class TableOrchestrator(ABC):
         docs/tech-design/rolling-resistance-correction-tech-design.md 第 4 節。
         """
         self._rolling_resistance_service.apply(self._table_ball_set.get_ball_prim_paths())
+        self._check_downstream_failure()
 
         action = self._script_controller.get_action(observation)
         current_state = self._script_controller.get_current_state()
@@ -86,8 +87,37 @@ class TableOrchestrator(ABC):
         self._error_state.clear()
         self._script_controller.reset()
 
+    def full_reset(self) -> None:
+        """
+        Timeline PLAY 重播用：除了狀態機與 error_state，連場景也回到開局
+        （重新擺球 + 手臂歸位）。
+
+        單純把狀態設回 RESET 不會重擺球——RESET 狀態的兩個下游動作只在
+        WAITING → RESET 的那一個 tick 由 should_execute_action 帶出來
+        （見 step()），之後每個 RESET tick 的 Action 都是 no-op。
+
+        必須在 physics step 內呼叫（見 TableRuntime.tick()），不能直接在
+        Timeline 事件 callback 裡呼叫。
+        """
+        self.reset()
+        self._reset_balls()
+        self._reset_downstream()
+
     def get_current_state(self) -> BilliardStatus:
         return self._script_controller.get_current_state()
+
+    def _check_downstream_failure(self) -> None:
+        """
+        下游動作失敗（逾時）時標記 error_state，預設無下游可檢查。
+
+        動作逾時的善後（`_step_motion()`）會把目標清空，讓 `is_motion_complete()`
+        從此恆為 True——那是為了不要把手臂卡死，但狀態機的 RESET → IDLE 與
+        AIMING → STRIKING 兩個轉換條件都只看 `is_motion_complete`，於是一次
+        逾時會讓狀態機一路直通到 STRIKING，中間的動作根本沒真的執行過（實測：
+        RESET 逾時後手臂還停在預設姿態，球桿跟擊球線差 90°，卻已經在揮桿）。
+        在這裡把逾時轉成明確的錯誤，讓它停在 ERROR 而不是繼續空轉。
+        """
+        ...
 
     @abstractmethod
     def _reset_downstream(self) -> None:
@@ -121,6 +151,10 @@ class DemoTableOrchestrator(TableOrchestrator):
 
     def _reset_downstream(self) -> None:
         self._robot_arm.reset()
+
+    def _check_downstream_failure(self) -> None:
+        if self._articulation_api.did_last_motion_timeout():
+            self._error_state.mark_error(RuntimeError("手臂動作逾時未收斂"))
 
     def _execute_aim(self, action: Action) -> None:
         # 1. table_z / ball_radius 從 self._table_ball_set 取得；

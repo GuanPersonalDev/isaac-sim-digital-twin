@@ -326,10 +326,18 @@ class BilliardExtension(omni.ext.IExt):
             self._on_stop()
 
     def _on_play(self) -> None:
+        # Timeline 的 PLAY 事件「Stop 後重新播放」與「Pause 後繼續」都會送出，
+        # 只有前者該把狀態機清回 RESET——Pause 續播時場景與手臂都停在原地，
+        # 重置狀態機會讓打到一半的擊球憑空中斷。用 _timeline_playing 區分：
+        # Stop 會把它設回 False，PAUSE 事件沒有被訂閱、不會動到它。
+        resumed_from_pause = self._timeline_playing
         self._timeline_playing = True
         for demo_session in self._demo_sessions:
             if not demo_session.is_articulation_initialized():
                 demo_session.initialize_articulation()
+        if not resumed_from_pause:
+            for session in self._all_sessions():
+                session.request_full_reset()
 
     def _on_stop(self) -> None:
         self._timeline_playing = False

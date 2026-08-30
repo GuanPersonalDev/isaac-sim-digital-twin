@@ -58,7 +58,11 @@ def robot_arm() -> MagicMock:
 
 @pytest.fixture
 def articulation_api() -> MagicMock:
-    return MagicMock()
+    api = MagicMock()
+    # 預設「上一個動作沒有逾時」——不設的話 MagicMock 回傳的是 truthy Mock，
+    # 每個 step() 都會被 _check_downstream_failure() 標記成錯誤
+    api.did_last_motion_timeout.return_value = False
+    return api
 
 
 @pytest.fixture
@@ -256,6 +260,71 @@ class TestStepDispatch:
         ]
 
 
+class TestDownstreamFailure:
+    def test_step_marks_an_error_when_the_previous_motion_timed_out(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        articulation_api: MagicMock,
+        error_state: MagicMock,
+    ):
+        articulation_api.did_last_motion_timeout.return_value = True
+        script_controller.get_action.return_value = _action(should_execute_action=False)
+        script_controller.get_current_state.return_value = BilliardStatus.RESET
+
+        demo_orchestrator.step(_observation())
+
+        error_state.mark_error.assert_called_once()
+        assert isinstance(error_state.mark_error.call_args.args[0], RuntimeError)
+
+    def test_step_marks_no_error_while_motions_keep_converging(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        error_state: MagicMock,
+    ):
+        script_controller.get_action.return_value = _action(should_execute_action=False)
+        script_controller.get_current_state.return_value = BilliardStatus.IDLE
+
+        demo_orchestrator.step(_observation())
+
+        error_state.mark_error.assert_not_called()
+
+    def test_timeout_is_checked_before_the_controller_decides(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        articulation_api: MagicMock,
+        error_state: MagicMock,
+    ):
+        """
+        逾時必須在 get_action() 之前標記，否則狀態機這一 tick 還是會用
+        「動作已完成」的舊語意往下推進一格。
+        """
+        calls = []
+        articulation_api.did_last_motion_timeout.side_effect = lambda: calls.append("check") or True
+        error_state.mark_error.side_effect = lambda _: calls.append("mark")
+        script_controller.get_action.side_effect = lambda _: calls.append("get_action") or _action(should_execute_action=False)
+        script_controller.get_current_state.return_value = BilliardStatus.IDLE
+
+        demo_orchestrator.step(_observation())
+
+        assert calls == ["check", "mark", "get_action"]
+
+    def test_training_orchestrator_has_no_downstream_to_check(
+        self,
+        training_orchestrator,
+        script_controller: MagicMock,
+        error_state: MagicMock,
+    ):
+        script_controller.get_action.return_value = _action(should_execute_action=False)
+        script_controller.get_current_state.return_value = BilliardStatus.IDLE
+
+        training_orchestrator.step(_observation())
+
+        error_state.mark_error.assert_not_called()
+
+
 class TestStepErrorHandling:
     def test_downstream_exception_is_recorded_and_not_reraised(
         self,
@@ -315,6 +384,57 @@ class TestReset:
 
         assert error_state.has_error() is False
         assert error_state.get_last_exception() is None
+
+
+class TestFullReset:
+    def test_full_reset_also_racks_the_balls_and_homes_the_arm(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        table_ball_set: MagicMock,
+        ball_position_provider: MagicMock,
+        error_state: MagicMock,
+        robot_arm: MagicMock,
+    ):
+        ball_position_provider.get_positions.return_value = {0: (0.1, 0.2)}
+
+        demo_orchestrator.full_reset()
+
+        error_state.clear.assert_called_once_with()
+        script_controller.reset.assert_called_once_with()
+        table_ball_set.reset.assert_called_once_with({0: (0.1, 0.2)})
+        robot_arm.reset.assert_called_once_with()
+
+    def test_full_reset_needs_no_action_dispatch(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+        table_ball_set: MagicMock,
+        ball_position_provider: MagicMock,
+    ):
+        """
+        RESET 狀態本身的 Action 是 no-op（should_execute_action=False），重擺球
+        只在 WAITING → RESET 那一個 tick 才會被帶出來；full_reset() 必須自己
+        直接做，不能依賴 step() 分派。
+        """
+        ball_position_provider.get_positions.return_value = {0: (0.0, 0.0)}
+
+        demo_orchestrator.full_reset()
+
+        script_controller.get_action.assert_not_called()
+        table_ball_set.reset.assert_called_once_with({0: (0.0, 0.0)})
+
+    def test_training_full_reset_racks_the_balls_without_a_downstream(
+        self,
+        training_orchestrator,
+        table_ball_set: MagicMock,
+        ball_position_provider: MagicMock,
+    ):
+        ball_position_provider.get_positions.return_value = {0: (0.3, 0.4)}
+
+        training_orchestrator.full_reset()
+
+        table_ball_set.reset.assert_called_once_with({0: (0.3, 0.4)})
 
 
 class TestResetBalls:

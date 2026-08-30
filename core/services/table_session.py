@@ -35,6 +35,14 @@ class TableSession:
     def tick(self) -> None:
         self._runtime.tick()
 
+    def request_full_reset(self) -> None:
+        """
+        Timeline PLAY 時由 Extension 呼叫：狀態機回到 BilliardStatus.RESET，
+        場景（球位、手臂）在下一個 tick 回到開局，不沿用上一輪 Stop 前殘留
+        的狀態。
+        """
+        self._runtime.request_full_reset()
+
     def get_current_state(self) -> BilliardStatus:
         return self._runtime.get_current_state()
 

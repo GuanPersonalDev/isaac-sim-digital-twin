@@ -143,3 +143,74 @@ class TestTableRuntime:
         orchestrator.get_current_state.return_value = BilliardStatus.AIMING
 
         assert table_runtime.get_current_state() == BilliardStatus.AIMING
+
+    def test_request_full_reset_resets_the_state_machine_immediately(
+        self,
+        table_runtime: TableRuntime,
+        orchestrator: MagicMock,
+    ):
+        table_runtime.request_full_reset()
+
+        orchestrator.reset.assert_called_once_with()
+        orchestrator.full_reset.assert_not_called()
+
+    def test_request_full_reset_drops_the_observation_left_over_from_the_previous_run(
+        self,
+        table_runtime: TableRuntime,
+        observation_builder: MagicMock,
+        observation: Observation,
+    ):
+        observation_builder.build.return_value = observation
+        table_runtime.tick()
+        assert table_runtime.get_last_observation() is observation
+
+        table_runtime.request_full_reset()
+
+        assert table_runtime.get_last_observation() is None
+
+    def test_request_full_reset_defers_the_scene_reset_to_the_next_tick(
+        self,
+        table_runtime: TableRuntime,
+        observation_builder: MagicMock,
+        orchestrator: MagicMock,
+        observation: Observation,
+    ):
+        observation_builder.build.return_value = observation
+        calls = []
+        orchestrator.full_reset.side_effect = lambda: calls.append("full_reset")
+        observation_builder.build.side_effect = lambda: calls.append("build") or observation
+        orchestrator.step.side_effect = lambda _: calls.append("step")
+
+        table_runtime.request_full_reset()
+        table_runtime.tick()
+
+        # 場景重置必須在建 Observation 之前，否則這一 tick 讀到的是重置前的球位
+        assert calls == ["full_reset", "build", "step"]
+
+    def test_pending_full_reset_runs_only_once(
+        self,
+        table_runtime: TableRuntime,
+        observation_builder: MagicMock,
+        orchestrator: MagicMock,
+        observation: Observation,
+    ):
+        observation_builder.build.return_value = observation
+
+        table_runtime.request_full_reset()
+        table_runtime.tick()
+        table_runtime.tick()
+
+        orchestrator.full_reset.assert_called_once_with()
+
+    def test_tick_without_a_pending_request_does_not_reset(
+        self,
+        table_runtime: TableRuntime,
+        observation_builder: MagicMock,
+        orchestrator: MagicMock,
+        observation: Observation,
+    ):
+        observation_builder.build.return_value = observation
+
+        table_runtime.tick()
+
+        orchestrator.full_reset.assert_not_called()

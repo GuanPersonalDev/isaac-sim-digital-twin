@@ -79,6 +79,20 @@ class TestTableSession:
 
         runtime.tick.assert_called_once_with()
 
+    def test_request_full_reset_delegates_to_runtime(
+        self, table_session: TableSession, runtime: MagicMock
+    ):
+        table_session.request_full_reset()
+
+        runtime.request_full_reset.assert_called_once_with()
+
+    def test_demo_session_request_full_reset_delegates_to_runtime(
+        self, demo_table_session: DemoTableSession, runtime: MagicMock
+    ):
+        demo_table_session.request_full_reset()
+
+        runtime.request_full_reset.assert_called_once_with()
+
     def test_get_current_state_delegates_to_runtime(
         self, table_session: TableSession, runtime: MagicMock
     ):

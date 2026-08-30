@@ -118,6 +118,9 @@ class ArticulationAPIImpl(ArticulationAPI):
         # None 代表「尚未註冊」或「已觸發並清空」，供 cancel_pending_home_capture()
         # 判斷是否還需要取消
         self._capture_callback_id: int | None = None
+        # move_to_home() 在 home 姿態擷取完成前就被呼叫（Timeline PLAY 當下的
+        # 完整 reset 會走到這條路徑），記下來等擷取完成後補做，見 move_to_home()
+        self._pending_move_to_home: bool = False
 
         # move_swing() 的狀態：見該方法與 _step_swing_motion() 的說明
         # （docs/issue-180-reachability-analysis.md 第十六節）。
@@ -274,6 +277,10 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._home_position = np.array(self.get_end_effector_position())
         SimulationManager.deregister_callback(self._capture_callback_id)
         self._capture_callback_id = None
+
+        if self._pending_move_to_home:
+            self._pending_move_to_home = False
+            self.move_to_home()
 
     def move_to_pose(self, position: list[float], orientation: list[float], linear_velocity: list[float] = [0.0, 0.0, 0.0], angular_velocity: list[float] = [0.0, 0.0, 0.0]) -> None:
         self.move_through_poses(
@@ -553,6 +560,7 @@ class ArticulationAPIImpl(ArticulationAPI):
             self._did_last_motion_timeout = True
             self._stop_motion()
             self._target_position = None
+            self._target_joint_positions = None
             return
 
         if not self._is_current_target_converged():
@@ -670,6 +678,13 @@ class ArticulationAPIImpl(ArticulationAPI):
     def move_to_home(self) -> None:
         self._pending_waypoints = []
         self._awaiting_waypoints_after_joint_motion = False
+        if self._default_joint_positions is None or self._home_position is None:
+            # initialize() 之後、第一個 physics step 之前就被呼叫：
+            # _capture_home_position_once() 還沒把 home 姿態擷取下來，這時直接
+            # 往下跑會拿 None 當 joint-space 目標。改成記下來，等擷取完成的
+            # 同一個 callback 裡補做（那時場景才真的可讀）。
+            self._pending_move_to_home = True
+            return
         self._start_joint_space_motion(
             self._default_joint_positions, self._home_position
         )
@@ -722,17 +737,30 @@ class ArticulationAPIImpl(ArticulationAPI):
         if self._is_swing_motion:
             return self._swing_complete
 
+        # joint-space 動作的語意是「把關節開到指定角度」，末端世界位置是結果
+        # 不是目標，收斂判定不能拿它當條件——move_to_home() 的
+        # target_end_effector_position 是 _home_position，那是第一次 Play 的
+        # 第一個 physics step 擷取的**世界**座標，而 _execute_aim() 每次擊球都
+        # 會 robot_arm.reposition() 搬動基座。基座一搬走，關節即使完全回到
+        # _default_joint_positions，末端世界位置也回不到舊的 _home_position，
+        # 位置檢查永遠不過 → 每次 RESET 都跑滿 MOTION_TIMEOUT_STEPS 才逾時
+        # 脫困（實測 console 重複出現 motion timeout: step_count: 1001）。
+        # 位置/姿態容許值只對 Cartesian pose-tracking 有意義。
+        if self._is_joint_space_motion:
+            # 逾時善後（見 _step_motion()）會把目標清成 None，代表這次動作
+            # 已經被中止，沒有還在等的目標
+            if self._target_joint_positions is None:
+                return True
+            actual_joints = np.asarray(self._articulation.get_dof_positions())[0]
+            joint_error = float(np.max(np.abs(actual_joints - self._target_joint_positions)))
+            return joint_error < self.JOINT_POSITION_TOLERANCE
+
         if self._target_position is None:
             return True
 
         position_error = np.linalg.norm(np.array(self.get_end_effector_position()) - self._target_position)
         if position_error >= self.POSITION_TOLERANCE:
             return False
-
-        if self._is_joint_space_motion:
-            actual_joints = np.asarray(self._articulation.get_dof_positions())[0]
-            joint_error = float(np.max(np.abs(actual_joints - self._target_joint_positions)))
-            return joint_error < self.JOINT_POSITION_TOLERANCE
 
         current_orientation = self._get_end_effector_world_orientation()
         q_error = self._quat_error(current_orientation, self._target_orientation)
@@ -743,6 +771,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         pass
 
     def cancel_pending_home_capture(self) -> None:
+        self._pending_move_to_home = False
         if self._capture_callback_id is not None:
             SimulationManager.deregister_callback(self._capture_callback_id)
             self._capture_callback_id = None
