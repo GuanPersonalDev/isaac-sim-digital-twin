@@ -1,10 +1,14 @@
-# STRIKE 功能狀態總結（截至 2026-08-29）
+# STRIKE 功能狀態總結（截至 2026-08-30）
 
 本文件是 #181（高架橋擊球）調查的**現況總覽**，給想快速知道「現在卡在
 哪裡、之前試過什麼」的人看。完整的逐步調查過程、每個實驗的原始數據、
 失敗嘗試的詳細推導都在
 [`docs/issue-180-reachability-analysis.md`](issue-180-reachability-analysis.md)
-第十三～十六節，本文件只整理結論。
+第十三～十八節，本文件只整理結論。
+
+**接手前先讀**：`issue-180-reachability-analysis.md` 第十八節列了兩件「已定位
+但刻意還沒動」的事（揮桿橫掃、AIM 終點對齊揮桿起點），以及重掃
+`_ROLL_LOOKUP_GRID` 的順序決策。換機器繼續做的話從那一節開始。
 
 ## 總覽
 
@@ -13,6 +17,10 @@
 | AIM（瞄準）Kitchen 範圍 0/20 | ✅ 已解決 | roll 查表選錯值，逼關節頂死限位 | 碰撞感知 roll 查表重建 |
 | STRIKE 隨揮終點結構性卡死 | ✅ 已解決 | P控制器+feedforward 疊加在靜態目標點的穩態誤差 | 新增 `move_swing()` 速度最優控制器 |
 | STRIKE 碰撞衝量為 0 | ✅ 已解決 | AIM／搭橋目標點精確落在母球球心（零間距），慢速 P 控制器收斂時持續把球推走，STRIKE 執行時打的是空氣 | 給 AIM／搭橋最終目標點加 5cm 安全間距（`contact_clearance_m`） |
+| Play 後狀態機不從 RESET 開始 | ✅ 已解決 | Timeline PLAY 沒有任何呼叫端會重置狀態機 | `TableSession.request_full_reset()` → `TableOrchestrator.full_reset()`，見第十八節 |
+| RESET 卡 1000 步 → 跳過 AIMING → 球桿垂直 | ✅ 已解決 | joint-space 收斂判定先檢查末端**世界**位置，而 `_home_position` 在 `reposition()` 搬動基座後就過期；逾時善後又讓 `is_motion_complete()` 恆為 True | joint-space 只比對關節誤差；逾時改標記 `error_state`。見第十八節 |
+| **STRIKE 揮桿橫掃** | ⏳ **已定位未修** | 線性規劃目標函式 `d·(t×ω) ≡ 0`，角速度落在零空間，單體法把它推到約束邊界；桿尾完全沒有側向約束 | 四個選項見第十八節「待處理 A」，建議先鎖繞桿身軸的 roll 分量 |
+| **AIM 終點 ≠ 揮桿起點** | ⏳ **設計已定未實作** | AIM 收斂在 `wrist-0.05·d`、揮桿起點在 `wrist-0.15·d`，中間 10cm 由裸差動 IK 走，無碰撞驗證 | 把 `contact_clearance_m` 改成共用的後擺距離，見第十八節「待處理 B」 |
 
 ---
 

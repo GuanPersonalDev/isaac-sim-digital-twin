@@ -1150,6 +1150,244 @@ grip_position()` 也是同一慣例），`compute_tilted_wrist_pose()` 的
   幾何重疊檢查、AIM 收斂全程母球位置/速度追蹤、
   `AIM_CONTACT_CLEARANCE_M` 校準開關）
 
+## 十八、Timeline PLAY 的完整 reset、joint-space 收斂判定根因，與待處理的兩個設計決策（2026-08-30）
+
+commit `8d572f1`。本節同時記錄「已修好的」與「已定位但刻意還沒動的」，
+後者是換機器接手時的待辦清單。
+
+### 已修：Timeline PLAY 沒有重置狀態機
+
+狀態機的初始值本來就是 `BilliardStatus.RESET`（`BilliardStateMachineController.__init__`），
+但 **Stop 後重新 Play 沒有任何呼叫端會重置它**——`TableOrchestrator.reset()`
+的 docstring 寫著「外部重新初始化入口」，全專案卻沒有人呼叫。Session 在
+extension 啟動時就建好（`_billiard_init()` 直接 `_on_demo_toggle(True)`，不等
+Timeline），`_on_play()` 只做 `initialize_articulation()`。所以重播時狀態機還
+停在上一輪的 WAITING/STRIKING/ERROR，跟已被 Stop 還原的場景對不上。
+
+補上 `TableSession.request_full_reset()` → `TableRuntime` → 新增的
+`TableOrchestrator.full_reset()`（狀態機 + `error_state` + 重擺球 + 手臂歸位）。
+兩個時序上的講究：
+
+1. **場景寫入延到下一個 tick**。PLAY 事件當下 physics 一步都還沒跑，重擺球
+   與手臂歸位都該跟其他寫入一樣發生在 `PHYSICS_POST_STEP` 內；狀態機與
+   Observation 則立即清掉，Debug Menu 按下 Play 就顯示 RESET。`full_reset()`
+   在 `build()` **之前**執行，否則這一 tick 的 Observation 讀到的是重置前的
+   球位（`core/tests/test_table_runtime.py` 有測試釘住這個順序）。
+2. **Pause 續播也會送 PLAY 事件**，用 `_timeline_playing` 區分（Stop 會把它
+   設回 False，PAUSE 沒被訂閱不會動到它），否則暫停再續播會讓打到一半的
+   擊球憑空中斷。
+
+`full_reset()` 直接呼叫 `_reset_balls()`／`_reset_downstream()`，**不走
+`step()` 分派**：RESET 狀態自己的 Action 是 no-op（`_reset_state_action_result()`
+從不設 `should_execute_action=True`），重擺球只在 WAITING → RESET 那一個 tick
+由 `should_execute_action` 帶出來。單純把狀態設回 RESET 不會重擺球。
+
+`move_to_home()` 另外補上前置條件保護：`_default_joint_positions`／
+`_home_position` 要等 `initialize()` 之後第一個 physics step 的
+`_capture_home_position_once()` 才擷取，而 `_on_tick` 比擷取 callback 早註冊、
+同一步會先跑，**第一次 Play 的完整 reset 必然在擷取完成前呼叫到
+`move_to_home()`**（`np.asarray(None)` 會餵出垃圾目標）。改成記下
+`_pending_move_to_home`、由擷取 callback 補做。
+
+### 已修：joint-space 收斂判定用了會過期的世界座標（本次真正的根因）
+
+接上 `full_reset()` 之後實測 Stop → Play 會**卡在 RESET 約 1000 步**，console
+重複出現 `motion timeout: step_count: 1001`，然後**突然跳過 AIMING 進到
+STRIKING**，且**球桿方向跟母球連線正好垂直**。三個症狀是同一條因果鏈：
+
+1. `_is_current_target_converged()` 對 joint-space 動作**先**檢查末端世界
+   位置、再檢查關節。`move_to_home()` 傳的 `target_end_effector_position` 是
+   `_home_position`——第一次 Play 的第一個 physics step 擷取的**世界**座標
+   ——而 `_execute_aim()` 每次擊球都會 `robot_arm.reposition()`
+   （`set_prim_translate`）搬動基座。基座一搬走，關節即使完全回到
+   `_default_joint_positions`，末端世界位置也回不到舊的 `_home_position`，
+   位置檢查（`POSITION_TOLERANCE=0.005`）永遠不過，只能靠跑滿
+   `MOTION_TIMEOUT_STEPS=1000` 脫困。
+   **這不是 `full_reset()` 造成的**：正常擊球迴圈的 WAITING → RESET 一樣會
+   呼叫 `_reset_downstream()` → `move_to_home()`，同樣會卡，只是被提前暴露。
+2. 逾時善後把 `_target_position` 清成 `None`，而收斂判定對 `None` 直接回
+   `True`，於是 **`is_motion_complete()` 從此恆為 True**。狀態機的
+   RESET → IDLE 與 AIMING → STRIKING 兩個轉換條件都只看它，一次逾時就一路
+   直通到 STRIKING，中間的動作根本沒真的執行過。
+3. 卡在 RESET 的那 1000 步裡手臂被 `move_to_home()` 開回
+   `_default_joint_positions` ＝ WAM 的 USD 預設姿態（關節全 0）。
+   `CANONICAL_REST_JOINTS` 的註解已載明 `wrist_pitch=palm_yaw=0` 時「手腕
+   位置的參考方向（+X）跟球桿實際指向（+Y）差了 90 度」，`palm_yaw=1.5010`
+   （約 86 度）就是為了補這 90 度才加的。**所以停在預設姿態時球桿必然跟
+   擊球線垂直**（實測 Property 面板 CueStick `Orient Z = -93.953`）。
+
+修法：
+
+1. **joint-space 分支移到位置檢查之前，只比對關節誤差**——「把關節開到指定
+   角度」的語意裡末端位置是結果不是目標，位置/姿態容許值只對 Cartesian
+   pose-tracking 有意義。逾時善後一併清 `_target_joint_positions`，避免
+   joint-space 動作逾時後改成永遠回 False 的另一種卡死。
+2. **逾時轉成明確的錯誤**。`TableOrchestrator.step()` 在 `get_action()`
+   **之前**新增 `_check_downstream_failure()` 掛勾（基底 no-op，
+   `DemoTableOrchestrator` 覆寫成檢查 `did_last_motion_timeout()` 並
+   `mark_error()`），讓它停在 ERROR 而不是繼續空轉。原本只有
+   `_execute_strike()` 檢查逾時，失敗會被一路吞到最後一刻。
+   殘留一格延遲：Observation 在 `step()` 之前就建好，所以標記錯誤的那一 tick
+   狀態機仍會用舊語意前進一格，下一個 tick 才進 ERROR。
+
+**連帶影響（需在 Isaac 重跑回歸）**：`_execute_aim()` 高架橋分支的 Phase 0
+（`preceding_joint_targets`）現在也只看關節收斂，跟 waypoint 序列的交接時機
+會略早。第十三節記錄過「交接時機不同會讓下游差動 IK 走上不同路徑，足以導致
+某些案例改撞 `shoulder_pitch` 硬限位」，所以高架橋整條鏈要重跑。
+
+`core/tests/` 666 個測試全過（原 652 + 新增 14）。
+
+### 待處理 A：STRIKE 揮桿會「橫掃」——線性規劃對桿身旋轉完全無感
+
+**已定位，尚未修。** 實測 STRIKING 期間球桿會像掃把一樣橫掃，不是沿桿身軸
+推進。幾何設計本身是對的（`direction_unit = compute_tilted_direction()`，
+後擺/隨揮都只沿這條軸；`compute_tilted_wrist_pose()` 的 orientation 是
+`_shortest_arc_quat([0,1,0], direction)`，局部 +Y 就是桿身軸），問題在
+`_step_swing_motion()` 的目標函式：
+
+```
+c = swing_direction @ Jv_tip        # Jv_tip = Jv - skew(tip_offset) @ Jang
+```
+
+展開角速度那一項是 `d · (t × w)`。而 `t`（`tip_offset`）就是桿身軸、`d`
+（`swing_direction`）在揮桿開始時精確平行於它——**`t × w` 必定垂直於 `t`，
+所以 `d · (t × w)` 恆等於 0**。角速度對目標函式的貢獻恆等於零，`qdot` 裡所有
+產生旋轉的成分全部落在目標函式的零空間裡。`linprog(method="highs")` 是
+單體法，回傳的是可行多面體的**頂點**，零空間裡的自由度沒有理由留在 0，會
+直接被推到約束邊界。
+
+約束有多寬：角速度箱型約束是 `restore_bias ± max_angular_speed`，
+`_execute_strike()` 硬寫 `max_angular_speed=1.0`（`move_swing()` 方法自己的
+預設是 0.5），`restore_bias` 又被 clip 到 ±0.5——每個軸可自由選在約
+**±1.5 rad/s**。側向約束 `Jv_tip_lateral` 只管**桿尖**的橫向速度
+（±0.1 m/s），**桿尾（握把/腕部）完全沒有約束**，繞著桿尖轉在這組約束下
+100% 合法。揮桿全長只有 `0.15 + follow_through` 約 0.18 m、桿尖速度約
+0.7 m/s，也就是約 0.26 秒；1.5 rad/s × 0.26 s 約 **22 度**，繞桿尖 22 度讓
+1.35 m 的桿尾掃出約 50 cm。
+
+**而且會正回饋放大**：一旦桿身偏離 `d` 一個角度 theta，`t` 不再平行 `d`，
+`d · (t × w)` 變成正比於 `sin(theta)`——旋轉**開始真的能增加**桿尖沿揮桿
+方向的速度，槓桿還很長（w=1 rad/s × 1.35 m = 1.35 m/s，遠勝純平移上限的
+`predicted_speed` 峰值 0.68 m/s）。求解器本來就處於嚴重速度不足的狀態
+（需求 1.51 m/s），一發現「像揮棒一樣轉」比「沿桿身推」快一倍就會轉到底。
+**第十六節那個 30% 球速落差和這個橫掃是同一個問題的兩面。**
+
+附帶結論：在 `d` 平行 `t` 的前提下 `Jv_tip` 與 `Jv` 對**目標函式**的值完全
+相同，第十六節「改用 `Jv_tip` 才修好」真正生效的地方是側向約束
+`Jv_tip_lateral`，不是目標函式。
+
+修法選項（都有取捨，未拍板）：
+
+1. **鎖死繞桿身軸的 roll 分量**——加等式約束 `t_hat · (Jang @ qdot) = 0`。
+   這個自由度對擊球零貢獻，鎖掉沒有代價。最小改動，建議先做這個。
+2. **兩階段字典序 LP**——第一階段求最大速度 `v*`，第二階段加
+   `c @ qdot >= 0.95 v*` 當約束、改成最小化 `sum|w|`（輔助變數線性化）。
+   直接消滅零空間的任意性，最徹底。
+3. **`max_angular_speed` 從硬寫的 1.0 調回 0.5 或更小**做 A/B——最快看到
+   效果，但只縮小症狀，零空間任意性還在。
+4. **側向約束從桿尖擴展到桿尾**（對 `wrist` 也加橫向速度箱型約束）——直接
+   禁止繞桿尖的掃動，最貼近「桿尖沿桿身方向移動」的物理直覺。
+
+注意：1、2、4 都會壓縮求解器目前用來偷速度的自由度，**球速大概率會從
+1.05 m/s 再往下掉**——但那個速度本來就是靠不該有的揮棒動作換來的。這件事
+跟 #183 B-CP3（2026-09-06）「球速落差怎麼解」的決策直接綁在一起。
+
+### 待處理 B：AIM 收斂終點應該就是 STRIKE 的揮桿起點
+
+**設計已對齊，尚未實作。** 目前 AIM 的 C2 終點與 STRIKE 的後擺點**公式一模
+一樣，只差一個純量**：
+
+```python
+# AIM 的 C2 終點（cue_pose_calculator.compute_elevated_bridge_waypoints）
+safe_wrist = wrist - contact_clearance_m * direction                                     # 0.05
+
+# STRIKE 的後擺點（table_orchestrator._execute_strike）
+backswing_position = contact_position - DEFAULT_BACKSWING_DISTANCE_M * direction_unit    # 0.15
+```
+
+同一個 `wrist`、同一個 `direction`（`_execute_strike()` 已用
+`lookup_roll_rad()` 查同一個 roll 保證這件事）。中間那 10 cm 目前是在
+STRIKING 狀態下由**裸的差動 IK P 控制器**走的——沒有 NLERP 轉向保護、沒有
+碰撞驗證、也不在任何回歸腳本的涵蓋範圍。
+
+**目標**：把 0.05 換成 0.15，讓 AIM 收斂終點就是揮桿起點，那 10 cm 改由
+已驗證的 waypoint 序列承擔。
+
+**架構**：後擺距離升格為 AIM 與 STRIKE 的共用契約，唯一事實來源留在
+`swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M`。
+`contact_clearance_m` 的存在理由（AIM 慢速收斂到球心會把母球推走，見第十七
+節）被完全吸收——0.15 m 遠大於實測校準出來的 0.05 m，第十七節那張
+0.01/0.03/0.05 校準表從此只剩歷史價值，這個參數應該消失而不是留著再調。
+
+**`move_swing()` 的介面不用動**：它第一階段是 pose-tracking 到
+`backswing_position`，手臂若已經在那裡，第一個 tick 就判定收斂、直接切進
+揮桿模式，自然退化，不需要新增旁路。
+
+**實作方向**：
+
+1. `compute_elevated_bridge_waypoints()` 的 `contact_clearance_m` 改名
+   `backswing_distance_m`，**移除預設值**，強制呼叫端明示。
+2. `_execute_aim()` 傳
+   `backswing_distance_m=swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M`。
+   不讓 `cue_pose_calculator` 直接 import `swing_trajectory_calculator`
+   （雖然沒有循環相依風險），而是在 orchestrator 傳——「AIM 跟 STRIKE 用
+   同一個值」要在同一個檔案裡一眼看得到。
+3. `_execute_strike()` 一行都不用改。
+4. STRIKING 的完成語意收斂成只剩 `_swing_complete`。
+
+**已決定**：flat 分支（`tilt_rad<=1e-6`）**維持現狀**，不套用這套。它走的是
+`move_to_joint_position([base_yaw, *CANONICAL_REST_JOINTS])`，終點是固定關節
+姿態而不是 `contact - X*direction` 這個 Cartesian 公式，兩者對不上；而
+Kitchen 母球範圍 22/25 點需要高架橋，flat 只有 3 點且其中 2 點還有未解的
+24-27mm 殘留誤差（見 `docs/issue-flat-case-residual-error.md`）。改 flat 分支
+等於放棄「flat 案例刻意不進差動 IK 管線」的既有決定，不划算。
+
+**其他影響**：
+
+- **可達性要求會提前暴露（這是好事）**。以前只要求「接觸點可達」，改後
+  AIM 必須收斂到後擺點。但後擺點本來就必須可達（STRIKE 遲早要去），只是
+  以前失敗發生在 STRIKING、被逾時吞掉；配合上面「逾時轉錯誤」的修法，現在
+  會在 AIMING 就明確報出來。第九節的「後擺走廊 L 約 0.1~0.15m」原本就是為此估的。
+- AIM 會變慢、STRIKING 會變快，總時間不變，只是那 10 cm 換了個更安全的走法。
+
+### 重掃 `_ROLL_LOOKUP_GRID` 的順序決策
+
+**待處理 B 必須在重掃之前完成，否則要掃兩次。**
+
+`approach_point`（B2/C1 的滯空點）的 xy 是直接從 `safe_wrist` 取的，把退開
+距離從 0.05 改成 0.15 會讓整個高架橋的下降位置沿桿身軸平移約
+`0.10 * cos(tilt)`，**掃出來的無碰撞 roll 候選會失效**。
+
+現行 `_ROLL_LOOKUP_GRID` 是對「C2 = 球心」（無 clearance）的幾何掃出來的，
+2026-08-29 加 `contact_clearance_m=0.05` 時就沒有重掃過——這筆帳這次不能
+再賒。
+
+正確順序：
+
+1. 先實作待處理 B（core 端改動很小，`_execute_strike()` 不用動）。
+2. 再跑 `scripts/search_collision_free_roll.py` 重建 `_ROLL_LOOKUP_GRID`。
+3. 最後用 `scripts/verify_swing_trajectory.py` 跑完整網格回歸。
+
+同時要記得第十六節列的既有缺口：`shot_angle` 非 0 / `position_offset` 非 0
+的案例目前仍沿用最近鄰查到的 `shot_angle=0` 候選、實測會 COLLISION。而
+`ModelController` 用的是 `_EVAL_MAX_OFFSET=0.6`、policy 的 `shot_angle` 在
+±30 度之間，**正式 Demo 路徑幾乎每一球都落在這個未驗證區**。既然要重掃，
+值得考慮一併把 `shot_angle` 維度加進搜尋網格（成本會隨維度線性上升，需先
+抽測幾個 `shot_angle=±30` 度的點量出碰撞比例再決定網格密度）。
+
+### 參考檔案（本節新增）
+
+- `core/services/table_orchestrator.py`（`full_reset()`、
+  `_check_downstream_failure()`）
+- `core/services/table_runtime.py` / `core/services/table_session.py`
+  （`request_full_reset()` 與延到 tick 執行的 pending 旗標）
+- `extension/billiard_digital_twin/billiard_digital_twin.py`
+  （`_on_play()` 接上完整 reset，含 Pause 續播防護）
+- `extension/isaac_sim_impl_6_0/articulation_api_impl.py`
+  （`_is_current_target_converged()` joint-space 分支重排、逾時清
+  `_target_joint_positions`、`move_to_home()` 的 `_pending_move_to_home` 保護）
+
+
 ## 參考檔案
 
 - `core/models/action_bounds.py`
