@@ -74,6 +74,12 @@ class ArticulationAPIImpl(ArticulationAPI):
     # docs/issue-flat-case-residual-error.md 記錄的那兩個已知殘留誤差案例
     # 讓狀態機靜默卡死在 AIMING（永遠收斂不了、也永遠不會報錯）。
     MOTION_TIMEOUT_STEPS = 1000
+    # move_to_home() 回 home 之前先垂直上移的安全距離——關節空間插值（PhysX
+    # 自己算各關節的位置驅動路徑，不保證桿尖走直線）可能會讓桿尖在回到 home
+    # 姿態的路上下降、橫掃過桌面，撞到 RESET 剛擺好的球（見 move_to_home()
+    # 說明）。跟 cue_pose_calculator.compute_elevated_bridge_waypoints() 的
+    # safe_altitude_margin 用同一個量級，足以清空庫邊高度。
+    RESET_LIFT_CLEARANCE_M = 0.3
 
     def __init__(
         self, robot_prim_path: str, end_effector_prim_path: str
@@ -113,6 +119,9 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._pending_waypoints: list[PoseWaypoint] = []
         self._waypoint_index: int = 0
         self._awaiting_waypoints_after_joint_motion: bool = False
+        # move_to_home() 先垂直上移一段安全距離，收斂後才切到關節空間回 home——
+        # 見 move_to_home() 與 RESET_LIFT_CLEARANCE_M 的說明。
+        self._awaiting_home_after_lift: bool = False
         self._motion_step_count: int = 0
         self._did_last_motion_timeout: bool = False
         # None 代表「尚未註冊」或「已觸發並清空」，供 cancel_pending_home_capture()
@@ -127,6 +136,16 @@ class ArticulationAPIImpl(ArticulationAPI):
         # _awaiting_swing_after_backswing：正在跑後擺（一般 pose-tracking，
         # 姿態鎖死）子階段，收斂後才切到揮桿速度最優控制。
         self._awaiting_swing_after_backswing: bool = False
+        # 隨揮（swing_end_position）收斂後，桿尖停在緊貼母球原始位置之後
+        # 一點點的地方（follow_through_distance 通常只有幾公分）。RESET 會
+        # 把母球瞬移「回到」正是這個位置附近，若桿尖還停在那裡，球一擺回去
+        # 兩者幾乎已經疊在一起，這時不管手臂接下來往哪個方向動都會碰到球
+        # （實測：move_to_home() 前先垂直上移仍然在上移的第一步就撞到，因為
+        # 起點本身就已經貼著球）。真正需要的是「隨揮一結束、球還沒被重新
+        # 擺放之前，桿尖就先撤離」，所以這個垂直上移要接在揮桿本身完成後
+        # （move_swing() 內部自動串接），不是接在 move_to_home() 前面——見
+        # RESET_LIFT_CLEARANCE_M。
+        self._awaiting_retreat_after_swing: bool = False
         self._is_swing_motion: bool = False
         self._swing_complete: bool = False
         self._swing_start: np.ndarray | None = None
@@ -398,6 +417,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._swing_max_angular_speed = max_angular_speed
         self._is_swing_motion = False
         self._awaiting_swing_after_backswing = True
+        self._awaiting_retreat_after_swing = True
         # 清空舊的 waypoint 佇列狀態——如果呼叫端在這之前用過
         # move_through_poses()（例如 AIM 的高架橋序列），_pending_waypoints/
         # _waypoint_index 會留著舊值。揮桿完成後 _step_motion() 落到「還有
@@ -584,6 +604,32 @@ class ArticulationAPIImpl(ArticulationAPI):
             self._motion_step_count = 0
             return
 
+        if self._awaiting_retreat_after_swing and self._is_swing_motion:
+            # 揮桿（_step_swing_motion() 驅動）本身剛收斂（_swing_complete=
+            # True），桿尖停在緊貼母球原始位置之後一點點的地方
+            # （follow_through_distance 通常只有幾公分）。見
+            # _awaiting_retreat_after_swing 欄位說明：RESET 會把母球瞬移
+            # 「回到」正是這個位置附近，若桿尖還停在那裡，球一擺回去兩者
+            # 幾乎已經疊在一起。這裡在真正回報「揮桿完成」之前，先垂直上移
+            # RESET_LIFT_CLEARANCE_M，用目前姿態當出發點、只改 Z、方向不變。
+            self._awaiting_retreat_after_swing = False
+            self._is_swing_motion = False
+            current_position = np.array(self.get_end_effector_position())
+            current_orientation = self._get_end_effector_world_orientation()
+            retreat_position = current_position + np.array([0.0, 0.0, self.RESET_LIFT_CLEARANCE_M])
+            self._activate_pose_target(
+                retreat_position.tolist(), current_orientation.tolist(),
+                [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+            )
+            return
+
+        if self._awaiting_home_after_lift:
+            self._awaiting_home_after_lift = False
+            self._start_joint_space_motion(
+                self._default_joint_positions, self._home_position
+            )
+            return
+
         if self._awaiting_waypoints_after_joint_motion:
             self._awaiting_waypoints_after_joint_motion = False
             wp = self._pending_waypoints[0]
@@ -685,8 +731,18 @@ class ArticulationAPIImpl(ArticulationAPI):
             # 同一個 callback 裡補做（那時場景才真的可讀）。
             self._pending_move_to_home = True
             return
-        self._start_joint_space_motion(
-            self._default_joint_positions, self._home_position
+        # ⚠️ 2026-08-31：先垂直上移 RESET_LIFT_CLEARANCE_M，收斂後才切到關節
+        # 空間回 home——關節空間插值（PhysX 自己算各關節的位置驅動路徑，不
+        # 保證桿尖走直線）可能會讓桿尖在回到 home 姿態的路上下降、橫掃過
+        # 桌面，撞到 RESET 剛擺好的球。用目前姿態當出發點，只改 Z、方向
+        # 不變（純垂直平移，語意最單純，不需要額外算朝向）。
+        current_position = np.array(self.get_end_effector_position())
+        current_orientation = self._get_end_effector_world_orientation()
+        lift_position = current_position + np.array([0.0, 0.0, self.RESET_LIFT_CLEARANCE_M])
+        self._awaiting_home_after_lift = True
+        self._activate_pose_target(
+            lift_position.tolist(), current_orientation.tolist(),
+            [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
         )
 
     def get_end_effector_position(self) -> list[float]:
@@ -703,6 +759,49 @@ class ArticulationAPIImpl(ArticulationAPI):
         return self._get_end_effector_world_orientation().tolist()
 
     def is_motion_complete(self) -> bool:
+        # ⚠️ 2026-08-31（Demo 桌真實 GUI 執行才踩到，diagnose_move_swing.py
+        # 這類單執行緒手動迴圈腳本測不出來）：這個方法是外部（ObservationBuilder
+        # → 狀態機）唯一查詢「動作是否完成」的入口，跟 `_step_motion()` 內部
+        # 用來判斷「目前這個子目標到了沒、該不該換下一個」的
+        # `_is_current_target_converged()` 不能共用同一個判定——兩者語意不同：
+        # 後者只看「當下這一小段」，前者必須看「一整串排隊中的子動作是否全部
+        # 播完」。曾經誤把這個守門邏輯直接加進 `_is_current_target_converged()`
+        # 本體，結果連 `_step_motion()` 自己判斷「這個 waypoint 到了、該換下
+        # 一個」都被擋住，整條 waypoint 序列永遠卡在第一個——這裡改成只在
+        # `is_motion_complete()` 這一層額外把關，不動 `_step_motion()` 依賴的
+        # 內部判定。
+        #
+        # 根因：`_on_tick`（驅動狀態機）跟 `_step_motion`（驅動實際換下一個
+        # 子動作）是兩個各自獨立註冊的 PHYSICS_POST_STEP callback，`_on_tick`
+        # 註冊得早，每個 physics step 會搶先執行。PhysX 對 position-drive
+        # joint 的實際求解發生在 callback 觸發之前，所以當某個「中繼子動作」
+        # （move_through_poses() 的 Phase 0 joint-space 安全姿態、或
+        # move_swing() 的後擺子階段）剛好在這個 physics step 收斂時，`_on_tick`
+        # 會搶先讀到「目前子目標已收斂」，讓外部以為**整個**動作做完了、狀態機
+        # 直接跳下一個狀態——但 `_step_motion()` 根本還沒機會把動作換到後面
+        # 真正的目標（高架橋 waypoint／揮桿本身），手臂因此永遠卡在中繼姿態
+        # （實測：球桿跟母球呈現不合理的角度，STRIKING 卻已經在執行）。這裡
+        # 擋掉「還有排隊中的後續動作」這幾種情形，不管目前子目標本身有沒有
+        # 收斂都不算完成：
+        #   - _awaiting_waypoints_after_joint_motion：Phase 0 收斂後還要接
+        #     move_through_poses() 的 waypoints
+        #   - _waypoint_index + 1 < len(_pending_waypoints)：目前不是最後一個
+        #     waypoint
+        #   - _awaiting_swing_after_backswing：move_swing() 的後擺收斂後還要
+        #     接真正的揮桿
+        #   - _awaiting_home_after_lift：move_to_home() 的垂直上移子動作收斂
+        #     後還要接關節空間回 home
+        #   - _awaiting_retreat_after_swing：move_swing() 的揮桿本身收斂後
+        #     還要接隨揮後的垂直撤離（見該欄位說明——揮桿完成時桿尖緊貼母球
+        #     原始位置，必須在球被 RESET 瞬移回去之前先撤離）
+        if self._motion_active and (
+            self._awaiting_waypoints_after_joint_motion
+            or self._waypoint_index + 1 < len(self._pending_waypoints)
+            or self._awaiting_swing_after_backswing
+            or self._awaiting_home_after_lift
+            or self._awaiting_retreat_after_swing
+        ):
+            return False
         return self._is_current_target_converged()
 
     def did_last_motion_timeout(self) -> bool:

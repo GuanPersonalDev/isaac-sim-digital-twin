@@ -144,6 +144,27 @@ class TableBallSet:
             self._rigid_body_api.set_position(prim_path, self._table_x + x, self._table_y + y, z)
             self._rigid_body_api.set_velocities(prim_path, [0, 0, 0], [0, 0, 0])
 
+    def place_ball(self, ball_id: int, x: float, y: float) -> None:
+        """
+        Teleport 單顆球到桌台相對座標 (x, y)，並歸零速度。
+
+        給 DemoTableOrchestrator._execute_aim() 用：ModelController 的 policy
+        每一局會自己決定母球要擺在 Kitchen 範圍內的哪裡（六維動作的
+        cue_ball_placement），Training 端 _apply_strike() 會把這個決定真的
+        套用到球上，但 Demo 端過去只有 reset() 把全部球擺回固定的
+        BREAK_SHOT_POSITIONS，從沒把母球移到 policy 決定的位置——
+        _execute_aim()/_execute_strike() 卻直接拿這個「從沒真的實現」的座標
+        當瞄準錨點，機器人因此對著一個沒有球的地方擺姿勢。這裡補上跟 reset()
+        一樣的 teleport 語意（同樣必須用 RigidBodyAPI.set_position()，理由見
+        reset() 的註解），只動單顆球。
+        """
+        self._check_built()
+        self._check_ball_id(ball_id)
+        prim_path = self._get_ball_prim_path(ball_id)
+        z = self._table_z + self._ball_radius
+        self._rigid_body_api.set_position(prim_path, self._table_x + x, self._table_y + y, z)
+        self._rigid_body_api.set_velocities(prim_path, [0, 0, 0], [0, 0, 0])
+
     def _check_built(self) -> None:
         if not self._built:
             raise RuntimeError("請先呼叫 build() 再操作球的顯示狀態")

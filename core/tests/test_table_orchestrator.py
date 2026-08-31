@@ -472,6 +472,29 @@ class TestDemoTableOrchestratorExecuteAim:
         table_ball_set.get_table_z.return_value = 0.0
         table_ball_set.DEFAULT_BALL_RADIUS = 0.028575
 
+    def test_places_cue_ball_at_action_cue_ball_placement(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        table_ball_set: MagicMock,
+        robot_arm: MagicMock,
+        articulation_api: MagicMock,
+    ):
+        """ModelController 的 policy 每一局自己決定母球擺位，Demo 端必須把這個
+        決定真的 teleport 到球上（跟 Training 端 _apply_strike() 一致），否則
+        _execute_aim()/_execute_strike() 會拿一個沒有球的座標當瞄準錨點。"""
+        self._setup_table(table_ball_set)
+        action = _action(should_execute_action=True)
+        action.cue_ball_placement = [0.1, -0.9]
+        action.shot_angle = 0.0
+
+        with patch(
+            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
+            return_value=(None, None, 0.0, None),
+        ):
+            demo_orchestrator._execute_aim(action)
+
+        table_ball_set.place_ball.assert_called_once_with(0, 0.1, -0.9)
+
     def test_flat_case_calls_move_to_joint_position_not_move_through_poses(
         self,
         demo_orchestrator: DemoTableOrchestrator,

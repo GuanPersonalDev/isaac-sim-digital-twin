@@ -167,6 +167,18 @@ class DemoTableOrchestrator(TableOrchestrator):
         table_z = self._table_ball_set.get_table_z()
         ball_radius = self._table_ball_set.DEFAULT_BALL_RADIUS
         cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
+        # ⚠️ 2026-08-30：ModelController 的 policy 每一局自己決定母球要擺在
+        # Kitchen 範圍內的哪裡（cue_ball_placement）。Training 端
+        # _apply_strike()（rl_task/.../mdp/actions.py）會把這個決定真的
+        # teleport 到球上；Demo 端過去只有 _reset_balls() 把全部球擺回固定的
+        # BREAK_SHOT_POSITIONS，從沒把母球移到 policy 決定的位置——下面的
+        # compute_base_pose()/compute_tilted_wrist_pose() 卻直接拿 cue_ball
+        # 當瞄準錨點，機器人因此對著一個沒有球的地方擺姿勢（實測：球桿跟母球
+        # 呈 90 度夾角）。這裡補上跟 Training 端一致的 teleport，AIMING 每局
+        # 只會呼叫一次 _execute_aim()（見 TableOrchestrator.step()：
+        # should_execute_action 只在 IDLE→AIMING 轉換那一 tick 為 True），
+        # 在這裡瞬移不會每個 tick 重複拉回，不影響球被打出去後的自由運動。
+        self._table_ball_set.place_ball(0, cue_ball[0], cue_ball[1])
         base_position, base_yaw_rad = compute_base_pose(cue_ball[0], cue_ball[1], action.shot_angle, table_z, ball_radius)
         wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset)
         if tilt_rad is None:

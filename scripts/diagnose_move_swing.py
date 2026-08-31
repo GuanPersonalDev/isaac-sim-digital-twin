@@ -25,8 +25,15 @@ for _p in (_EXT_DIR, _PROJECT_ROOT):
 
 _TABLE_Z = 0.0
 _BALL_RADIUS = 0.028575
-_CUE_BALL = (0.0, -0.9382125)
-_SHOT_ANGLE_DEG = 0.0
+_CUE_BALL = (
+    float(os.environ.get("DIAG_CUE_BALL_X", "0.0")),
+    float(os.environ.get("DIAG_CUE_BALL_Y", "-0.9382125")),
+)
+_SHOT_ANGLE_DEG = float(os.environ.get("DIAG_SHOT_ANGLE_DEG", "0.0"))
+_POSITION_OFFSET = [
+    float(os.environ.get("DIAG_POSITION_OFFSET_V", "0.0")),
+    float(os.environ.get("DIAG_POSITION_OFFSET_H", "0.0")),
+]
 _CUE_BALL_SPEED = 1.995
 _AIM_MAX_STEPS = 4000
 _SWING_MAX_STEPS = 400
@@ -273,6 +280,38 @@ def _run() -> None:
     physics_api.enable_contact_reporting(robot_manager.get_cue_stick_prim_path())
     physics_api.subscribe_contact_events(lambda e: contacts.append((_step_counter["value"], e)))
 
+    # ⚠️ #182：Ball／CueStick 兩個 RigidBody（assets/ball_template.usda、
+    # assets/ball_stick.usda）從未明確設定過 physxRigidBody:solver
+    # PositionIterationCount／solverVelocityIterationCount，用的是 PhysX
+    # 場景層級預設值。真實桿尖接觸時間僅約 1-2ms，遠短於 60Hz 的 16.7ms
+    # timestep，懷疑求解器在單一 substep 內來不及疊代收斂到正確的接觸
+    # 衝量/反彈方向，尤其是偏移擊球（spin）的情況。用環境變數
+    # SWING_RIGID_BODY_ITERATIONS="position,velocity"（例如 "32,8"）覆寫
+    # Ball 與 CueStick 自己的 solver iteration count（跟上面 articulation
+    # 專用的 SWING_VELOCITY_ITERATIONS 是不同的 prim，articulation 那個管
+    # 手臂關節，這個管球與桿身的碰撞求解），一樣要在 timeline.play() 之前
+    # 設定。api-lookup 查證結果：這個 attribute 只在單一 physics step 內部
+    # 生效，不會像調整 physicsScene dt 一樣影響 PHYSICS_POST_STEP 觸發
+    # 頻率，因此不會動到 RollingResistanceService 的固定 PHYSICS_DT 假設。
+    rigid_body_iterations_override = os.environ.get("SWING_RIGID_BODY_ITERATIONS")
+    if rigid_body_iterations_override is not None:
+        from pxr import PhysxSchema
+        pos_str, vel_str = rigid_body_iterations_override.split(",")
+        cue_stick_rigid_prim_for_iter = stage.GetPrimAtPath(robot_manager.get_cue_stick_prim_path())
+        ball_rigid_prim_for_iter = stage.GetPrimAtPath(ball_prim_path)
+        for label, prim in [("CueStick", cue_stick_rigid_prim_for_iter), ("Ball", ball_rigid_prim_for_iter)]:
+            physx_rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+            pos_attr = physx_rb_api.GetSolverPositionIterationCountAttr()
+            if not pos_attr:
+                pos_attr = physx_rb_api.CreateSolverPositionIterationCountAttr()
+            vel_attr = physx_rb_api.GetSolverVelocityIterationCountAttr()
+            if not vel_attr:
+                vel_attr = physx_rb_api.CreateSolverVelocityIterationCountAttr()
+            print(f"[diag] {label} rigid body iterations BEFORE: position={pos_attr.Get()} velocity={vel_attr.Get()}")
+            pos_attr.Set(int(pos_str))
+            vel_attr.Set(int(vel_str))
+            print(f"[diag] {label} rigid body iterations AFTER: position={pos_attr.Get()} velocity={vel_attr.Get()}")
+
     # ⚠️ assets/barrett_wam/wam7/payloads/Physics/physics.usda 把
     # solverPositionIterationCount／solverVelocityIterationCount 都設成
     # 255（PhysX 上限），是之前修正 move_to_joint_position() 大幅度
@@ -393,16 +432,17 @@ def _run() -> None:
     safe_target_position = list(compute_canonical_wrist_position(base_position, 0.0))
     _aim_contact_clearance_m = float(os.environ.get("AIM_CONTACT_CLEARANCE_M", "0.05"))
     print(f"[diag] contact_clearance_m={_aim_contact_clearance_m}")
+    print(f"[diag] position_offset={_POSITION_OFFSET}")
     bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
         safe_target_position, list(CANONICAL_FLAT_ORIENTATION),
-        _CUE_BALL, _SHOT_ANGLE_DEG, _TABLE_Z, _BALL_RADIUS, roll_rad=roll_rad,
+        _CUE_BALL, _SHOT_ANGLE_DEG, _TABLE_Z, _BALL_RADIUS, position_offset=_POSITION_OFFSET, roll_rad=roll_rad,
         contact_clearance_m=_aim_contact_clearance_m,
     )
     articulation_api.move_through_poses(
         bridge_waypoints, preceding_joint_targets=(safe_joint_targets, safe_target_position)
     )
     wrist, orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
-        _CUE_BALL, _SHOT_ANGLE_DEG, _TABLE_Z, _BALL_RADIUS, [0.0, 0.0], roll_rad=roll_rad
+        _CUE_BALL, _SHOT_ANGLE_DEG, _TABLE_Z, _BALL_RADIUS, _POSITION_OFFSET, roll_rad=roll_rad
     )
     # ⚠️ 追蹤 AIM 收斂過程中母球的即時位置/速度——之前只在揮桿迴圈量測，
     # 發現揮桿一開始球就已經有 0.27m/s 殘留速度，懷疑母球在 AIM 收斂
@@ -588,12 +628,65 @@ def _run() -> None:
     print(f"[diag] max_orient_err_deg={max_orient_err_deg:.2f}")
     print(f"[diag] min_tip_to_ball={min_tip_to_ball:.4f} at step={min_tip_to_ball_step}  ball_radius={_BALL_RADIUS}")
 
+    # ⚠️ 驗證 2026-08-31 修復：move_to_home() 應該先垂直上移（RESET_LIFT_
+    # CLEARANCE_M）再回 home，不該讓桿尖在關節空間插值路上下降、橫掃過桌面
+    # 撞到 RESET 剛擺好的球。追蹤桿尖 Z 軌跡確認有先升高，同時確認這段過程
+    # 母球沒有被再次撞動。
+    #
+    # ⚠️ 這裡必須先把母球瞬移回一個「已經靜止」的位置（比照正式流程
+    # TableBallSet.reset() 的語意），不能直接沿用揮桿剛結束時還在滾動中的
+    # 球——否則球自己的殘留動量會被誤判成「被手臂撞到」，量不出真正的結果。
+    rigid_body_api.set_position(ball_prim_path, _CUE_BALL[0], _CUE_BALL[1], _TABLE_Z + _BALL_RADIUS)
+    rigid_body_api.set_velocities(ball_prim_path, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+    for _ in range(5):
+        simulation_app.update()
+    _pre_reset_ball_pos, _ = ball_rigid_prim.get_world_poses()
+    _pre_reset_ball_xy = np.asarray(_pre_reset_ball_pos[0])[:2].copy()
+    _start_tip_z = articulation_api.get_end_effector_position()[2]
+    _max_tip_z_during_reset = _start_tip_z
+    _reset_ball_disturbed = False
+    articulation_api.move_to_home()
+    _reset_step = 0
+    _disturb_step = None
+    _disturb_tip_z = None
+    _disturb_phase = None
+    for _reset_step in range(_SWING_MAX_STEPS):
+        _step_counter["value"] = f"reset:{_reset_step}"
+        simulation_app.update()
+        _tip_z = articulation_api.get_end_effector_position()[2]
+        _max_tip_z_during_reset = max(_max_tip_z_during_reset, _tip_z)
+        _cur_ball_pos, _ = ball_rigid_prim.get_world_poses()
+        _cur_ball_xy = np.asarray(_cur_ball_pos[0])[:2]
+        if float(np.linalg.norm(_cur_ball_xy - _pre_reset_ball_xy)) > 0.005 and _disturb_step is None:
+            _reset_ball_disturbed = True
+            _disturb_step = _reset_step
+            _disturb_tip_z = _tip_z
+            _disturb_phase = "lift" if getattr(articulation_api, "_awaiting_home_after_lift", False) else "joint_space_home"
+        if articulation_api.is_motion_complete():
+            break
+    print(f"[diag] reset done at step={_reset_step} timed_out={articulation_api.did_last_motion_timeout()}")
+    print(
+        f"[diag] reset start_tip_z={_start_tip_z:.4f} "
+        f"max_tip_z_during_reset={_max_tip_z_during_reset:.4f} final_tip_z={_tip_z:.4f}"
+    )
+    print(f"[diag] reset_ball_disturbed={_reset_ball_disturbed}")
+    if _reset_ball_disturbed:
+        print(f"[diag] reset_disturb_step={_disturb_step} disturb_tip_z={_disturb_tip_z:.4f} disturb_phase={_disturb_phase}")
+
 
 if __name__ == "__main__":
     from isaacsim import SimulationApp
 
-    simulation_app = SimulationApp({"headless": True})
+    # DIAG_HEADLESS=0 開 GUI 視窗；GUI 模式下跑完不會立刻關閉，會停留讓
+    # 使用者肉眼確認，直到手動關閉視窗為止（比照 repro_flat_case_gui.py
+    # 的 while simulation_app.is_running() 手法）。
+    _headless = os.environ.get("DIAG_HEADLESS", "1") != "0"
+    simulation_app = SimulationApp({"headless": _headless})
     try:
         _run()
+        if not _headless:
+            print("[diag] 執行完畢，視窗保留中，關閉視窗以結束程式。")
+            while simulation_app.is_running():
+                simulation_app.update()
     finally:
         simulation_app.close()

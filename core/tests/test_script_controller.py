@@ -4,6 +4,7 @@ from core.controllers.script_controller import ScriptController
 from core.models.action_bounds import CUE_BALL_SPEED
 from core.models.billiard_state import BilliardStatus
 from core.models.observation import Observation
+from core.services.break_shot_position_provider import BREAK_SHOT_POSITIONS
 
 
 def _observation(
@@ -172,6 +173,7 @@ class TestStrikingToWaiting:
         assert action.cue_ball_speed == CUE_BALL_SPEED[1]
         assert action.shot_angle == 0
         assert action.position_offset == [0.0, 0.0]
+        assert action.cue_ball_placement == pytest.approx(list(BREAK_SHOT_POSITIONS[0]))
 
 
 class TestWaitingToReset:
