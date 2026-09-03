@@ -79,6 +79,12 @@ class Ur10eRmpflowController:
     """
 
     _MAX_WAYPOINT_STEP_M = 0.08
+    # 中繼 waypoint 之間的方向變化上限（見 move_to_pose() 2026-09-03
+    # 補充：純位置距離決定 waypoint 數量，在「位置距離小但需要旋轉的角度
+    # 很大」的路段（例如目標姿態接近起始姿態的正反面、需要接近 180 度
+    # 翻轉）會讓單一 waypoint 內的方向變化量過大，RMPflow 卡住不收斂）。
+    # 30 度是保守值，180 度的翻轉至少會拆成 6 段。
+    _MAX_WAYPOINT_ROTATION_RAD = 0.5235987755982988
     _POSITION_TOLERANCE_M = 0.005
     _ORIENTATION_TOLERANCE_RAD = 0.02
     _MAX_STEPS_PER_WAYPOINT = 240
@@ -89,6 +95,14 @@ class Ur10eRmpflowController:
     # 沿用 assets/rmpflow_config/ur10e_cue/rmpflow/ur10e_robot_description.yaml
     # 的 default_q——這是 Lula 官方替 UR10e 選定的 cspace 參考姿態
     # （elbow 彎起、遠離手臂完全打直的奇異點），不是隨便選的數字。
+    #
+    # ⚠️ 2026-09-03 除錯記錄：這組 default_q 的 wrist_2_joint=0，懷疑落在
+    # UR 家族手臂的手腕奇異點（wrist_2=0 時 wrist_1／wrist_3 兩軸平行/
+    # 耦合）附近，可能是某些 AIM 目標（尤其 flat 案例）從 HOME 出發會卡在
+    # 局部穩定點的原因之一。實測把 wrist_2 改成 π/2（遠離這個值）之後，
+    # HOME 本身跟後續 AIM 反而都變得更難收斂（HOME 自己開始逾時、AIM
+    # 殘留誤差從 0.16m 惡化到 0.20m），已改回原始 default_q——這個假設
+    # 沒有被證實，維持官方原值，問題根因仍待查。
     _HOME_JOINT_POSITIONS = [-0.0, -1.2, 1.1, 0.0, 0.0, 0.0]
 
     def __init__(self, articulation, end_effector_prim_path: str) -> None:
@@ -134,7 +148,13 @@ class Ur10eRmpflowController:
 
         total_displacement = target_position - current_position
         distance = float(np.linalg.norm(total_displacement))
-        num_segments = max(1, int(np.ceil(distance / self._MAX_WAYPOINT_STEP_M)))
+        position_segments = int(np.ceil(distance / self._MAX_WAYPOINT_STEP_M))
+
+        dot = float(np.clip(np.abs(np.dot(current_orientation, target_orientation)), -1.0, 1.0))
+        total_rotation = 2.0 * np.arccos(dot)
+        rotation_segments = int(np.ceil(total_rotation / self._MAX_WAYPOINT_ROTATION_RAD))
+
+        num_segments = max(1, position_segments, rotation_segments)
 
         self._waypoints = [
             (

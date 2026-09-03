@@ -18,28 +18,42 @@ move_cue_slide_stroke()），不是繞過 Strategy 直接操作底層 controller
 先只測 flat 案例（cue_ball 選在遠離庫邊、tilt_rad<=1e-6 的位置），高架橋
 案例留給步驟 8。
 
-⚠️ 2026-09-03 目前狀態：FAIL，一個尚未解決的發現。cue_ball=(0.0, 0.5)
-（flat，tilt_rad=0）走完整 Ur10eSwingStrategy.execute_aim() 流程後，
-AIM 卡在約 0.62m 殘留誤差（16 個中繼 waypoint 跑完但多段逾時未收斂）。
+⚠️ 2026-09-03 目前狀態：FAIL，深入 root cause 調查記錄如下。
+cue_ball=(0.0, 0.5)（flat，tilt_rad=0）走完整 Ur10eSwingStrategy.
+execute_aim() 流程後，AIM 卡在殘留誤差不收斂。
 
-已排除的假設（逐一實測驗證過，見對話記錄）：
+已排除的假設（逐一實測驗證過）：
 - ArticulationAPIImpl 包裝層本身的問題——用另一支診斷腳本直接呼叫
   Ur10eRmpflowController（繞開 ArticulationAPIImpl）測同一個 cue_ball，
-  結果幾乎一樣（0.69m 殘留誤差），排除是這次步驟 6 整合引入的 bug。
+  結果幾乎一樣（0.69m 殘留誤差），排除是步驟 6 整合引入的 bug。
 - reposition() 時機（模擬已在跑時才呼叫 vs. 播放前呼叫）——用另一支
   診斷腳本直接比對 Articulation.get_world_poses()，確認 reposition()
   無論何時呼叫都會立即正確反映到 tensor-based Articulation 的 physics
   root transform，這個環節沒有問題。
 - PHYSICS_POST_STEP callback 的 step_dt／呼叫頻率——加了計數器＋數值
   log 確認每個 physics tick 正好呼叫一次、step_dt 穩定為 1/60，正常。
+- waypoint 純位置距離決定段數，沒有依旋轉角度加開更多段——加了
+  _MAX_WAYPOINT_ROTATION_RAD 補上這個機制（見
+  Ur10eRmpflowController.move_to_pose()），對這個案例沒有實質改善
+  （本來的段數就已經被位置距離撐夠了），但保留下來當一般性強化。
+- HOME 的 wrist_2_joint=0 是不是踩到 UR 家族手臂的手腕奇異點——實測把
+  wrist_2 從 0 改到 π/2，結果反而更差（HOME 本身開始逾時、AIM 殘留誤差
+  從 0.16m 惡化到 0.20m），已改回官方原始 default_q，這個假設沒有被
+  證實。
 
-還沒解開的部分：這個 flat 案例（tilt_rad=0，目標朝向幾乎是 identity）
-明明看起來比稍早驗證通過的高架橋案例（scripts/verify_ur10e_rmpflow_aim.py，
-cue_ball=(-0.036,-0.752)，目標朝向也接近但不是 identity）更簡單，卻卡住；
-高架橋案例反而 16 個 waypoint 全部順利收斂到 <2mm。兩者的手臂起始姿態、
-waypoint 段數、單段位移量級都相近，目前找不到能解釋這個差異的具體原因，
-需要更多時間深入研究 RMPflow 在這個特定案例下卡住的 RMP 分量互動，或
-考慮調整 waypoint 拆分策略/rmp_params 增益。
+有實質幫助但沒有完全解決的發現：raw USD 預設姿態（沒走過 RESET）到某些
+AIM 目標需要接近 180 度的姿態翻轉，會讓 RMPflow 卡在很差的殘留誤差
+（0.62m）；改成先呼叫 move_to_home()（模擬正式流程的 RESET 階段，
+production 本來就是 RESET→AIM，不會從 raw 預設姿態直接跳 AIM）之後，
+殘留誤差降到 0.16m——明顯更好，但仍未達到容許誤差。
+
+具體診斷證據（記錄下來供後續深入研究參考）：逐 waypoint 記錄過六個關節
+角度，flat 案例卡住時 wrist_1_joint 在短短几個 waypoint 內從接近 0 衝到
+超過 -π（-3.5+ rad）才折返，elbow_joint 也在某個 waypoint 之後由遞增
+轉為遞減——這個「先衝過頭、方向反轉、卡住不動」的模式，比較像手臂在
+waypoint 之間的路徑規劃上遇到局部運動學條件不佳的區域（可能接近某種
+奇異點附近，但不是已排除的 wrist_2=0 那個特定奇異點），需要更完整的
+逐步比對 flat／bridge 兩個案例的關節軌跡差異才能定位，留給後續處理。
 
 跑法：
     ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \
@@ -172,6 +186,27 @@ def _run() -> None:
             step += 1
         print(f"[flat] {label} 完成，steps={step} did_last_motion_timeout={articulation_api.did_last_motion_timeout()}")
         return step
+
+    # ⚠️ 2026-09-03 除錯發現：raw USD 預設姿態（沒走過 RESET）到某些 AIM
+    # 目標需要接近 180 度的姿態翻轉，會讓 RMPflow 卡住不收斂（flat 案例
+    # 實測卡在 0.62m）；真正的 production 流程是 RESET（回 HOME）→ AIM，
+    # 不會從 raw 預設姿態直接跳 AIM。這裡先呼叫 move_to_home()，模擬
+    # 正式流程的 RESET 階段，再執行 AIM。
+    # move_to_home() 需要 RMPflow 先知道目前底座的真實世界位姿——這時候
+    # 手臂還在 TableRobotManager 建構時的初始固定偏移位置
+    # （TableRobotManager._ROBOT_OFFSET_FROM_TABLE_CENTER），還沒被
+    # execute_aim() 的 per-shot reposition() 移動過，先同步這個初始位置。
+    initial_base_offset = TableRobotManager._ROBOT_OFFSET_FROM_TABLE_CENTER
+    initial_base_position = [
+        table.get_table_center()[0] + initial_base_offset[0],
+        table.get_table_center()[1] + initial_base_offset[1],
+        table.get_table_center()[2] + initial_base_offset[2],
+    ]
+    articulation_api.set_robot_base_pose(initial_base_position, [1.0, 0.0, 0.0, 0.0])
+
+    print("[flat] 呼叫 articulation_api.move_to_home()（模擬 RESET 階段）...")
+    articulation_api.move_to_home()
+    _run_until_complete("RESET(HOME)")
 
     print("[flat] 呼叫 Ur10eSwingStrategy.execute_aim() ...")
     strategy.execute_aim(action, tuple(_CUE_BALL), table_z, ball_radius)
