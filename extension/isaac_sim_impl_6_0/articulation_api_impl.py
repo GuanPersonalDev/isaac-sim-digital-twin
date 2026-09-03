@@ -156,6 +156,21 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._swing_orientation_gain: float = 1.0
         self._swing_max_angular_speed: float = 0.5
 
+        # move_swing_elbow_pivot() 的狀態（UR3e 專用揮桿控制，見該方法
+        # 說明）：跟 move_swing() 的關係跟 _is_swing_motion／
+        # _awaiting_swing_after_backswing 對 _is_elbow_pivot_swing_motion／
+        # _awaiting_elbow_pivot_swing_after_backswing 完全對應，只是揮桿
+        # 子階段的控制策略不同（單一關節 quintic，不是全關節 LP 最佳化）。
+        # 揮桿完成後複用既有的 _awaiting_retreat_after_swing 撤離機制。
+        self._awaiting_elbow_pivot_swing_after_backswing: bool = False
+        self._is_elbow_pivot_swing_motion: bool = False
+        self._elbow_pivot_dof_index: int = 0
+        self._elbow_pivot_contact_joint_positions: np.ndarray | None = None
+        self._elbow_pivot_target_velocity: float = 0.0
+        self._elbow_pivot_quintic: tuple[float, float, float, float] | None = None
+        self._elbow_pivot_elapsed_steps: int = 0
+        self._elbow_pivot_complete: bool = False
+
     def initialize(self) -> None:
         # 在 timeline play 之後呼叫
         self._articulation = Articulation(paths=self._robot_prim_path)
@@ -164,6 +179,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._jac_link_index = self._resolve_end_effector_jacobian_index()
 
         self._tip_local_offset = self._compute_tip_local_offset()
+        self._boost_wrist_gains_for_cue_stick_load()
 
         cue_stick_prim_path = self._resolve_cue_stick_prim_path()
         self._cue_stick_rigid_prim = (
@@ -249,6 +265,78 @@ class ArticulationAPIImpl(ArticulationAPI):
             f"Jacobian link 數 {jacobians.shape[0]} 與 link 名稱數 {len(link_names)} 對不上，"
             f"無法安全對應 {end_effector_link_name}"
         )
+
+    _WRIST_GAIN_BOOST_JOINT_NAME_SUBSTRINGS = ("wrist_1", "wrist_3")
+    """UR3e 專用（見下方 docstring）——`dof_names` 裡符合這些子字串的關節
+    才會被加強，WAM7 的關節命名（`wam_*`）完全不會命中，等同這個方法對
+    WAM7 是 no-op，不需要另外用機器人類型分流。"""
+    _WRIST_GAIN_STIFFNESS = 1e15
+    _WRIST_GAIN_DAMPING = 1e5
+    """沿用 Isaac Sim 官方 Gain Tuner extension 的「SET STIFF GAINS」慣例值
+    （見 isaacsim.robot_setup.gain_tuner），這組數值是官方工具本身用來
+    消除關節在負載下下垂/漂移的標準做法，不是這裡自己拍腦袋定的。"""
+    _WRIST_GAIN_MAX_EFFORT_MULTIPLIER = 20.0
+
+    def _boost_wrist_gains_for_cue_stick_load(self) -> None:
+        """2026-09-02：真實 GUI 執行（`billiard_digital_twin.py` 換成
+        UR3eRobot 之後）逐 tick log 顯示——`move_swing_elbow_pivot()` 進入
+        「joint-space 移動到後擺姿態」這個子動作時，肘關節正常收斂，但
+        `wrist_1`／`wrist_3` 兩個關節即使目標角度完全沒變（跟 AIM 階段
+        收斂到的值相同），也會在肘關節做大幅度動態擺動的過程中被拖離目標
+        （wrist_1 從 -0.6999 漂移到 -0.433、wrist_3 從 ~0 漂移到 0.072，
+        之後卡住不動），導致這個 joint-space 子動作永遠收斂不了、1000 步
+        後逾時，STRIKE 從此卡死在錯誤姿態、桿尖離母球 1.87m。
+
+        UR3e 官方 USD 的關節 PD 增益／扭矩上限應該是針對「手臂自身負載」
+        調的，沒有考慮到球桿透過 FixedJoint 剛性掛在腕部之後，1.35m 長的
+        力臂在肘關節動態擺動時會對 wrist_1／wrist_3（UR3e 裡扭矩容許值
+        較小的兩個關節）產生的額外反作用力矩——這是 PhysX 关节 drive 已知
+        的限制類型（位置控制的合力＝stiffness×位置誤差＋damping×速度誤差，
+        兩者都不夠大、或 max_effort 扭矩上限太低，都會讓關節在外部負載下
+        收斂不到目標，見 NVIDIA 官方 Gain Tuner extension 文件同一類問題）。
+
+        只挑 `wrist_1`／`wrist_3`（`_ELBOW_DOF_INDEX` 本身跟 `wrist_2` 在
+        同一份 log 裡收斂正常，不需要跟著加強）：肘關節後續會切到 velocity
+        模式（`switch_dof_control_mode('velocity')` 會自動把 stiffness
+        歸零，這裡先調高也不影響 velocity 模式的揮桿行為），其餘關節維持
+        原廠數值，改動範圍盡量小。用 `dof_names` 子字串比對（不是寫死
+        index）自動只對命中的關節生效，對 WAM7（關節命名完全不同）是
+        no-op，不需要另外用機器人類型分流。"""
+        if self._articulation is None:
+            return
+        dof_names = list(self._articulation.dof_names) if hasattr(self._articulation, "dof_names") else None
+        if dof_names is None:
+            return
+        target_indices = [
+            i for i, name in enumerate(dof_names)
+            if any(sub in name.lower() for sub in self._WRIST_GAIN_BOOST_JOINT_NAME_SUBSTRINGS)
+        ]
+        if not target_indices:
+            return
+
+        stiffnesses, dampings = self._articulation.get_dof_gains()
+        stiffnesses = np.asarray(stiffnesses.numpy() if hasattr(stiffnesses, "numpy") else stiffnesses, dtype=float)
+        dampings = np.asarray(dampings.numpy() if hasattr(dampings, "numpy") else dampings, dtype=float)
+        max_efforts = np.asarray(
+            self._articulation.get_dof_max_efforts().numpy()
+            if hasattr(self._articulation.get_dof_max_efforts(), "numpy")
+            else self._articulation.get_dof_max_efforts(),
+            dtype=float,
+        )
+        if stiffnesses.ndim == 2:
+            stiffnesses, dampings, max_efforts = stiffnesses[0], dampings[0], max_efforts[0]
+
+        for idx in target_indices:
+            stiffnesses[idx] = self._WRIST_GAIN_STIFFNESS
+            dampings[idx] = self._WRIST_GAIN_DAMPING
+            max_efforts[idx] = max_efforts[idx] * self._WRIST_GAIN_MAX_EFFORT_MULTIPLIER
+
+        logger.info(
+            "wrist gain boost: joint indices=%s new_max_efforts=%s（見 _boost_wrist_gains_for_cue_stick_load docstring）",
+            target_indices, [max_efforts[i] for i in target_indices],
+        )
+        self._articulation.set_dof_gains(stiffnesses[None, :], dampings[None, :])
+        self._articulation.set_dof_max_efforts(max_efforts[None, :])
 
     def _compute_tip_local_offset(self) -> np.ndarray:
         """
@@ -358,6 +446,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._feedforward_twist = np.concatenate([np.asarray(linear_velocity), np.asarray(angular_velocity)])
         self._is_joint_space_motion = False
         self._is_swing_motion = False
+        self._is_elbow_pivot_swing_motion = False
         self._articulation.switch_dof_control_mode("velocity")
         self._motion_step_count = 0
         self._did_last_motion_timeout = False
@@ -432,6 +521,165 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._awaiting_waypoints_after_joint_motion = False
         self._activate_pose_target(backswing_position, orientation, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
 
+    def move_swing_elbow_pivot(
+        self,
+        backswing_joint_positions: list[float],
+        backswing_target_end_effector_position: list[float],
+        contact_joint_positions: list[float],
+        elbow_dof_index: int,
+        target_elbow_velocity: float,
+    ) -> None:
+        """UR3e 專用揮桿控制：跟 `move_swing()` 是平行、互斥的兩套揮桿策略，
+        不是 `move_swing()` 的變形。
+
+        `move_swing()` 對 WAM7 有效的原因是 WAM7 需要多個關節協調（線性
+        規劃跨全部關節求解）才能達到目標桿尖速度。UR3e 已驗證不需要這樣：
+        只讓 `elbow_dof_index` 這一個關節從 0 加速到 `target_elbow_
+        velocity`，其餘關節角速度指令精確為 0，就足以達到目標桿尖速度
+        （見 `scripts/test_ur3e_human_pose_swing_speed.py`／
+        `scripts/test_elevated_bridge_ur3e_table.py` 的真實 quintic 軌跡
+        執行驗證，分別達成 104.7%／96.1%），而且完全靜止的 base/肩關節
+        更貼近人體揮桿手肘擺動的動作設計（見對話紀錄的人體化姿態討論）。
+        對 UR3e 硬套 `move_swing()` 的全關節 LP 最佳化沒有驗證過會不會
+        達到同樣的速度，不應該直接沿用。
+
+        做法：先用跟 `move_to_joint_position()` 一樣的 joint-space 動作
+        收斂到 `backswing_joint_positions`；收斂後（`_step_motion()` 的
+        `_awaiting_elbow_pivot_swing_after_backswing` 分支）對
+        `elbow_dof_index` 解一段 joint-space quintic polynomial（邊界
+        條件：起點角度=收斂當下實測值、起點角速度/角加速度=0，終點角度=
+        `contact_joint_positions[elbow_dof_index]`、終點角速度=
+        `target_elbow_velocity`、終點角加速度=0），time-scaling 找最小
+        可行 `T`（不超過關節馬達限速），逐 tick 下達 q̇(t)（其餘關節固定
+        0），含 `_apply_velocity_targets_with_gravity_compensation()`
+        重力補償。呼叫端只需要呼叫一次，`is_motion_complete()` 在後擺+
+        揮桿全程持續回傳 False，語意跟 `move_swing()` 一致，完成後也複用
+        同一個 `_awaiting_retreat_after_swing` 垂直撤離收尾機制。
+
+        ⚠️ `backswing_joint_positions`／`contact_joint_positions` 是完整
+        6 個關節角度（不是只有 elbow 那一個），呼叫端負責用
+        `core/services/ur3e_placement_calculator.py` 算好整組關節目標
+        （只有 `elbow_dof_index` 那個分量在揮桿階段會真的變動，其餘分量
+        在後擺跟接觸姿態之間應該相同，這個方法不驗證這件事，呼叫端要自己
+        保證兩組角度除了 elbow 之外一致，否則「其餘關節角速度固定為 0」
+        會讓手臂卡在後擺姿態、到不了接觸姿態的其餘關節角）。
+
+        ⚠️ 這個方法只驗證過「後擺→接觸」這段揮桿動作本身的速度與（在
+        `scripts/test_elevated_bridge_ur3e_table.py` 的測試場景下）沒有
+        撞到球檯，**沒有**驗證過「從手臂目前姿態安全接近到 `backswing_
+        joint_positions`」這一段（WAM7 的高架橋案例為此設計了 B1/B2/C1/C2
+        多階段 Cartesian 安全接近序列，見 `cue_pose_calculator.
+        compute_elevated_bridge_waypoints()`，UR3e 目前沒有對應機制，直接
+        用 joint-space 插值可能讓球桿沿途掃過球檯/球——呼叫端需要自行
+        評估這個風險，或之後補上對應的安全接近機制）。
+        """
+        self._elbow_pivot_dof_index = elbow_dof_index
+        self._elbow_pivot_contact_joint_positions = np.array(contact_joint_positions, dtype=float)
+        self._elbow_pivot_target_velocity = float(target_elbow_velocity)
+        self._is_elbow_pivot_swing_motion = False
+        self._awaiting_elbow_pivot_swing_after_backswing = True
+        self._awaiting_retreat_after_swing = True
+        self._pending_waypoints = []
+        self._waypoint_index = 0
+        self._awaiting_waypoints_after_joint_motion = False
+        self._start_joint_space_motion(
+            np.array([backswing_joint_positions]), np.asarray(backswing_target_end_effector_position)
+        )
+
+    @staticmethod
+    def _solve_quintic_coeffs(q0: float, q1: float, v1: float, T: float) -> tuple[float, float, float]:
+        """單一關節 joint-space quintic：`q(0)=q0,q̇(0)=0,q̈(0)=0,q(T)=q1,
+        q̇(T)=v1,q̈(T)=0`。回傳 `(c3,c4,c5)`（`c0=q0,c1=0,c2=0` 已知）。
+        跟 `scripts/test_ur3e_human_pose_swing_speed.py` 同一個公式。
+
+        ⚠️ `v(T)=v1` 這個邊界條件不會隨 `T` 縮放——如果 `v1` 本身就超過
+        關節限制，加大 `T` 救不了（見該腳本同一個警告）。
+        `move_swing_elbow_pivot()` 的呼叫端應該已經確認過
+        `target_elbow_velocity` 在馬達限速內，這個函式本身不重複防呆。
+        """
+        A = np.array([
+            [T ** 3, T ** 4, T ** 5],
+            [3 * T ** 2, 4 * T ** 3, 5 * T ** 4],
+            [6 * T, 12 * T ** 2, 20 * T ** 3],
+        ])
+        b = np.array([q1 - q0, v1, 0.0])
+        c3, c4, c5 = np.linalg.solve(A, b)
+        return float(c3), float(c4), float(c5)
+
+    @staticmethod
+    def _quintic_velocity(c3: float, c4: float, c5: float, t: float) -> float:
+        return 3 * c3 * t ** 2 + 4 * c4 * t ** 3 + 5 * c5 * t ** 4
+
+    @staticmethod
+    def _peak_abs_quintic_velocity(c3: float, c4: float, c5: float, T: float, samples: int = 200) -> float:
+        ts = np.linspace(0.0, T, samples)
+        return max(abs(ArticulationAPIImpl._quintic_velocity(c3, c4, c5, t)) for t in ts)
+
+    def _step_elbow_pivot_swing_motion(self) -> None:
+        c3, c4, c5, T = self._elbow_pivot_quintic
+        physics_dt = 1.0 / 60.0
+        t = min(self._elbow_pivot_elapsed_steps * physics_dt, T)
+        qdot = np.zeros(len(self._dof_limits))
+        qdot[self._elbow_pivot_dof_index] = self._quintic_velocity(c3, c4, c5, t)
+        self._apply_velocity_targets_with_gravity_compensation(qdot)
+        self._elbow_pivot_elapsed_steps += 1
+        if self._elbow_pivot_elapsed_steps * physics_dt >= T:
+            self._elbow_pivot_complete = True
+
+    def _apply_velocity_targets_with_gravity_compensation(self, qdot: np.ndarray) -> None:
+        """下達關節角速度指令的同時，疊加重力補償力矩前饋（gravity
+        compensation feedforward）。
+
+        背景：`switch_dof_control_mode("velocity")`（`_activate_pose_target()`
+        呼叫）只會把 drive 的 stiffness 歸零，damping 沿用 USD 內建值，
+        **不會自動幫忙抗重力**——PhysX 的 velocity-mode PD 只針對「目標
+        速度 vs 目前速度」的誤差出力，跟目前關節角度、重力力矩大小完全
+        無關。如果 USD 裡 velocity-mode 的 damping 不夠大，速度目標=0 時
+        關節就完全沒有力矩對抗重力，手臂會自由落體漂移。
+
+        專案目前用的 WAM7 剛好沒踩到這個問題，但不是因為刻意處理過：
+        URDF→USD 轉換工具幫每個關節寫死了一組偏高的 damping（見
+        `assets/barrett_wam/wam7/payloads/Physics/physics.usda`，每個關節
+        `drive:angular:physics:damping=174.53`），意外地夠抗重力，不是
+        專案自己調過的值。這是一個結構性風險：換一支手臂（例如 UR3e，
+        `scripts/test_ur3e_human_pose_swing_speed.py` 就真的在 isolated
+        測試場景踩到過，達成率一度只有理論值的 10~55%，整支手臂在還沒
+        開始揮桿前就先自由落體，量到的低速度是重力漂移的假象，不是
+        姿態設計本身的問題）、或未來 WAM7 的 USD 被重新轉換出不同的
+        damping 值，都可能重演同一個問題。
+
+        做法：每個 physics tick 額外呼叫 `get_dof_gravity_compensation_forces()`
+        讀出「維持目前姿態靜止所需要的重力補償力矩」，用 `set_dof_efforts()`
+        疊加上去——這是標準機器人學做法，`set_dof_efforts()` 下達的是
+        額外的 actuation force，跟 velocity drive 本身算出來的 PD 力矩在
+        PhysX 內部是相加關係，不需要為此切到 `"effort"` 控制模式（那樣
+        會把 stiffness/damping 一起歸零，反而失去 velocity-mode 原本的
+        速度追蹤能力，見 `switch_dof_control_mode()` 的三種模式對照表）。
+        `set_dof_efforts()` 官方文件明確標註「非常駐設定，必須每個
+        physics tick 重新呼叫」，這正好符合這個函式已經在每個 tick 被
+        呼叫的既有慣例，不需要額外的生命週期管理。
+
+        ⚠️ 已知限制（Isaac Sim 6.0.0）：`get_dof_gravity_compensation_forces()`
+        若場景用的是新版 Newton physics tensor backend，目前是官方尚未
+        實作的 stub（回傳全 0），這個補償在該後端下會退化成無作用（不會
+        報錯，只是補償力矩恆為 0，等同沒有這段程式碼）。這個專案目前走
+        的是舊版 PhysX tensor backend（`isaacsim.core.experimental.prims.
+        Articulation` 預設路徑），沒有這個限制；未來若切換 physics
+        backend，需要重新確認這裡是否還有效。
+
+        ⚠️ 已知範圍限制：這個補償只在「動作進行中」（`_step_swing_motion()`／
+        `_step_motion()` 這兩個每 tick 被呼叫的方法）生效——`_stop_motion()`
+        把驅動動作的 PHYSICS_POST_STEP callback 解除註冊之後，沒有任何
+        程式碼會繼續每 tick 呼叫 `set_dof_efforts()`，動作完全停止、
+        進入「閒置持穩」狀態時，重力補償會停止生效，回到只靠 damping
+        硬撐的舊行為。這次的範圍是修正「動作進行中」（含揮桿）的重力
+        漂移，不含「動作之間閒置等待」的持穩問題——後者如果之後也需要
+        修，得另外設計一個不受單一動作生命週期綁定的常駐 callback。
+        """
+        self._articulation.set_dof_velocity_targets(qdot[None, :])
+        gravity_compensation_forces = self._articulation.get_dof_gravity_compensation_forces()
+        self._articulation.set_dof_efforts(gravity_compensation_forces)
+
     def _step_swing_motion(self) -> None:
         current_wrist_position = np.array(self.get_end_effector_position())
         current_orientation = self._get_end_effector_world_orientation()
@@ -446,7 +694,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         traveled = float(np.dot(current_tip_position - self._swing_start, self._swing_direction))
         if traveled >= self._swing_total_distance:
             self._swing_complete = True
-            self._articulation.set_dof_velocity_targets(np.zeros((1, len(self._dof_limits))))
+            self._apply_velocity_targets_with_gravity_compensation(np.zeros(len(self._dof_limits)))
             return
 
         # ⚠️ 第一版曾經把姿態修正做成「等式約束＝目前偏差的 P 修正量」
@@ -524,7 +772,7 @@ class ArticulationAPIImpl(ArticulationAPI):
                 f"traveled={traveled:.4f}/{self._swing_total_distance:.4f} linprog_success={result.success}"
             )
 
-        self._articulation.set_dof_velocity_targets(qdot[None, :])
+        self._apply_velocity_targets_with_gravity_compensation(qdot)
 
     def _start_motion(self) -> None:
         if not self._motion_active:
@@ -555,6 +803,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._target_joint_positions = np.asarray(joint_positions).reshape(-1)
         self._is_joint_space_motion = True
         self._is_swing_motion = False
+        self._is_elbow_pivot_swing_motion = False
         self._motion_step_count = 0
         self._did_last_motion_timeout = False
         self._start_motion()
@@ -562,6 +811,8 @@ class ArticulationAPIImpl(ArticulationAPI):
     def _step_motion(self, step_dt, context) -> None:
         if self._is_swing_motion:
             self._step_swing_motion()
+        elif self._is_elbow_pivot_swing_motion:
+            self._step_elbow_pivot_swing_motion()
         elif not self._is_joint_space_motion:
             twist = self._compute_pose_tracking_twist() + self._feedforward_twist
 
@@ -571,7 +822,7 @@ class ArticulationAPIImpl(ArticulationAPI):
             qdot = J.T @ np.linalg.solve(JJt, twist)
             qdot = np.clip(qdot, -self._dof_limits, self._dof_limits)
 
-            self._articulation.set_dof_velocity_targets(qdot[None, :])
+            self._apply_velocity_targets_with_gravity_compensation(qdot)
 
         self._motion_step_count += 1
 
@@ -604,7 +855,37 @@ class ArticulationAPIImpl(ArticulationAPI):
             self._motion_step_count = 0
             return
 
-        if self._awaiting_retreat_after_swing and self._is_swing_motion:
+        if self._awaiting_elbow_pivot_swing_after_backswing:
+            self._awaiting_elbow_pivot_swing_after_backswing = False
+            self._is_elbow_pivot_swing_motion = True
+            self._is_joint_space_motion = False
+            # 用「真正收斂到的」肘關節角度當 quintic 起點（不是呼叫端傳入的
+            # 後擺目標角度本身——跟 _awaiting_swing_after_backswing 用實測
+            # 桿尖位置當下一階段起點同一個道理，JOINT_POSITION_TOLERANCE
+            # 容許一點殘留誤差，用實測值比用目標值更準）。
+            live_joints = np.asarray(self._articulation.get_dof_positions())[0]
+            q0 = float(live_joints[self._elbow_pivot_dof_index])
+            q1 = float(self._elbow_pivot_contact_joint_positions[self._elbow_pivot_dof_index])
+            v1 = self._elbow_pivot_target_velocity
+            elbow_limit = float(self._dof_limits[self._elbow_pivot_dof_index])
+            T = max(abs(q1 - q0) / max(abs(v1), 1e-6), 0.05)
+            c3 = c4 = c5 = 0.0
+            for _ in range(50):
+                c3, c4, c5 = self._solve_quintic_coeffs(q0, q1, v1, T)
+                peak_velocity = self._peak_abs_quintic_velocity(c3, c4, c5, T)
+                if peak_velocity <= elbow_limit + 1e-9:
+                    break
+                T *= (peak_velocity / elbow_limit) * 1.05
+            else:
+                logger.warning("move_swing_elbow_pivot: time-scaling 50 次仍未收斂，直接用目前的 T=%f", T)
+            self._elbow_pivot_quintic = (c3, c4, c5, T)
+            self._elbow_pivot_elapsed_steps = 0
+            self._elbow_pivot_complete = False
+            self._articulation.switch_dof_control_mode("velocity")
+            self._motion_step_count = 0
+            return
+
+        if self._awaiting_retreat_after_swing and (self._is_swing_motion or self._is_elbow_pivot_swing_motion):
             # 揮桿（_step_swing_motion() 驅動）本身剛收斂（_swing_complete=
             # True），桿尖停在緊貼母球原始位置之後一點點的地方
             # （follow_through_distance 通常只有幾公分）。見
@@ -614,6 +895,7 @@ class ArticulationAPIImpl(ArticulationAPI):
             # RESET_LIFT_CLEARANCE_M，用目前姿態當出發點、只改 Z、方向不變。
             self._awaiting_retreat_after_swing = False
             self._is_swing_motion = False
+            self._is_elbow_pivot_swing_motion = False
             current_position = np.array(self.get_end_effector_position())
             current_orientation = self._get_end_effector_world_orientation()
             retreat_position = current_position + np.array([0.0, 0.0, self.RESET_LIFT_CLEARANCE_M])
@@ -758,6 +1040,15 @@ class ArticulationAPIImpl(ArticulationAPI):
     def get_end_effector_orientation(self) -> list[float]:
         return self._get_end_effector_world_orientation().tolist()
 
+    def get_dof_positions_for_debug(self) -> list[float]:
+        """僅供除錯用，不是 `ArticulationAPI` 正式介面（不加進抽象 port）——
+        回傳目前所有關節角度，供 `billiard_digital_twin.py` 的
+        `BILLIARD_DEBUG_LOG_PATH` GUI 除錯 log 使用，讓 GUI 手動觀察之外
+        也能拿到逐 tick 的關節角度數據。"""
+        if self._articulation is None:
+            return []
+        return np.asarray(self._articulation.get_dof_positions())[0].tolist()
+
     def is_motion_complete(self) -> bool:
         # ⚠️ 2026-08-31（Demo 桌真實 GUI 執行才踩到，diagnose_move_swing.py
         # 這類單執行緒手動迴圈腳本測不出來）：這個方法是外部（ObservationBuilder
@@ -791,15 +1082,20 @@ class ArticulationAPIImpl(ArticulationAPI):
         #     接真正的揮桿
         #   - _awaiting_home_after_lift：move_to_home() 的垂直上移子動作收斂
         #     後還要接關節空間回 home
-        #   - _awaiting_retreat_after_swing：move_swing() 的揮桿本身收斂後
-        #     還要接隨揮後的垂直撤離（見該欄位說明——揮桿完成時桿尖緊貼母球
-        #     原始位置，必須在球被 RESET 瞬移回去之前先撤離）
+        #   - _awaiting_retreat_after_swing：move_swing()／
+        #     move_swing_elbow_pivot() 的揮桿本身收斂後還要接隨揮後的垂直
+        #     撤離（見該欄位說明——揮桿完成時桿尖緊貼母球原始位置，必須在
+        #     球被 RESET 瞬移回去之前先撤離）
+        #   - _awaiting_elbow_pivot_swing_after_backswing：
+        #     move_swing_elbow_pivot() 的後擺收斂後還要接真正的揮桿，跟
+        #     _awaiting_swing_after_backswing 對 move_swing() 同一個道理
         if self._motion_active and (
             self._awaiting_waypoints_after_joint_motion
             or self._waypoint_index + 1 < len(self._pending_waypoints)
             or self._awaiting_swing_after_backswing
             or self._awaiting_home_after_lift
             or self._awaiting_retreat_after_swing
+            or self._awaiting_elbow_pivot_swing_after_backswing
         ):
             return False
         return self._is_current_target_converged()
@@ -835,6 +1131,12 @@ class ArticulationAPIImpl(ArticulationAPI):
         # 特別處理會誤用下面的位置/姿態收斂邏輯。
         if self._is_swing_motion:
             return self._swing_complete
+
+        # move_swing_elbow_pivot() 的揮桿子階段跟 move_swing() 同一個道理，
+        # 用 self._elbow_pivot_complete（由 _step_elbow_pivot_swing_motion()
+        # 依 quintic 的 T 是否已經跑完設定）判斷完成，不是位置/姿態容許值。
+        if self._is_elbow_pivot_swing_motion:
+            return self._elbow_pivot_complete
 
         # joint-space 動作的語意是「把關節開到指定角度」，末端世界位置是結果
         # 不是目標，收斂判定不能拿它當條件——move_to_home() 的

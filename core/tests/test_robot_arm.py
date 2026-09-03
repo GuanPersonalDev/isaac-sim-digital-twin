@@ -64,3 +64,15 @@ class TestRobotArm:
         )
 
         assert isinstance(robot, RobotArm)
+
+    def test_ur3e_robot_is_a_robot_arm(self):
+        from core.models.ur3e_robot import UR3eRobot
+
+        robot = UR3eRobot(
+            base_path="/World/BilliardTable",
+            stage_api=MagicMock(),
+            articulation_api=MagicMock(),
+            position=(1.5, 0.0, 0.0),
+        )
+
+        assert isinstance(robot, RobotArm)

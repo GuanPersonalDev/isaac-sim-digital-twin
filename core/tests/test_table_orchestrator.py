@@ -1,14 +1,13 @@
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 from core.models.action import Action
 from core.models.billiard_state import BilliardStatus
 from core.models.observation import Observation
-from core.models.pose_waypoint import PoseWaypoint
 from core.controllers.controller_base import ControllerBase
 from core.services.error_state import ErrorState
+from core.services.robot_swing_strategy import RobotSwingStrategy
 from core.services.table_orchestrator import (
     DemoTableOrchestrator,
     TrainingTableOrchestrator,
@@ -66,6 +65,11 @@ def articulation_api() -> MagicMock:
 
 
 @pytest.fixture
+def swing_strategy() -> MagicMock:
+    return MagicMock(spec=RobotSwingStrategy)
+
+
+@pytest.fixture
 def impulse_striking_service() -> MagicMock:
     return MagicMock()
 
@@ -88,6 +92,7 @@ def demo_orchestrator(
     ball_position_provider: MagicMock,
     robot_arm: MagicMock,
     articulation_api: MagicMock,
+    swing_strategy: MagicMock,
     error_state: MagicMock,
     rolling_resistance_service: MagicMock,
 ) -> DemoTableOrchestrator:
@@ -97,6 +102,7 @@ def demo_orchestrator(
         ball_position_provider=ball_position_provider,
         robot_arm=robot_arm,
         articulation_api=articulation_api,
+        swing_strategy=swing_strategy,
         error_state=error_state,
         rolling_resistance_service=rolling_resistance_service,
     )
@@ -463,10 +469,10 @@ class TestDemoTableOrchestrator:
 
 
 class TestDemoTableOrchestratorExecuteAim:
-    """`_execute_aim` 依 `cue_pose_calculator.compute_tilted_wrist_pose()` 判定
-    的 tilt_rad 分支：flat（<=1e-6）走 joint-space，高架橋（>0）走
-    `move_through_poses`，職責分離——orchestrator 不自己算幾何，只轉交
-    calculator 算好的結果給 port。"""
+    """`_execute_aim` 現在只做手臂型號無關的共用前置工作（table_z/ball_radius/
+    cue_ball 計算、母球 teleport），實際瞄準邏輯全權委派給
+    `RobotSwingStrategy.execute_aim()`（見 core/services/wam7_swing_strategy.py／
+    ur3e_swing_strategy.py 的獨立測試，涵蓋 flat/bridge/infeasible 各分支）。"""
 
     def _setup_table(self, table_ball_set: MagicMock) -> None:
         table_ball_set.get_table_z.return_value = 0.0
@@ -476,200 +482,104 @@ class TestDemoTableOrchestratorExecuteAim:
         self,
         demo_orchestrator: DemoTableOrchestrator,
         table_ball_set: MagicMock,
-        robot_arm: MagicMock,
-        articulation_api: MagicMock,
+        swing_strategy: MagicMock,
     ):
         """ModelController 的 policy 每一局自己決定母球擺位，Demo 端必須把這個
         決定真的 teleport 到球上（跟 Training 端 _apply_strike() 一致），否則
-        _execute_aim()/_execute_strike() 會拿一個沒有球的座標當瞄準錨點。"""
+        swing_strategy.execute_aim() 會拿一個沒有球的座標當瞄準錨點。"""
         self._setup_table(table_ball_set)
         action = _action(should_execute_action=True)
         action.cue_ball_placement = [0.1, -0.9]
-        action.shot_angle = 0.0
 
-        with patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
-            return_value=(None, None, 0.0, None),
-        ):
-            demo_orchestrator._execute_aim(action)
+        demo_orchestrator._execute_aim(action)
 
         table_ball_set.place_ball.assert_called_once_with(0, 0.1, -0.9)
 
-    def test_flat_case_calls_move_to_joint_position_not_move_through_poses(
+    def test_delegates_to_swing_strategy_with_table_z_ball_radius_and_cue_ball(
         self,
         demo_orchestrator: DemoTableOrchestrator,
         table_ball_set: MagicMock,
-        robot_arm: MagicMock,
-        articulation_api: MagicMock,
+        swing_strategy: MagicMock,
     ):
         self._setup_table(table_ball_set)
         action = _action(should_execute_action=True)
-        action.cue_ball_placement = [0.0, 0.3]
-        action.shot_angle = 0.0
+        action.cue_ball_placement = [0.1, -0.9]
 
-        with patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
-            return_value=(None, None, 0.0, None),
-        ):
+        demo_orchestrator._execute_aim(action)
+
+        swing_strategy.execute_aim.assert_called_once_with(action, (0.1, -0.9), 0.0, 0.028575)
+
+    def test_propagates_swing_strategy_exception(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        table_ball_set: MagicMock,
+        swing_strategy: MagicMock,
+    ):
+        self._setup_table(table_ball_set)
+        swing_strategy.execute_aim.side_effect = ValueError("幾何無解")
+        action = _action(should_execute_action=True)
+
+        with pytest.raises(ValueError):
             demo_orchestrator._execute_aim(action)
-
-        robot_arm.reposition.assert_called_once()
-        articulation_api.move_to_joint_position.assert_called_once()
-        articulation_api.move_through_poses.assert_not_called()
-
-    def test_bridge_case_calls_move_through_poses_with_preceding_joint_targets(
-        self,
-        demo_orchestrator: DemoTableOrchestrator,
-        table_ball_set: MagicMock,
-        robot_arm: MagicMock,
-        articulation_api: MagicMock,
-    ):
-        self._setup_table(table_ball_set)
-        articulation_api.get_end_effector_position.return_value = [0.0, 0.0, 1.0]
-        articulation_api.get_end_effector_orientation.return_value = [1.0, 0.0, 0.0, 0.0]
-        action = _action(should_execute_action=True)
-        action.cue_ball_placement = [0.0, 0.0]
-        action.shot_angle = 0.0
-        bridge_waypoints = [
-            PoseWaypoint(position=[0.0, 0.0, 1.0], orientation=[1.0, 0.0, 0.0, 0.0]),
-            PoseWaypoint(position=[0.0, 0.0, 0.5], orientation=[1.0, 0.0, 0.0, 0.0]),
-        ]
-
-        with patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
-            return_value=(None, None, 0.05, None),
-        ), patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_elevated_bridge_waypoints",
-            return_value=bridge_waypoints,
-        ):
-            demo_orchestrator._execute_aim(action)
-
-        robot_arm.reposition.assert_called_once()
-        articulation_api.move_to_joint_position.assert_not_called()
-        articulation_api.move_through_poses.assert_called_once()
-        call_kwargs = articulation_api.move_through_poses.call_args
-        assert call_kwargs.args[0] == bridge_waypoints
-        assert call_kwargs.kwargs["preceding_joint_targets"] is not None
-
-    def test_infeasible_geometry_raises(
-        self,
-        demo_orchestrator: DemoTableOrchestrator,
-        table_ball_set: MagicMock,
-    ):
-        self._setup_table(table_ball_set)
-        action = _action(should_execute_action=True)
-
-        with patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
-            return_value=(None, None, None, (0.0, -1.295)),
-        ):
-            with pytest.raises(ValueError):
-                demo_orchestrator._execute_aim(action)
-
-    def test_infeasible_bridge_geometry_raises(
-        self,
-        demo_orchestrator: DemoTableOrchestrator,
-        table_ball_set: MagicMock,
-        articulation_api: MagicMock,
-    ):
-        self._setup_table(table_ball_set)
-        articulation_api.get_end_effector_position.return_value = [0.0, 0.0, 1.0]
-        articulation_api.get_end_effector_orientation.return_value = [1.0, 0.0, 0.0, 0.0]
-        action = _action(should_execute_action=True)
-
-        with patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
-            return_value=(None, None, 0.05, None),
-        ), patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_elevated_bridge_waypoints",
-            return_value=None,
-        ):
-            with pytest.raises(ValueError):
-                demo_orchestrator._execute_aim(action)
 
 
 class TestDemoTableOrchestratorExecuteStrike:
+    """同樣只保留跟手臂型號無關的通用前置檢查（did_last_motion_timeout）與
+    table_z/ball_radius/cue_ball 計算，實際揮桿邏輯委派給
+    `RobotSwingStrategy.execute_strike()`（獨立測試見
+    test_wam7_swing_strategy.py／test_ur3e_swing_strategy.py）。"""
+
     def _setup_table(self, table_ball_set: MagicMock, articulation_api: MagicMock) -> None:
         table_ball_set.get_table_z.return_value = 0.0
         table_ball_set.DEFAULT_BALL_RADIUS = 0.028575
         articulation_api.did_last_motion_timeout.return_value = False
 
-    def test_calls_move_swing_with_calculator_backswing_and_follow_through(
+    def test_delegates_to_swing_strategy_with_table_z_ball_radius_and_cue_ball(
         self,
         demo_orchestrator: DemoTableOrchestrator,
         table_ball_set: MagicMock,
         articulation_api: MagicMock,
+        swing_strategy: MagicMock,
     ):
         self._setup_table(table_ball_set, articulation_api)
         action = _action(should_execute_action=True)
-        action.cue_ball_speed = 2.0
-        wrist = np.array([0.0, -1.35, 0.028575])
-        orientation = np.array([1.0, 0.0, 0.0, 0.0])
-        direction = np.array([0.0, 1.0, 0.0])
-        backswing = np.array([0.0, -1.5, 0.028575])
+        action.cue_ball_placement = [0.0, -0.9382125]
 
-        with patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
-            return_value=(wrist, orientation, 0.0, None),
-        ), patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_direction",
-            return_value=direction,
-        ), patch(
-            "core.services.table_orchestrator.swing_trajectory_calculator.compute_required_tip_speed",
-            return_value=1.5,
-        ), patch(
-            "core.services.table_orchestrator.swing_trajectory_calculator.compute_follow_through_distance",
-            return_value=0.03,
-        ), patch(
-            "core.services.table_orchestrator.swing_trajectory_calculator.compute_backswing_position",
-            return_value=backswing,
-        ) as mock_backswing:
-            demo_orchestrator._execute_strike(action)
+        demo_orchestrator._execute_strike(action)
 
-        mock_backswing.assert_called_once()
-        articulation_api.move_swing.assert_called_once()
-        call = articulation_api.move_swing.call_args
-        assert call.args[0] == pytest.approx(backswing.tolist())
-        assert call.args[1] == pytest.approx(orientation.tolist())
-        # follow_through = wrist + follow_through_distance(0.03) * direction([0,1,0])
-        assert call.args[2] == pytest.approx([0.0, -1.32, 0.028575])
-        assert call.kwargs["orientation_gain"] == pytest.approx(1.0)
-        assert call.kwargs["max_angular_speed"] == pytest.approx(1.0)
+        swing_strategy.execute_strike.assert_called_once_with(
+            action, (0.0, -0.9382125), 0.0, 0.028575
+        )
 
-    def test_raises_without_calling_calculators_when_aim_timed_out(
+    def test_raises_without_calling_swing_strategy_when_aim_timed_out(
         self,
         demo_orchestrator: DemoTableOrchestrator,
         table_ball_set: MagicMock,
         articulation_api: MagicMock,
+        swing_strategy: MagicMock,
     ):
         self._setup_table(table_ball_set, articulation_api)
         articulation_api.did_last_motion_timeout.return_value = True
         action = _action(should_execute_action=True)
 
-        with patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose"
-        ) as mock_compute_pose:
-            with pytest.raises(RuntimeError):
-                demo_orchestrator._execute_strike(action)
+        with pytest.raises(RuntimeError):
+            demo_orchestrator._execute_strike(action)
 
-        mock_compute_pose.assert_not_called()
-        articulation_api.move_swing.assert_not_called()
+        swing_strategy.execute_strike.assert_not_called()
 
-    def test_infeasible_geometry_raises(
+    def test_propagates_swing_strategy_exception(
         self,
         demo_orchestrator: DemoTableOrchestrator,
         table_ball_set: MagicMock,
         articulation_api: MagicMock,
+        swing_strategy: MagicMock,
     ):
         self._setup_table(table_ball_set, articulation_api)
+        swing_strategy.execute_strike.side_effect = ValueError("幾何無解")
         action = _action(should_execute_action=True)
 
-        with patch(
-            "core.services.table_orchestrator.cue_pose_calculator.compute_tilted_wrist_pose",
-            return_value=(None, None, None, (0.0, -1.295)),
-        ):
-            with pytest.raises(ValueError):
-                demo_orchestrator._execute_strike(action)
+        with pytest.raises(ValueError):
+            demo_orchestrator._execute_strike(action)
 
     def test_timeout_is_recorded_via_step_error_handling(
         self,

@@ -70,6 +70,31 @@ class ArticulationAPI(ABC):
         ...
 
     @abstractmethod
+    def move_swing_elbow_pivot(
+        self,
+        backswing_joint_positions: list[float],
+        backswing_target_end_effector_position: list[float],
+        contact_joint_positions: list[float],
+        elbow_dof_index: int,
+        target_elbow_velocity: float,
+    ) -> None:
+        """UR3e 專用揮桿控制：跟 `move_swing()` 平行、互斥的另一套揮桿
+        策略——只有 `elbow_dof_index` 那個關節從 0 加速到
+        `target_elbow_velocity`，其餘關節角速度精確為 0（不是 `move_swing()`
+        的全關節線性規劃最佳化）。見
+        `extension/isaac_sim_impl_6_0/articulation_api_impl.py` 同名方法的
+        完整說明（含已知範圍限制：沒有驗證過從任意起始姿態安全接近到
+        `backswing_joint_positions` 這一段）。
+
+        `backswing_joint_positions`／`contact_joint_positions`：完整關節
+        角度（不是只有 elbow 那一個），呼叫端負責保證兩者除了
+        `elbow_dof_index` 分量之外一致。呼叫端只需要呼叫一次，
+        `is_motion_complete()` 在後擺+揮桿全程持續回傳 False，語意跟
+        `move_swing()` 一致。
+        """
+        ...
+
+    @abstractmethod
     def move_to_home(self) -> None:
         """
         回到待機姿態

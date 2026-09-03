@@ -160,7 +160,8 @@ class TestComputeElevatedBridgeWaypoints:
         rotate_steps = 8
 
         waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            current_position, self._CURRENT_ORIENTATION, rotate_steps=rotate_steps, **self._FEASIBLE_TILT_KWARGS
+            current_position, self._CURRENT_ORIENTATION, rotate_steps=rotate_steps,
+            backswing_distance_m=0.05, **self._FEASIBLE_TILT_KWARGS
         )
 
         assert waypoints is not None
@@ -191,6 +192,7 @@ class TestComputeElevatedBridgeWaypoints:
         waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
             [0.0, 0.0, 1.0], self._CURRENT_ORIENTATION,
             cue_ball_xy=(0.0, -1.29), shot_angle_deg=0.0, table_z=-1.3, ball_radius=0.0,
+            backswing_distance_m=0.05,
         )
 
         assert waypoints is None
@@ -199,10 +201,12 @@ class TestComputeElevatedBridgeWaypoints:
         current_position = [0.0, 0.0, 1.0]
 
         low = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            current_position, self._CURRENT_ORIENTATION, safe_altitude_margin=0.1, **self._FEASIBLE_TILT_KWARGS
+            current_position, self._CURRENT_ORIENTATION, safe_altitude_margin=0.1,
+            backswing_distance_m=0.05, **self._FEASIBLE_TILT_KWARGS
         )
         high = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            current_position, self._CURRENT_ORIENTATION, safe_altitude_margin=0.5, **self._FEASIBLE_TILT_KWARGS
+            current_position, self._CURRENT_ORIENTATION, safe_altitude_margin=0.5,
+            backswing_distance_m=0.05, **self._FEASIBLE_TILT_KWARGS
         )
 
         assert high[1].position[2] > low[1].position[2]

@@ -17,6 +17,7 @@ TABLE_PATH = os.path.join(ASSET_DIR, "billiard_env.usda")
 # Demo 端仍用 TABLE_PATH，維持「桌子在大房間裡」的場景設計（#121 A-3）。
 TRAINING_TABLE_PATH = os.path.join(ASSET_DIR, "billiard_table_only.usda")
 UR5_PATH = "Isaac/Robots/UniversalRobots/ur5/ur5.usd"
+UR3E_PATH = "Isaac/Robots/UniversalRobots/ur3e/ur3e.usd"
 BARRETT_WAM_PATH = os.path.join(ASSET_DIR, "barrett_wam", "wam7", "wam7.usda")
 STRIPE_IDENTIFIER = "stripe_material"
 

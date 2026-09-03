@@ -19,7 +19,17 @@ DEFAULT_BACKSWING_DISTANCE_M = 0.15
 docs/issue-180-reachability-analysis.md 第九節「後擺走廊 L≈0.1~0.15m」的
 粗估——那個數字原本只是為了估算臂展需求的假設，未經真正揮桿動力學驗證，
 需要靠 scripts/verify_swing_trajectory.py 實測校準（後擺方向若在高架橋
-姿態下會斜向後上方，還要確認不會撞到前臂本體）。"""
+姿態下會斜向後上方，還要確認不會撞到前臂本體）。
+
+⚠️ 2026-09-01：正式的高架橋路徑（`DemoTableOrchestrator._execute_strike()`
+的 `tilt_rad>1e-6` 分支）已改用
+`cue_pose_calculator.lookup_backswing_distance_m()`——用 IK 可達邊界法
+（`scripts/search_backswing_distance_ik.py`）對每個 Kitchen 案例反推出的
+後擺距離，遠大於這個常數（0.34~0.35m vs 0.15m），跟關節實際能提供的加速
+能力掛鉤，不再是這個粗估常數。這個常數現在只服務 flat 案例（第十八節
+「待處理 B」明文決定不套用這套統一）與離線工具
+（`scripts/search_roll_for_full_swing.py`／`scripts/search_backswing_
+distance.py`），不要刪除。"""
 
 _FOLLOW_THROUGH_COEFFICIENT = 0.02
 _FOLLOW_THROUGH_MIN_M = 0.01

@@ -430,13 +430,19 @@ def _run() -> None:
     print(f"[diag] roll_deg={math.degrees(roll_rad):.1f}")
     safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
     safe_target_position = list(compute_canonical_wrist_position(base_position, 0.0))
-    _aim_contact_clearance_m = float(os.environ.get("AIM_CONTACT_CLEARANCE_M", "0.05"))
-    print(f"[diag] contact_clearance_m={_aim_contact_clearance_m}")
+    # ⚠️ 2026-09-01：預設改用查表值（IK 可達邊界法反推，見 cue_pose_
+    # calculator.lookup_backswing_distance_m() 說明），跟正式 _execute_aim()
+    # 一致；env var 仍可覆寫做實驗性測試。
+    _default_backswing_distance_m = cue_pose_calculator.lookup_backswing_distance_m(_CUE_BALL)
+    _aim_backswing_distance_m = float(
+        os.environ.get("AIM_BACKSWING_DISTANCE_M", str(_default_backswing_distance_m))
+    )
+    print(f"[diag] backswing_distance_m={_aim_backswing_distance_m}")
     print(f"[diag] position_offset={_POSITION_OFFSET}")
     bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
         safe_target_position, list(CANONICAL_FLAT_ORIENTATION),
         _CUE_BALL, _SHOT_ANGLE_DEG, _TABLE_Z, _BALL_RADIUS, position_offset=_POSITION_OFFSET, roll_rad=roll_rad,
-        contact_clearance_m=_aim_contact_clearance_m,
+        backswing_distance_m=_aim_backswing_distance_m,
     )
     articulation_api.move_through_poses(
         bridge_waypoints, preceding_joint_targets=(safe_joint_targets, safe_target_position)
@@ -506,8 +512,11 @@ def _run() -> None:
     else:
         follow_through_distance = swing_trajectory_calculator.compute_follow_through_distance(required_tip_speed)
     contact_position = np.array(wrist)
+    # ⚠️ 2026-09-01：跟正式 _execute_strike() 一致，STRIKE 後擺起點必須用
+    # AIM 收斂終點同一個距離（_aim_backswing_distance_m），不是這支腳本
+    # 自己另外定義的 _BACKSWING_DISTANCE_M 常數（那是舊的 0.15 寫死值）。
     backswing_position = swing_trajectory_calculator.compute_backswing_position(
-        contact_position, direction_unit, _BACKSWING_DISTANCE_M
+        contact_position, direction_unit, _aim_backswing_distance_m
     )
     follow_through_position = contact_position + follow_through_distance * direction_unit
 

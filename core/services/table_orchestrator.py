@@ -1,13 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
 
-import numpy as np
-
-from ..services.base_placement_calculator import (
-    CANONICAL_FLAT_ORIENTATION, CANONICAL_REST_JOINTS, compute_base_pose,
-    compute_canonical_wrist_position, required_grip_position,
-)
-from ..services import cue_pose_calculator, swing_trajectory_calculator
 from ..controllers.controller_base import ControllerBase
 from ..models.action import Action
 from ..models.billiard_state import BilliardStatus
@@ -19,6 +12,7 @@ from .ball_motion_monitor import BallMotionMonitor
 from .ball_position_provider import BallPositionProvider
 from .impulse_striking_service import ImpulseStrikingService
 from .error_state import ErrorState
+from .robot_swing_strategy import RobotSwingStrategy
 from .rolling_resistance_service import RollingResistanceService
 
 logger = logging.getLogger(__name__)
@@ -142,12 +136,14 @@ class DemoTableOrchestrator(TableOrchestrator):
         ball_position_provider: BallPositionProvider,
         robot_arm: RobotArm,
         articulation_api: ArticulationAPI,
+        swing_strategy: RobotSwingStrategy,
         error_state: ErrorState,
         rolling_resistance_service: RollingResistanceService
     ) -> None:
         super().__init__(script_controller, table_ball_set, ball_position_provider, error_state, rolling_resistance_service)
         self._robot_arm = robot_arm
         self._articulation_api = articulation_api
+        self._swing_strategy = swing_strategy
 
     def _reset_downstream(self) -> None:
         self._robot_arm.reset()
@@ -157,13 +153,6 @@ class DemoTableOrchestrator(TableOrchestrator):
             self._error_state.mark_error(RuntimeError("手臂動作逾時未收斂"))
 
     def _execute_aim(self, action: Action) -> None:
-        # 1. table_z / ball_radius 從 self._table_ball_set 取得；
-        #    cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
-        # 2. compute_base_pose(cue_ball_x, cue_ball_y, shot_angle_deg, table_z)
-        #    -> (base_position, base_yaw_rad)
-        # 3. cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, shot_angle,
-        #    table_z, ball_radius, position_offset) -> (_, _, tilt_rad, crossing)
-        #    tilt_rad is None：幾何無解（即使垂直抬高也無法閃避庫邊），raise ValueError
         table_z = self._table_ball_set.get_table_z()
         ball_radius = self._table_ball_set.DEFAULT_BALL_RADIUS
         cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
@@ -172,149 +161,26 @@ class DemoTableOrchestrator(TableOrchestrator):
         # _apply_strike()（rl_task/.../mdp/actions.py）會把這個決定真的
         # teleport 到球上；Demo 端過去只有 _reset_balls() 把全部球擺回固定的
         # BREAK_SHOT_POSITIONS，從沒把母球移到 policy 決定的位置——下面的
-        # compute_base_pose()/compute_tilted_wrist_pose() 卻直接拿 cue_ball
-        # 當瞄準錨點，機器人因此對著一個沒有球的地方擺姿勢（實測：球桿跟母球
-        # 呈 90 度夾角）。這裡補上跟 Training 端一致的 teleport，AIMING 每局
-        # 只會呼叫一次 _execute_aim()（見 TableOrchestrator.step()：
-        # should_execute_action 只在 IDLE→AIMING 轉換那一 tick 為 True），
-        # 在這裡瞬移不會每個 tick 重複拉回，不影響球被打出去後的自由運動。
+        # swing_strategy.execute_aim() 卻直接拿 cue_ball 當瞄準錨點，機器人
+        # 因此對著一個沒有球的地方擺姿勢（實測：球桿跟母球呈 90 度夾角）。
+        # 這裡補上跟 Training 端一致的 teleport，AIMING 每局只會呼叫一次
+        # _execute_aim()（見 TableOrchestrator.step()：should_execute_action
+        # 只在 IDLE→AIMING 轉換那一 tick 為 True），在這裡瞬移不會每個 tick
+        # 重複拉回，不影響球被打出去後的自由運動。
         self._table_ball_set.place_ball(0, cue_ball[0], cue_ball[1])
-        base_position, base_yaw_rad = compute_base_pose(cue_ball[0], cue_ball[1], action.shot_angle, table_z, ball_radius)
-        wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset)
-        if tilt_rad is None:
-            raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
-        #
-        # tilt_rad <= 1e-6：flat 案例（tilt=0）。沿用已驗證過的
-        # CANONICAL_REST_JOINTS+base_yaw joint-space 路徑，不進差動 IK 管線
-        # （見 docs/issue-flat-case-residual-error.md：差動 IK 建構出的姿態跟
-        # CANONICAL_REST_JOINTS 實際 FK 姿態即使指向相同，roll 分量不保證
-        # 一樣，會逼手臂多繞路）。這個分支目前不處理 position_offset（維持
-        # 既有行為，跟 22/25 高架橋案例的偏移支援分開處理）。
-        #   grip_position = required_grip_position(cue_ball_x, cue_ball_y, shot_angle_deg)
-        #   joint_targets = [base_yaw_rad, *CANONICAL_REST_JOINTS]
-        #   self._robot_arm.reposition(base_position)
-        #   self._articulation_api.move_to_joint_position(
-        #       joint_targets, [grip_position[0], grip_position[1], table_z + ball_radius]
-        #   )
-        #   return
-        if tilt_rad <= 1e-6:
-            grip_position = required_grip_position(cue_ball[0], cue_ball[1], action.shot_angle)
-            joint_targets = [base_yaw_rad, *CANONICAL_REST_JOINTS]
-            self._robot_arm.reposition(base_position)
-            self._articulation_api.move_to_joint_position(
-                joint_targets, [grip_position[0], grip_position[1], table_z + ball_radius]
-            )
-            return
-        #
-        # tilt_rad > 0：高架橋案例。Phase 0（joint-space 回安全姿態避開差動
-        # IK 奇異點，base_yaw 固定用 0.0，不是這次瞄準角的目標值——單純只是
-        # 一個通用、跟瞄準角無關的安全起點）+ Cartesian waypoint 序列
-        # （B1 爬升→B2 平移→C1 轉向→C2 下降），一次呼叫 move_through_poses()
-        # 涵蓋整條鏈。
-        #   self._robot_arm.reposition(base_position)
-        #   safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
-        #   safe_target_position = compute_canonical_wrist_position(base_position, 0.0)
-        #   （不能沿用移動前的舊位置當佔位符——那對應的是移動前的姿態，不是
-        #    safe_joint_targets 真正會到達的位置，會讓 is_motion_complete()
-        #    永遠等不到收斂）
-        #   safe_orientation = list(CANONICAL_FLAT_ORIENTATION)（base_yaw=0
-        #   時 CANONICAL_REST_JOINTS 姿態的實測世界朝向——不是單位四元數，
-        #   兩者差了將近 180° roll，同樣不能用 get_end_effector_orientation()
-        #   讀移動前的舊姿態）
-        #   bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-        #       safe_target_position, safe_orientation, cue_ball, action.shot_angle,
-        #       table_z, ball_radius, position_offset=action.position_offset,
-        #   )
-        #   bridge_waypoints is None：高架橋姿態無解，raise ValueError
-        #   self._articulation_api.move_through_poses(
-        #       bridge_waypoints,
-        #       preceding_joint_targets=(safe_joint_targets, safe_target_position),
-        #   )
-        self._robot_arm.reposition(base_position)
-        safe_joint_targets = [0.0, *CANONICAL_REST_JOINTS]
-        safe_target_position = compute_canonical_wrist_position(base_position, 0.0)
-        # Phase 0 的 base_yaw 固定用 0.0——CANONICAL_FLAT_ORIENTATION 是這組
-        # 姿態下腕部的真實世界朝向（實測值，不是單位四元數！見該常數註解：
-        # _shortest_arc_quat 構造出的單位四元數對 roll 沒有約束，跟真實姿態
-        # 差了將近 180°，這正是高架橋 B1/B2 階段被迫多轉一圈、shoulder_pitch
-        # 卡死的根因）。不能用 get_end_effector_orientation() 讀（跟
-        # safe_target_position 同一個道理：Phase 0 這時候還沒真的執行，讀到
-        # 的會是移動前的舊姿態）。
-        safe_orientation = list(CANONICAL_FLAT_ORIENTATION)
-        # C1 轉向時手臂本體可能掃過球檯庫邊/袋口，roll_rad 是用來閃避這個
-        # 問題的自由度（不影響擊球結果）——lookup_roll_rad() 是離線掃描真實
-        # Kitchen 網格找出的最近鄰查表，見該函式與
-        # docs/issue-180-reachability-analysis.md 第十三節。_execute_strike()
-        # 必須用同一顆 cue_ball 座標查同一個值，才能保證瞄準跟擊球算出同一個
-        # 目標姿態。
-        roll_rad = cue_pose_calculator.lookup_roll_rad(cue_ball)
-        bridge_waypoints = cue_pose_calculator.compute_elevated_bridge_waypoints(
-            [safe_target_position[0], safe_target_position[1], safe_target_position[2]], safe_orientation,
-            cue_ball, action.shot_angle, table_z, ball_radius, position_offset=action.position_offset,
-            roll_rad=roll_rad,
-        )
-        if bridge_waypoints is None:
-            raise ValueError("高架橋姿態無解")
-        self._articulation_api.move_through_poses(
-            bridge_waypoints,
-            preceding_joint_targets=(safe_joint_targets, [safe_target_position[0], safe_target_position[1], safe_target_position[2]])
-        )
+        self._swing_strategy.execute_aim(action, cue_ball, table_z, ball_radius)
 
     def _execute_strike(self, action: Action) -> None:
-        # 上一個動作（瞄準）若逾時未收斂
+        # 上一個動作（瞄準）若逾時未收斂——跟手臂型號無關的通用檢查，留在
+        # orchestrator 本身，不放進策略。
         if self._articulation_api.did_last_motion_timeout():
             raise RuntimeError("瞄準動作逾時未收斂")
 
         cue_ball = (action.cue_ball_placement[0], action.cue_ball_placement[1])
         table_z = self._table_ball_set.get_table_z()
         ball_radius = self._table_ball_set.DEFAULT_BALL_RADIUS
+        self._swing_strategy.execute_strike(action, cue_ball, table_z, ball_radius)
 
-        # 先用 roll_rad=0 算一次只為了拿 tilt_rad 判斷 flat/bridge——roll 只
-        #在高架橋 C1 轉向階段用來閃避手臂本體撞庫邊/袋口有意義，flat 案例
-        # （tilt_rad<=1e-6）套用非零 roll 反而會讓 orientation 繞著水平桿身
-        # 軸多轉一個跟原本行為無關的角度，所以 flat 案例維持 roll_rad=0，
-        # 不查表。
-        wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
-            cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset
-        )
-        if tilt_rad is None or wrist_position is None or wrist_orientation is None:
-            raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
-
-        if tilt_rad > 1e-6:
-            # 高架橋案例：跟 _execute_aim() 的高架橋分支用同一顆 cue_ball
-            # 座標查同一個 roll_rad（見該處註解），保證瞄準跟擊球算出同一個
-            # 目標姿態，重算一次拿套用 roll 後的正確 wrist/orientation。
-            roll_rad = cue_pose_calculator.lookup_roll_rad(cue_ball)
-            wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
-                cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset, roll_rad=roll_rad
-            )
-
-        direction_unit = cue_pose_calculator.compute_tilted_direction(action.shot_angle, tilt_rad)
-        # ⚠️ 2026-08-29：改用 move_swing()（見 core/ports/articulation_api.py
-        # 抽象方法／extension/isaac_sim_impl_6_0/articulation_api_impl.py
-        # 實作），取代原本的 compute_swing_waypoints()+move_through_poses()
-        # 兩段式呼叫——後者是靜態目標點的 P 控制器+feedforward pose
-        # tracking，有結構性穩態誤差，隨揮終點永遠差一截到不了（見
-        # docs/issue-180-reachability-analysis.md 第十五節）。move_swing()
-        # 改成每個 physics tick 用線性規劃求「姿態修正在有限額度內、沿
-        # 揮桿方向最大化速度」，是真正驗證過能讓桿尖碰到球、量到真實非零
-        # 碰撞衝量的版本（第十七節，diagnose_move_swing.py 實測
-        # impulse=0.201、母球 1.05m/s）。
-        #
-        # orientation_gain=1.0／max_angular_speed=1.0 是實測驗證用的數值
-        # （比 move_swing() 方法本身的預設 max_angular_speed=0.5 更寬），
-        # 沿用同一組數值才能保證跟已驗證過的行為一致。
-        required_tip_speed = swing_trajectory_calculator.compute_required_tip_speed(action.cue_ball_speed)
-        follow_through_distance = swing_trajectory_calculator.compute_follow_through_distance(required_tip_speed)
-        contact_position = np.array(wrist_position)
-        backswing_position = swing_trajectory_calculator.compute_backswing_position(
-            contact_position, direction_unit, swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M
-        )
-        follow_through_position = contact_position + follow_through_distance * direction_unit
-        self._articulation_api.move_swing(
-            backswing_position.tolist(), list(wrist_orientation), follow_through_position.tolist(),
-            orientation_gain=1.0, max_angular_speed=1.0,
-        )
 
 class TrainingTableOrchestrator(TableOrchestrator):
     def __init__(

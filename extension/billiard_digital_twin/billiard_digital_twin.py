@@ -1,9 +1,11 @@
 import itertools
 import sys
 import os
+import time
 import omni.ext
 import omni.usd
 import omni.timeline
+import omni.kit.app
 import carb.events
 from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
@@ -18,10 +20,12 @@ from core.controllers.model_controller import ModelController
 from core.models.table_ball_set import TableBallSet
 from core.models.robot_arm import RobotArm
 from core.models.barrett_wam_robot import BarrettWamRobot
+from core.models.ur3e_robot import UR3eRobot
 from core.ports import RigidBodyAPI
 from core.ports.policy_port import PolicyPort
 from core.services.asset_utility import TABLE_PATH
 from core.services.observation_builder import DemoTableObservationBuilder, TrainingTableObservationBuilder
+from core.services.robot_swing_strategy import create_swing_strategy_for
 from core.services.table_orchestrator import DemoTableOrchestrator, TrainingTableOrchestrator
 from core.services.table_runtime import TableRuntime
 from core.services.table_session import DemoTableSession, TableSession
@@ -45,10 +49,27 @@ from core.services.rolling_resistance_service import RollingResistanceService
 _TABLE_COUNT = 1
 _TOOL_MENU_NAME = "Tools"
 # Demo 桌實際掛載的手臂類別，換手臂只需要改這一行（見 core/models/robot_arm.py）。
-_ROBOT_ARM_CLASS: type[RobotArm] = BarrettWamRobot
+#
+# ⚠️ 2026-09-01：換成 UR3eRobot，準備在 Isaac Sim GUI 裡實際觀察瞄準/擊球
+# 行為——UR3e 這條路徑（core/services/ur3e_placement_calculator.py／
+# ArticulationAPIImpl.move_swing_elbow_pivot()）目前只有 tilt≈5.34° 高架橋
+# 案例做過真實球檯執行驗證，flat 案例／tilt≈9.91° 案例／「從手臂目前姿態
+# 安全接近到後擺姿態」這一段都還沒驗證過，實際測試時要留意這幾個已知
+# 風險（見 ur3e_placement_calculator.py 模組說明、move_swing_elbow_pivot()
+# docstring）。要換回 WAM7 只需要把這行改回 BarrettWamRobot。
+_ROBOT_ARM_CLASS: type[RobotArm] = UR3eRobot
 _TABLE_SIZE_PROBE_PATH = "/World/_TableSizeProbe"
 _POLICY_PATH = os.path.join(_PROJECT_ROOT, "models", "rl", "billiard", "policy.pt")
 _EVAL_MAX_OFFSET = 0.6
+
+# ⚠️ 2026-09-02：以下兩個環境變數僅供無人值守除錯用（headful GUI 用
+# `isaacsim.exe ... --enable billiard_digital_twin` 開啟、跑固定時間後由外部
+# timeout 關閉的場景），不影響一般互動使用——兩者預設都是關閉（空字串/0），
+# 只有明確設定環境變數才會啟用，正常互動 GUI 行為完全不受影響。用來在
+# UR3e 換手臂驗證時，不需要真人手動點 Play、肉眼盯著畫面，就能拿到逐 tick
+# 的關節角度/桿尖位置/母球位置數據事後分析。
+_AUTO_PLAY_DELAY_SEC = float(os.environ.get("BILLIARD_AUTO_PLAY_DELAY_SEC", "0") or "0")
+_DEBUG_LOG_PATH = os.environ.get("BILLIARD_DEBUG_LOG_PATH", "")
 
 def _format_vector(values: list[float]) -> str:
     # 固定小數點後 3 位，避免 Debug Menu 每幀因為浮點數位數不一而跳動版面。
@@ -62,14 +83,21 @@ class BilliardExtension(omni.ext.IExt):
         self._debug_menu = None
         self._training_sessions: list[TableSession] = []
         self._demo_sessions: list[DemoTableSession] = []
+        self._demo_articulation_apis: dict[str, ArticulationAPIImpl] = {}
         self._training_enabled = True
         self._demo_enabled = True
         self._timeline_playing = False
         self._table_unit_side_length = 0.0
         self._tick_callback_id = None
         self._policy: PolicyPort | None = None
+        self._debug_log_file = None
+        self._debug_tick_counter = 0
+        self._auto_play_sub = None
+        self._physics_api_debug = None
         scripts_dir = os.path.join(_PROJECT_ROOT, "scripts")
         self._tool_menu_items = discover_and_register(scripts_dir, _TOOL_MENU_NAME)
+        if _DEBUG_LOG_PATH:
+            self._debug_log_file = open(_DEBUG_LOG_PATH, "w", encoding="utf-8")
         stage = omni.usd.get_context().get_stage()
         if stage is not None:
             self._billiard_init()
@@ -78,6 +106,22 @@ class BilliardExtension(omni.ext.IExt):
             self._sub = stream.create_subscription_to_pop(
                 self._on_stage_event, name="billiard_digital_twin_stage_wait"
             )
+        if _AUTO_PLAY_DELAY_SEC > 0:
+            self._auto_play_deadline = time.time() + _AUTO_PLAY_DELAY_SEC
+            self._auto_play_sub = (
+                omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+                    self._on_auto_play_update, name="billiard_digital_twin_auto_play"
+                )
+            )
+
+    def _on_auto_play_update(self, event: carb.events.IEvent) -> None:
+        """僅供無人值守除錯用（見 `_AUTO_PLAY_DELAY_SEC` 說明）：Scene 載入
+        後不需要真人點 Play，等固定秒數自動觸發，讓外部腳本可以直接開
+        headful GUI、等固定時間、讀 debug log、關閉，不需要人在旁邊操作。"""
+        if time.time() < self._auto_play_deadline:
+            return
+        self._auto_play_sub = None
+        omni.timeline.get_timeline_interface().play()
 
     def _on_stage_event(self, event: carb.events.IEvent) -> None:
         if event.type == int(omni.usd.StageEventType.OPENED):
@@ -88,6 +132,19 @@ class BilliardExtension(omni.ext.IExt):
         SimulationManager.setup_simulation(dt=1/60)
 
         self._asset_env_init()
+
+        if _DEBUG_LOG_PATH:
+            # 2026-09-02：GUI 逐 tick log 只有關節角度/位置，看得出手臂卡住
+            # 但看不出是不是真的撞到東西（例如球桿後擺過程掃到地板）——加碰撞
+            # 事件回報直接證實。跟 PocketEventHandler 各自獨立一個
+            # PhysicsAPIImpl 實例／各自一個 subscribe_contact_events()：
+            # enable_contact_reporting() 是把 PhysxContactReportAPI 掛到 USD
+            # prim 上（stage 層級的效果，不屬於特定 subscriber），
+            # subscribe_contact_events() 訂閱的是 PhysX 全域的 contact report
+            # 事件流，兩個獨立訂閱互不干擾、也不需要共用同一個實例。
+            from isaac_sim_impl_6_0.physics_api_impl import PhysicsAPIImpl
+            self._physics_api_debug = PhysicsAPIImpl()
+            self._physics_api_debug.subscribe_contact_events(self._on_debug_contact_event)
 
         self._debug_menu = DebugMenu(
             self._on_training_toggle,
@@ -216,6 +273,10 @@ class BilliardExtension(omni.ext.IExt):
         robot_prim_path = _ROBOT_ARM_CLASS.get_prim_path(table_id)
         robot_end_effector_prim_path = _ROBOT_ARM_CLASS.get_end_effector_prim_path(table_id)
         articulation_api = ArticulationAPIImpl(robot_prim_path, robot_end_effector_prim_path)
+        # 只給 BILLIARD_DEBUG_LOG_PATH 除錯 log 用（見 _debug_log()）——存的是
+        # 具體實作類別，不是 ArticulationAPI 抽象介面，因為要呼叫的
+        # get_dof_positions_for_debug() 是除錯專用方法，刻意不加進正式 port。
+        self._demo_articulation_apis[table_id] = articulation_api
 
         robot_manager = TableRobotManager(
             table.get_table_center(), table_id, self._stage_api, articulation_api, _ROBOT_ARM_CLASS
@@ -228,15 +289,24 @@ class BilliardExtension(omni.ext.IExt):
         if robot_arm is None:
             raise RuntimeError(f"{table_id} 剛建立卻沒有 RobotArm，無法建立 DemoTableSession")
 
+        if self._physics_api_debug is not None:
+            # 只回報球桿／母球——揮桿卡住時要確認的是「球桿有沒有撞到球檯/
+            # 地板」跟「母球到底有沒有被打到」，不需要整支手臂每個連桿都開
+            # （那是 scripts/test_elevated_bridge_ur3e_table.py 那種一次性
+            # 研究腳本才需要的廣度，GUI 除錯先聚焦在這兩個最關鍵的 prim）。
+            self._physics_api_debug.enable_contact_reporting(robot_manager.get_cue_stick_prim_path())
+            self._physics_api_debug.enable_contact_reporting(table_ball_set.get_ball_prim_paths()[0])
+
         pocket_handler = self._build_pocket_event_handler(table, table_ball_set)
         controller = self._build_model_controller(table_ball_set)
         error_state = ErrorState()
+        swing_strategy = create_swing_strategy_for(robot_arm, articulation_api)
         runtime = TableRuntime(
             DemoTableObservationBuilder(
                 table_ball_set, self._rigid_body_api, table_ball_set.ball_motion_monitor, error_state, table.position_provider, robot_arm
             ),
             DemoTableOrchestrator(
-                controller, table_ball_set, table.position_provider, robot_arm, articulation_api, error_state, self._rolling_resistance_service
+                controller, table_ball_set, table.position_provider, robot_arm, articulation_api, swing_strategy, error_state, self._rolling_resistance_service
             ),
         )
         return DemoTableSession(
@@ -257,6 +327,7 @@ class BilliardExtension(omni.ext.IExt):
         for session in self._demo_sessions:
             session.destroy()
         self._demo_sessions = []
+        self._demo_articulation_apis = {}
         if self._debug_menu:
             self._debug_menu.set_available_tables(self.get_table_ids())
 
@@ -345,6 +416,51 @@ class BilliardExtension(omni.ext.IExt):
     def _on_tick(self, step_dt, context) -> None:
         for session in self._all_sessions():
             session.tick()
+        if self._debug_log_file is not None:
+            self._debug_log()
+
+    def _debug_log(self) -> None:
+        """僅供 `BILLIARD_DEBUG_LOG_PATH` 除錯用：逐 tick 把每張 Demo 桌的
+        狀態機狀態、母球座標、桿尖世界座標/朝向、各關節角度寫成一行，讓
+        headful GUI 跑一段固定時間後可以事後讀檔分析，不需要人在旁邊看
+        畫面（見模組開頭 `_AUTO_PLAY_DELAY_SEC`/`_DEBUG_LOG_PATH` 說明）。"""
+        self._debug_tick_counter += 1
+        for session in self._demo_sessions:
+            table_id = session.get_table_id()
+            state = session.get_current_state()
+            observation = session.get_last_observation()
+            articulation_api = self._demo_articulation_apis.get(table_id)
+            if articulation_api is not None and session.is_articulation_initialized():
+                tip_position = articulation_api.get_end_effector_position()
+                tip_orientation = articulation_api.get_end_effector_orientation()
+                dof_positions = articulation_api.get_dof_positions_for_debug()
+            else:
+                tip_position = tip_orientation = dof_positions = []
+            cue_ball_position = observation.cue_ball_position if observation is not None else []
+            is_motion_complete = observation.is_motion_complete if observation is not None else None
+            has_error = observation.has_error if observation is not None else None
+            self._debug_log_file.write(
+                f"tick={self._debug_tick_counter} table={table_id} state={state.name} "
+                f"is_motion_complete={is_motion_complete} has_error={has_error} "
+                f"cue_ball={cue_ball_position} tip_pos={tip_position} tip_orient={tip_orientation} "
+                f"dof_positions={dof_positions}\n"
+            )
+        self._debug_log_file.flush()
+
+    def _on_debug_contact_event(self, event) -> None:
+        """僅供 `BILLIARD_DEBUG_LOG_PATH` 除錯用：球桿/母球的碰撞事件跟逐
+        tick 的關節角度 log 用同一個檔案、同一個 tick 計數器，事後可以對照
+        「手臂卡住的那個 tick，是不是同時有一筆碰撞事件」，藉此判斷卡住是
+        撞到東西還是純粹控制/收斂問題（見 `_boost_wrist_gains_for_cue_stick_
+        load()` 那次驗證：wrist_1/wrist_3 修好後肘關節卡在一個乾淨、不再
+        收斂的角度，懷疑是撞到地板，但當時沒有碰撞 log 能直接證實）。"""
+        if self._debug_log_file is None:
+            return
+        self._debug_log_file.write(
+            f"tick={self._debug_tick_counter} CONTACT a={event.actor_path_a} b={event.actor_path_b} "
+            f"collider_a={event.collider_path_a} collider_b={event.collider_path_b} impulse={event.impulse}\n"
+        )
+        self._debug_log_file.flush()
 
     def on_shutdown(self):
         self._disable_training()
@@ -360,3 +476,10 @@ class BilliardExtension(omni.ext.IExt):
             self._debug_menu = None
         self._sub = None
         self._timeline_sub = None
+        self._auto_play_sub = None
+        if self._physics_api_debug is not None:
+            self._physics_api_debug.unsubscribe_contact_events()
+            self._physics_api_debug = None
+        if self._debug_log_file is not None:
+            self._debug_log_file.close()
+            self._debug_log_file = None

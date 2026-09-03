@@ -94,6 +94,68 @@ def lookup_roll_rad(cue_ball_xy: tuple[float, float]) -> float:
     return math.radians(roll_deg)
 
 
+# ⚠️ 2026-08-31～09-01：`DEFAULT_BACKSWING_DISTANCE_M`（0.15m）跟關節實際
+# 能提供的加速能力完全脫鉤，實測揮桿速度只達目標 55%（見
+# docs/issue-180-reachability-analysis.md 第十八節「待處理 B」與這次新增
+# 的一節）。改用 `scripts/search_backswing_distance_ik.py`（純數值 IK 可達
+# 邊界法：沿擊球反方向從 contact pose 逐步後退，找到「還能收斂、且離關節
+# 硬限位有安全餘裕」的最大距離，多組不同關節構型分支各自延伸取最遠——同一
+# 接觸點常有多組不同分支都收斂，只挑單一「最精準」種子延伸容易漏掉空間
+# 更大的分支）反推每個高架橋案例的後擺距離，取代寫死常數。
+#
+# ⚠️ 曾經試過把機器人基座水平位移也當自由變數一起搜尋（能讓部分案例的
+# 後擺距離大幅提升），但用真實 Isaac Sim headless（`diagnose_move_swing.py`）
+# 驗證發現：純運動學可達性分析找到的基座偏移，會讓 `ArticulationAPIImpl`
+# 真正用的差動 IK 控制迴圈（Phase 0→B1→B2→C1→C2）不收斂（逾時 1000 步，
+# 揮桿打空）——一次性可達性求解沒有模擬差動 IK 沿路徑逐步收斂的動態行為，
+# 偏移越大、路徑幾何改變越多，風險越高。改成**基座位置一律用
+# `compute_base_pose()` 的公式值，完全不搜尋偏移**，只保留後擺距離的改善——
+# 消除差動 IK 不收斂的風險，代價是 manipulability 上限本來就低的案例（見
+# 第十六節：`y=-0.9382125` 這排任何 roll 都到不了目標球速）速度依然達不到
+# 目標，這是已知、可接受的既有限制，不是這次任務要解決的範圍。
+#
+# (cue_ball_x, cue_ball_y, backswing_distance_m)
+# y=-1.241425（CUE_BALL_PLACEMENT_Y 下界）純幾何無解，沿用鄰近列（y=
+# -0.9382125）的值只是讓 nearest-neighbor 查表有合理落點，實際用不到（跟
+# _ROLL_LOOKUP_GRID 同一個慣例）。
+_BACKSWING_DISTANCE_LOOKUP_GRID = [
+    (-0.606425, -1.241425, 0.21),
+    (-0.606425, -0.9382125, 0.21),
+    (-0.606425, -0.635, 0.15),
+    (0.0, -1.241425, 0.20),
+    (0.0, -0.9382125, 0.20),
+    (0.0, -0.635, 0.14),
+    (0.606425, -1.241425, 0.20),
+    (0.606425, -0.9382125, 0.20),
+    (0.606425, -0.635, 0.15),
+]
+
+
+def lookup_backswing_distance_m(cue_ball_xy: tuple[float, float]) -> float:
+    """回傳離查表座標歐氏距離最近的網格點的後擺距離（m）。用法跟
+    `lookup_roll_rad()` 完全一樣（同一個 9 點粗網格，最近鄰查表）。"""
+    cue_x, cue_y = cue_ball_xy
+    _, _, distance_m = min(
+        _BACKSWING_DISTANCE_LOOKUP_GRID,
+        key=lambda p: (p[0] - cue_x) ** 2 + (p[1] - cue_y) ** 2,
+    )
+    return distance_m
+
+
+def lookup_base_offset(cue_ball_xy: tuple[float, float]) -> tuple[float, float]:
+    """回傳離查表座標歐氏距離最近的網格點的基座水平位移 (dx, dy)（m），要
+    疊加在 `base_placement_calculator.compute_base_pose()` 算出的基座位置
+    上（Z 不動）。用法跟 `lookup_roll_rad()`／`lookup_backswing_distance_m()`
+    一樣（同一個 9 點粗網格，最近鄰查表，三者共用同一份 cue_ball_xy 座標
+    才能保證算出彼此一致的目標姿態）。"""
+    cue_x, cue_y = cue_ball_xy
+    _, _, _distance_m, dx, dy = min(
+        _BACKSWING_DISTANCE_LOOKUP_GRID,
+        key=lambda p: (p[0] - cue_x) ** 2 + (p[1] - cue_y) ** 2,
+    )
+    return dx, dy
+
+
 def _segment_rail_crossings(p0, p1, rails):
     # 計算線段 p0→p1 跟 rails 列表（每個元素是 (axis, coord, other_range)）
     # 的所有交點：沿線段參數化 (x,y) = p0 + t*(p1-p0)，t∈[0,1]，對每面
@@ -308,7 +370,8 @@ def compute_elevated_bridge_waypoints(
     roll_rad: float = 0.0,
     safe_altitude_margin: float = 0.3,
     rotate_steps: int = 8,
-    contact_clearance_m: float = 0.05,
+    *,
+    backswing_distance_m: float,
 ) -> list[PoseWaypoint] | None:
     """把「先垂直爬升、再水平平移、最後才轉向」的高架橋逼近幾何轉成一串
     `PoseWaypoint`（不含 Phase 0——Phase 0 是先用 joint-space 回安全姿態避開
@@ -362,8 +425,9 @@ def compute_elevated_bridge_waypoints(
     先呼叫 `compute_tilted_wrist_pose()` 算出最終 wrist/orientation/tilt_rad，
     回傳 `None` 代表它判定幾何無解。
 
-    ⚠️ `contact_clearance_m`（2026-08-29 新增，見 docs/issue-180-
-    reachability-analysis.md 第十七節「AIM 收斂實際推球」根因調查）：
+    ⚠️ `backswing_distance_m`（2026-08-29 新增為 `contact_clearance_m`，
+    2026-09-01 改名＋移除預設值＋升格為 AIM／STRIKE 共用契約，見
+    docs/issue-180-reachability-analysis.md 第十七、十八節）：
     `compute_tilted_wrist_pose()` 回傳的 `wrist`（配合 `CUE_STICK_GRIP_TO_TIP`
     反推出的桿尖位置）精確落在**母球球心**，不是球面——這是
     `compute_contact_point()`／`required_grip_position()` 共用的既有慣例
@@ -373,19 +437,30 @@ def compute_elevated_bridge_waypoints(
     目標，一路收斂會把桿尖持續往球心推、真的把母球往前推走（實測會推到
     0.3m/s、母球在揮桿真正執行前就已經滾開 28cm，揮桿因此打空）——不是
     PhysX 碰撞求解器的問題。這裡把 AIM／搭橋收斂的**最終**（C2）目標點
-    沿 `-direction` 方向退開 `contact_clearance_m`，讓收斂終點停在母球表面
+    沿 `-direction` 方向退開 `backswing_distance_m`，讓收斂終點停在母球表面
     外側，而不是球心，此為唯一改動 wrist 目標的地方，`wrist`／
-    `compute_tilted_wrist_pose()` 本身與 STRIKE 揮桿路徑都不受影響。
+    `compute_tilted_wrist_pose()` 本身不受影響。
 
-    數值是用 `scripts/diagnose_move_swing.py` 的
-    `AIM_CONTACT_CLEARANCE_M` 覆寫開關實測校準出來的（真實 Isaac Sim
-    物理模擬，非解析推算）：0.01m 仍會被 P 控制器的收斂爬升「追上」
+    2026-09-01：這個參數原本叫 `contact_clearance_m`（預設 0.05m，只為了
+    避免推球，見下方校準記錄），跟 STRIKE 後擺起點用的
+    `swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M`（0.15m）是
+    兩個獨立數字，中間那段差距原本由裸的差動 IK P 控制器走，沒有防撞驗證
+    （第十八節「待處理 B」）。現在統一成同一個值：AIM 收斂終點＝STRIKE
+    後擺起點，呼叫端一律傳
+    `cue_pose_calculator.lookup_backswing_distance_m(cue_ball_xy)`（用 IK
+    可達邊界法反推、遠大於舊的 0.05m/0.15m，見該函式與
+    `_BACKSWING_DISTANCE_LOOKUP_GRID` 的說明），不再有獨立預設值——移除
+    預設值是刻意的，強制呼叫端明示，避免忘記傳新值又悄悄退回舊行為。
+
+    舊 `contact_clearance_m=0.05` 的校準記錄（`scripts/diagnose_move_swing.py`
+    的 `AIM_CONTACT_CLEARANCE_M` 覆寫開關實測，真實 Isaac Sim 物理模擬，
+    非解析推算，僅存歷史價值）：0.01m 仍會被 P 控制器的收斂爬升「追上」
     （母球殘留速度從無間距的 0.32m/s 降到 0.15m/s，但沒有歸零）；0.03m
     AIM 階段仍有一次極小的觸碰（母球殘留 ~0.1m/s），但已經足以讓
     STRIKE 揮桿階段量到真實非零衝量（`impulse=0.201`、母球
     `1.06m/s`）；**0.05m 完全消除 AIM 階段的碰撞事件**（全程 `ball_speed
-    =0.0000`），STRIKE 同樣量到真實非零衝量（`impulse=0.201`、母球
-    `1.05m/s`）——採用 0.05m 當預設值。
+    =0.0000`）。新的查表值（0.34~0.35m）遠大於這個下限，同樣或更能避免
+    推球，不衝突。
     """
     wrist, orientation, tilt_rad, crossing = compute_tilted_wrist_pose(
         cue_ball_xy, shot_angle_deg, table_z, ball_radius, position_offset, roll_rad
@@ -394,7 +469,7 @@ def compute_elevated_bridge_waypoints(
         return None
 
     direction = compute_tilted_direction(shot_angle_deg, tilt_rad)
-    safe_wrist = wrist - contact_clearance_m * direction
+    safe_wrist = wrist - backswing_distance_m * direction
 
     safe_high_z = max(float(current_position[2]), float(wrist[2])) + safe_altitude_margin
     climb_point = [float(current_position[0]), float(current_position[1]), safe_high_z]
