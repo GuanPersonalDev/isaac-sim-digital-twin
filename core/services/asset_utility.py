@@ -18,6 +18,7 @@ TABLE_PATH = os.path.join(ASSET_DIR, "billiard_env.usda")
 TRAINING_TABLE_PATH = os.path.join(ASSET_DIR, "billiard_table_only.usda")
 UR5_PATH = "Isaac/Robots/UniversalRobots/ur5/ur5.usd"
 UR3E_PATH = "Isaac/Robots/UniversalRobots/ur3e/ur3e.usd"
+UR10E_PATH = "Isaac/Robots/UniversalRobots/ur10e/ur10e.usd"
 BARRETT_WAM_PATH = os.path.join(ASSET_DIR, "barrett_wam", "wam7", "wam7.usda")
 STRIPE_IDENTIFIER = "stripe_material"
 

@@ -76,7 +76,28 @@ class StageAPI(ABC):
         """
         ...
 
-        
+    @abstractmethod
+    def create_prismatic_joint(
+        self,
+        joint_path: str,
+        body0_path: str,
+        body1_path: str,
+        axis: str = "Y",
+        lower_limit: float | None = None,
+        upper_limit: float | None = None,
+    ) -> None:
+        """
+        在 joint_path 建立 Prismatic Joint Prim，讓 body0_path 與 body1_path
+        兩端只能沿 axis（"X"/"Y"/"Z"，body1 的本地座標系）相對滑動——取代
+        `create_fixed_joint()` 給 UR10e＋專用出力機構用（見 UR10e 重新設計
+        計畫決策 2/3）：球桿沿自身軸向在這個關節上前後滑動產生揮桿速度，
+        而不是靠手臂關節本身的角速度。
+
+        lower_limit／upper_limit（單位：公尺，相對兩端初始重合位置的偏移）
+        皆為 None 時不設限（PhysX 預設無限制）。
+        """
+        ...
+
     @abstractmethod
     def align_prim_to_target(self, prim_path: str, target_path: str) -> None:
         """

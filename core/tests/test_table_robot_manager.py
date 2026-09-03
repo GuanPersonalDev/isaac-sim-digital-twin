@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
+from core.models.ur10e_robot import UR10eRobot
 from core.services.asset_utility import CUE_STICK_PATH
 
 
@@ -282,3 +283,46 @@ class TestTableRobotManager:
         )
 
         assert manager.get_cue_stick_prim_path() == "/World/DemoTable/CueStick"
+
+
+class TestTableRobotManagerUr10ePrismaticJoint:
+    """UR10e 靠末端的線性滑軌關節（PrismaticJoint）出力，跟其餘手臂共用的
+    `create_fixed_joint()` 路徑不同——見 UR10e 重新設計計畫決策 2/3、
+    `TableRobotManager` 類別 docstring。"""
+
+    def test_creates_prismatic_joint_not_fixed_joint(
+        self, fixed_joint_paths: dict[str, str], fixed_joint_stage_api: MagicMock, articulation_api: MagicMock
+    ):
+        _table_robot_manager_class()(
+            table_center=(2.0, 3.0, 0.0),
+            base_path=fixed_joint_paths["base"],
+            stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
+            robot_arm_class=UR10eRobot,
+        )
+
+        fixed_joint_stage_api.create_fixed_joint.assert_not_called()
+        fixed_joint_stage_api.create_prismatic_joint.assert_called_once_with(
+            fixed_joint_paths["base"] + "/CueStick/CueSlideJoint",
+            fixed_joint_paths["cue_stick"],
+            fixed_joint_paths["base"] + "/Robot/wrist_3_link",
+            axis="Y",
+        )
+
+    def test_other_robot_arm_classes_still_create_fixed_joint(
+        self,
+        fixed_joint_paths: dict[str, str],
+        fixed_joint_stage_api: MagicMock,
+        fixed_joint_robot_arm_class: MagicMock,
+        articulation_api: MagicMock,
+    ):
+        _table_robot_manager_class()(
+            table_center=(2.0, 3.0, 0.0),
+            base_path=fixed_joint_paths["base"],
+            stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
+            robot_arm_class=fixed_joint_robot_arm_class,
+        )
+
+        fixed_joint_stage_api.create_prismatic_joint.assert_not_called()
+        fixed_joint_stage_api.create_fixed_joint.assert_called_once()

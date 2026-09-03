@@ -1,6 +1,7 @@
 from ..ports.stage_api import StageAPI
 from ..ports.articulation_api import ArticulationAPI
 from .robot_arm import RobotArm
+from .ur10e_robot import UR10eRobot
 from ..services.asset_utility import CUE_STICK_PATH
 
 
@@ -8,8 +9,16 @@ class TableRobotManager:
     """
     掛載手臂＋球桿的通用流程，實際掛哪一款手臂由呼叫端傳入的
     robot_arm_class 決定（見 RobotArm 抽象介面），本類別不依賴任何
-    特定手臂的具體實作。
+    特定手臂的具體實作——唯一例外是 UR10eRobot：球桿跟末端執行器之間改用
+    `create_prismatic_joint()`（線性滑軌，見 UR10e 重新設計計畫決策 2/3），
+    取代其餘手臂共用的 `create_fixed_joint()`，因為 UR10e 靠這個滑軌關節
+    本身的線速度出力，不是手臂關節角速度。
     """
+
+    # 球桿沿自身軸向（= end effector 的 local Y，見 ball_stick.usda 的
+    # Cylinder axis="Y" 與 cue_pose_calculator.py 的 _CUE_LOCAL_AXIS）前後
+    # 滑動，跟推桿方向一致。
+    _CUE_SLIDE_JOINT_AXIS = "Y"
 
     _ROBOT_OFFSET_FROM_TABLE_CENTER = (1.5, 0.0, 0.0)
 
@@ -37,10 +46,17 @@ class TableRobotManager:
         stage_api.align_prim_to_target(self._cue_stick_prim_path, end_effector_path)
         stage_api.filter_collision_pair(self._cue_stick_prim_path, end_effector_path)
 
-        joint_path = self._cue_stick_prim_path + "/FixedJointToRobot"
-        stage_api.create_fixed_joint(
-            joint_path, self._cue_stick_prim_path, end_effector_path
-        )
+        if robot_arm_class is UR10eRobot:
+            joint_path = self._cue_stick_prim_path + "/CueSlideJoint"
+            stage_api.create_prismatic_joint(
+                joint_path, self._cue_stick_prim_path, end_effector_path,
+                axis=self._CUE_SLIDE_JOINT_AXIS,
+            )
+        else:
+            joint_path = self._cue_stick_prim_path + "/FixedJointToRobot"
+            stage_api.create_fixed_joint(
+                joint_path, self._cue_stick_prim_path, end_effector_path
+            )
 
     def get_cue_stick_prim_path(self) -> str:
         return self._cue_stick_prim_path

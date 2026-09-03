@@ -70,7 +70,24 @@ class StageAPIImpl(StageAPI):
         joint.CreateBody0Rel().SetTargets([body0_path])
         joint.CreateBody1Rel().SetTargets([body1_path])
 
-        
+    def create_prismatic_joint(
+        self,
+        joint_path: str,
+        body0_path: str,
+        body1_path: str,
+        axis: str = "Y",
+        lower_limit: float | None = None,
+        upper_limit: float | None = None,
+    ) -> None:
+        joint = UsdPhysics.PrismaticJoint.Define(self.get_stage(), joint_path)
+        joint.CreateBody0Rel().SetTargets([body0_path])
+        joint.CreateBody1Rel().SetTargets([body1_path])
+        joint.CreateAxisAttr().Set(axis)
+        if lower_limit is not None:
+            joint.CreateLowerLimitAttr().Set(lower_limit)
+        if upper_limit is not None:
+            joint.CreateUpperLimitAttr().Set(upper_limit)
+
     def align_prim_to_target(self, prim_path: str, target_path: str) -> None:
         prim = self._get_prim(prim_path)
         target_prim = self._get_prim(target_path)

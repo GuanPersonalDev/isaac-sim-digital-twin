@@ -76,3 +76,23 @@ class TestRobotArm:
         )
 
         assert isinstance(robot, RobotArm)
+
+    def test_ur10e_robot_is_a_robot_arm(self):
+        from core.models.ur10e_robot import UR10eRobot
+
+        robot = UR10eRobot(
+            base_path="/World/BilliardTable",
+            stage_api=MagicMock(),
+            articulation_api=MagicMock(),
+            position=(1.5, 0.0, 0.0),
+        )
+
+        assert isinstance(robot, RobotArm)
+
+    def test_ur10e_robot_end_effector_prim_path_uses_wrist_3_link(self):
+        from core.models.ur10e_robot import UR10eRobot
+
+        assert (
+            UR10eRobot.get_end_effector_prim_path("/World/BilliardTable")
+            == "/World/BilliardTable/Robot/wrist_3_link"
+        )
