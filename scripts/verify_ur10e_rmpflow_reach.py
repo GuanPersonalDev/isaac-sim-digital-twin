@@ -13,19 +13,24 @@ scripts/verify_ur10e_rmpflow_reach.py — UR10e+專用出力結構重新設計�
 的問題，之後步驟才加障礙物（decision 6）跟真實球檯（步驟 7/8）。
 
 ⚠️ 實測發現（2026-09-03）：目標位移大小會明顯影響收斂品質。
-- 5cm 量級的單軸/小幅位移（本檔案目前的預設案例）：~120 步（2 秒）內穩定
-  收斂到 <5mm 誤差，位置+朝向同時約束也一樣收斂良好。
+- 5cm 量級的單軸/小幅位移：~120 步（2 秒）內穩定收斂到 <5mm 誤差，位置+
+  朝向同時約束也一樣收斂良好。
 - 但一次給一個 (0.2, 0.2, 0.1) 量級（約 30cm）的對角線大跳躍目標，900 步
   （15 秒）後仍卡在約 0.14m 殘留誤差原地不動——不是還在收斂中，是真的卡住
   了（RMPflow 的 target_rmp/joint_limit_rmp/damping_rmp 等多個 RMP 分量
   互相拉扯出的局部穩定點，不是全域最佳化，這是 reactive controller 的已知
   特性，不是這裡的程式碼有 bug——已用「PhysX 是否確實追蹤 RMPflow 當下算出
   的關節目標」的差距診斷排除過追蹤面的問題，追蹤落差恆為 0）。
-- 對後續步驟（尤其 AIM：從 HOME 姿態一次跳到瞄準姿態，位移量通常不小）的
-  含意：大位移目標可能需要拆成多個中繼 waypoint（跟 WAM7 舊架構「Phase 0
-  安全姿態＋Cartesian waypoint 序列」精神類似，只是用 RMPflow 逐段導航
-  取代原本的差動 IK），或者拉長收斂等待時間＋調整 rmp_params 增益，這點
-  在正式串進 table_orchestrator.py（步驟 6）之前需要先決定。
+- 修法：Ur10eRmpflowController.move_to_pose() 已改成把大位移目標拆成一串
+  中繼 waypoint（位置線性內插＋方向 slerp 內插，見該類別 docstring）。
+- 2026-09-03 補充：本檔案這個刻意選的 0.3m 對角線跳躍案例
+  （target_orientation 等於起始朝向，不涉及旋轉）加上 waypoint 拆分後
+  仍卡在約 0.138m 殘留誤差，跟拆分前幾乎一樣——證實問題確實只在「這個
+  人為選的位置方向」本身，不是方向追蹤造成的（方向沒變過）。真正的
+  AIM 目標（見 scripts/verify_ur10e_rmpflow_aim.py，用
+  cue_pose_calculator.py 算出來的實際擊球姿態）用同一套 waypoint 拆分
+  機制已驗證收斂到 <2mm，PASS——這支腳本保留下來當「純位置大跳躍」的
+  壓力測試／回歸案例，不代表 UR10e 實際 AIM 流程有問題。
 
 跑法：
     ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \
@@ -43,7 +48,7 @@ for _p in (_EXT_DIR, _PROJECT_ROOT):
         sys.path.insert(0, _p)
 
 _POSITION_TOLERANCE_M = 0.01
-_NUM_STEPS = 180  # 2 秒足夠讓 5cm 量級的目標收斂（見上方實測發現）
+_NUM_STEPS = 1200  # 20 秒上限——大位移案例拆成多段 waypoint，總步數比單段案例多
 _PHYSICS_DT = 1.0 / 60.0
 
 
@@ -93,11 +98,11 @@ def _run() -> None:
     print(f"[verify] 初始 wrist_3_link 世界位置={start_position.tolist()}")
     print(f"[verify] 初始 wrist_3_link 世界朝向={start_orientation.tolist()}")
 
-    target_position = (start_position + np.array([0.05, 0.0, 0.0])).tolist()
+    target_position = (start_position + np.array([0.2, 0.2, 0.1])).tolist()
     target_orientation = start_orientation.tolist()
-    print(f"[verify] 目標位置={target_position}（維持初始朝向）")
+    print(f"[verify] 目標位置={target_position}（維持初始朝向，位移約 0.3m 對角線，會被拆成多個中繼 waypoint）")
 
-    controller = Ur10eRmpflowController(articulation)
+    controller = Ur10eRmpflowController(articulation, end_effector_prim_path)
     print(f"[verify] RMPflow 活動關節={controller._active_joint_names}")
     print(f"[verify] 對應到 7-DOF 陣列的 index={controller._active_dof_indices}")
 
@@ -113,12 +118,15 @@ def _run() -> None:
     print(f"[verify] 機器人底座世界位姿：position={base_position} orientation={base_orientation}")
     controller.set_robot_base_pose(base_position, base_orientation)
 
-    controller.set_end_effector_target(target_position, target_orientation)
-    print("[verify] set_end_effector_target 呼叫完成，開始逐 tick 呼叫 controller.step() ...")
+    controller.move_to_pose(target_position, target_orientation)
+    print(f"[verify] move_to_pose 呼叫完成，共拆成 {len(controller._waypoints)} 個中繼 waypoint，開始逐 tick 呼叫 controller.step() ...")
+    for i, (wp_pos, _wp_orient) in enumerate(controller._waypoints):
+        print(f"[verify]   waypoint[{i}]={wp_pos.tolist()}")
     sys.stdout.flush()
 
     final_error = None
-    for step in range(_NUM_STEPS):
+    step = 0
+    while not controller.is_motion_complete() and step < _NUM_STEPS:
         try:
             controller.step(_PHYSICS_DT)
         except Exception:
@@ -127,19 +135,23 @@ def _run() -> None:
             sys.stdout.flush()
             raise
         simulation_app.update()
-        if step % 60 == 0 or step == _NUM_STEPS - 1:
+        if step % 60 == 0:
             live_position, live_orientation = end_effector_rigid_prim.get_world_poses()
             live_position = np.asarray(live_position[0])
             error = float(np.linalg.norm(live_position - np.asarray(target_position)))
-            final_error = error
-            print(f"[verify] step={step} wrist_3_link 位置={live_position.tolist()} 誤差={error:.5f} m")
+            print(f"[verify] step={step} waypoint_index={controller._waypoint_index}/{len(controller._waypoints)} wrist_3_link 位置={live_position.tolist()} 對最終目標誤差={error:.5f} m")
             sys.stdout.flush()
+        step += 1
 
+    live_position, _ = end_effector_rigid_prim.get_world_poses()
+    live_position = np.asarray(live_position[0])
+    final_error = float(np.linalg.norm(live_position - np.asarray(target_position)))
+    print(f"[verify] 總步數={step} is_motion_complete()={controller.is_motion_complete()} did_last_motion_timeout()={controller.did_last_motion_timeout()}")
     print(f"[verify] 最終誤差={final_error:.5f} m（容許 {_POSITION_TOLERANCE_M} m）")
-    if final_error is not None and final_error <= _POSITION_TOLERANCE_M:
-        print("[verify] ✅ RMPflow 成功把手臂收斂到目標位置，關節順序對應正確")
+    if final_error <= _POSITION_TOLERANCE_M:
+        print("[verify] ✅ waypoint 拆分後 RMPflow 成功把手臂收斂到大位移目標，關節順序對應正確")
     else:
-        print("[verify] ❌ 沒有在容許誤差內收斂，需要檢查關節順序對應或 RMPflow 參數")
+        print("[verify] ❌ 沒有在容許誤差內收斂，需要檢查 waypoint 拆分或 RMPflow 參數")
 
 
 if __name__ == "__main__":
