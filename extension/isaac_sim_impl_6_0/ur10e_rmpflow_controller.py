@@ -83,6 +83,14 @@ class Ur10eRmpflowController:
     _ORIENTATION_TOLERANCE_RAD = 0.02
     _MAX_STEPS_PER_WAYPOINT = 240
 
+    # UR10e 重新設計計畫決策 11：手動指定一組安全、離球檯足夠遠的固定
+    # HOME 關節角度，不沿用「USD 重新放進場景時自然落點當 HOME」的舊
+    # 機制（那是 WAM7/UR3e 的 _capture_home_position_once() 慣例）。直接
+    # 沿用 assets/rmpflow_config/ur10e_cue/rmpflow/ur10e_robot_description.yaml
+    # 的 default_q——這是 Lula 官方替 UR10e 選定的 cspace 參考姿態
+    # （elbow 彎起、遠離手臂完全打直的奇異點），不是隨便選的數字。
+    _HOME_JOINT_POSITIONS = [-0.0, -1.2, 1.1, 0.0, 0.0, 0.0]
+
     def __init__(self, articulation, end_effector_prim_path: str) -> None:
         from isaacsim.core.experimental.prims import RigidPrim
 
@@ -139,6 +147,33 @@ class Ur10eRmpflowController:
         self._motion_active = True
         self._did_last_motion_timeout = False
         self._activate_current_waypoint()
+
+    def move_to_home(self) -> None:
+        """回到 HOME 姿態（decision 11 的固定關節角度），透過 RMPflow 導航
+        （若有註冊障礙物，會主動避開，見 add_ground_plane()/add_obstacle()），
+        不是直接 joint-space 瞬移過去——decision 5：「所有手臂移動都用
+        RMPflow」，RESET/HOME 這段路徑一樣可能掃過球檯，需要跟 AIM 一樣的
+        避障能力。
+
+        用 RmpFlow.get_end_effector_pose(joint_positions) 算 HOME 關節角度
+        對應的世界座標末端位姿（已經套用 set_robot_base_pose() 設定的目前
+        底座位姿，見該方法官方 docstring：「transformed into world
+        coordinates based on the believed position of the robot base」），
+        不需要真的先把手臂瞬移過去才能量到——這樣可以在手臂還在別的姿態時
+        就先算出 HOME 對應的世界座標目標，交給 move_to_pose() 導航過去。
+        """
+        home_position, home_orientation = self._compute_home_end_effector_pose()
+        self.move_to_pose(home_position, home_orientation)
+
+    def _compute_home_end_effector_pose(self):
+        from scipy.spatial.transform import Rotation
+
+        translation, rotation_matrix = self._rmp_flow.get_end_effector_pose(
+            np.array(self._HOME_JOINT_POSITIONS, dtype=float)
+        )
+        quat_xyzw = Rotation.from_matrix(rotation_matrix).as_quat()
+        quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
+        return np.asarray(translation, dtype=float), quat_wxyz
 
     def is_motion_complete(self) -> bool:
         return not self._motion_active
