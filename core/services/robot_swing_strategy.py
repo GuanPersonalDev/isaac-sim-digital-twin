@@ -71,17 +71,20 @@ def create_swing_strategy_for(
     （見 billiard_digital_twin.py::_build_demo_session()）。
 
     刻意放在 core/services/（不是 RobotArm 的方法）：core/models/ 不該
-    反過來依賴 core/services/，見對話紀錄的分層取捨討論。未來新增
-    Ur10eSwingStrategy 時，在這裡多加一個 elif 分支即可。
+    反過來依賴 core/services/，見對話紀錄的分層取捨討論。
     """
     # 延遲 import：避免這個模組被載入時，UR3eRobot／Ur3eSwingStrategy 這些
     # 目前已停用但保留的程式碼一定要跟著載入（見 Ur3eSwingStrategy
     # docstring 的「暫緩維護」說明），也避免跟 core/models/ur3e_robot.py
     # 之間形成不必要的模組層級耦合。
     from ..models.ur3e_robot import UR3eRobot
+    from ..models.ur10e_robot import UR10eRobot
     from .ur3e_swing_strategy import Ur3eSwingStrategy
+    from .ur10e_swing_strategy import Ur10eSwingStrategy
     from .wam7_swing_strategy import Wam7SwingStrategy
 
+    if isinstance(robot_arm, UR10eRobot):
+        return Ur10eSwingStrategy(robot_arm, articulation_api)
     if isinstance(robot_arm, UR3eRobot):
         return Ur3eSwingStrategy(robot_arm, articulation_api)
     return Wam7SwingStrategy(robot_arm, articulation_api)

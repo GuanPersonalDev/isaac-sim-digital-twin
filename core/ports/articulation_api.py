@@ -102,6 +102,48 @@ class ArticulationAPI(ABC):
         ...
 
     @abstractmethod
+    def set_robot_base_pose(
+        self, base_position: list[float], base_orientation: list[float]
+    ) -> None:
+        """
+        UR10e 專用：告訴底層的 RMPflow 控制器手臂底座目前在世界座標系的
+        實際位姿（見 UR10e 重新設計計畫決策 3/4/5）——UR10e 每次瞄準都用
+        `RobotArm.reposition()` 搬動底座（不是固定位置，見決策 4 的推翻
+        紀錄），RMPflow 內部運動學模型需要另外被告知目前的底座位姿才能
+        算對世界座標目標，這件事跟 `RobotArm.reposition()` 是分開的兩個
+        呼叫，呼叫端（`Ur10eSwingStrategy`）每次 `reposition()` 之後都要
+        呼叫這個方法同步。
+
+        WAM7／UR3e 的差動 IK 不需要這個概念（`ArticulationAPIImpl` 對
+        這兩款手臂維持 no-op）。
+        """
+        ...
+
+    @abstractmethod
+    def move_cue_slide_stroke(
+        self, backswing_position: float, target_velocity: float
+    ) -> None:
+        """
+        UR10e 專用推桿：驅動 CueSlideJoint（線性滑軌關節，見
+        `core/models/table_robot_manager.py`）完成後擺＋揮桿，手臂其餘
+        6 個關節維持不動，完全不經過 RMPflow（見 UR10e 重新設計計畫決策
+        5）。跟 `move_swing()`／`move_swing_elbow_pivot()` 是給不同手臂
+        用的平行方法，不是彼此的變形——UR10e 的滑軌軸向就是球桿軸向，
+        `target_velocity` 直接等於桿尖速度，不需要槓桿臂換算。
+
+        backswing_position: 後擺／收回位置（公尺，沿滑軌軸的負向偏移）。
+        target_velocity: 滑軌關節在 q=0（接觸點）當下要達到的線速度
+        （= 桿尖速度，通常是
+        `swing_trajectory_calculator.compute_required_tip_speed()`）。
+
+        只有 UR10e 支援；WAM7／UR3e 沒有這個機構，呼叫會是未定義行為
+        （`ArticulationAPIImpl` 對這兩款手臂不會被 `Ur10eSwingStrategy`
+        呼叫到這個方法，見 `core/services/robot_swing_strategy.py` 的
+        分流）。
+        """
+        ...
+
+    @abstractmethod
     def get_end_effector_position(self) -> list[float]:
         """
         取得末端當前位置[x, y, z]

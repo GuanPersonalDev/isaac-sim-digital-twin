@@ -171,10 +171,31 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._elbow_pivot_elapsed_steps: int = 0
         self._elbow_pivot_complete: bool = False
 
+        # UR10e 專用狀態（見 UR10e 重新設計計畫決策 3/5，
+        # extension/isaac_sim_impl_6_0/ur10e_rmpflow_controller.py／
+        # ur10e_cue_slide_controller.py）：跟上面 WAM7/UR3e 的差動 IK／
+        # elbow-pivot 狀態機完全獨立，_ur10e_mode 只在 initialize() 偵測到
+        # dof_names 含 "CueSlideJoint" 時開啟，開啟後 move_to_pose()／
+        # move_to_home()／is_motion_complete()／did_last_motion_timeout()
+        # 這幾個共用方法會在最前面分流，不會執行到下面 WAM7/UR3e 的既有
+        # 邏輯（刻意保持兩條路徑互不干擾，降低互相拖累出 regression 的風險）。
+        self._ur10e_mode: bool = False
+        self._ur10e_rmpflow_controller = None
+        self._ur10e_cue_slide_controller = None
+        self._ur10e_active_controller = None
+        self._ur10e_step_callback_id: int | None = None
+
     def initialize(self) -> None:
         # 在 timeline play 之後呼叫
         self._articulation = Articulation(paths=self._robot_prim_path)
         self._end_effector_rigid_prim = RigidPrim(paths=self._end_effector_prim_path)
+
+        dof_names = list(self._articulation.dof_names)
+        self._ur10e_mode = "CueSlideJoint" in dof_names
+        if self._ur10e_mode:
+            self._initialize_ur10e()
+            return
+
         self._dof_limits = self._load_dof_max_velocities()
         self._jac_link_index = self._resolve_end_effector_jacobian_index()
 
@@ -189,6 +210,50 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._capture_callback_id = SimulationManager.register_callback(
             self._capture_home_position_once, event=SimulationEvent.PHYSICS_POST_STEP
         )
+
+    def _initialize_ur10e(self) -> None:
+        """UR10e 專屬初始化路徑，完全繞開上面 WAM7/UR3e 的差動 IK 設定
+        （_load_dof_max_velocities／_resolve_end_effector_jacobian_index／
+        _compute_tip_local_offset／_boost_wrist_gains_for_cue_stick_load／
+        _capture_home_position_once 這一整套 home-capture 機制——決策 11
+        明確排除，UR10e 用固定 HOME 關節角度，不是「USD 重新放進場景時的
+        自然落點」）。
+
+        ⚠️ 刻意不呼叫 _boost_wrist_gains_for_cue_stick_load()：那是幫
+        WAM7/UR3e 的 wrist_1/wrist_3 關節在差動 IK 控制下補強增益用的，
+        UR10e 完全交給 RMPflow 驅動，套用那組刻意設得極高的增益
+        （stiffness=1e15）可能干擾 RMPflow 自己對各關節的 PD 追蹤動態——
+        本次對話所有 UR10e 驗證（scripts/verify_ur10e_*.py／
+        test_ur10e_actuator_swing_isolated.py）都是在完全沒有這個增益
+        覆蓋的情況下跑的，套用會是沒驗證過的新變因。
+        """
+        from .ur10e_cue_slide_controller import Ur10eCueSlideController
+        from .ur10e_rmpflow_controller import Ur10eRmpflowController
+
+        self._ur10e_rmpflow_controller = Ur10eRmpflowController(
+            self._articulation, self._end_effector_prim_path
+        )
+        self._ur10e_cue_slide_controller = Ur10eCueSlideController(self._articulation)
+        self._ur10e_step_callback_id = SimulationManager.register_callback(
+            self._step_ur10e_motion, event=SimulationEvent.PHYSICS_POST_STEP
+        )
+
+    def _step_ur10e_motion(self, step_dt, context) -> None:
+        if self._ur10e_active_controller is not None:
+            self._ur10e_active_controller.step(step_dt)
+
+    def set_robot_base_pose(
+        self, base_position: list[float], base_orientation: list[float]
+    ) -> None:
+        if not self._ur10e_mode:
+            return
+        self._ur10e_rmpflow_controller.set_robot_base_pose(base_position, base_orientation)
+
+    def move_cue_slide_stroke(
+        self, backswing_position: float, target_velocity: float
+    ) -> None:
+        self._ur10e_active_controller = self._ur10e_cue_slide_controller
+        self._ur10e_cue_slide_controller.move_stroke(backswing_position, target_velocity)
 
     def _resolve_cue_stick_prim_path(self) -> str | None:
         """
@@ -390,6 +455,13 @@ class ArticulationAPIImpl(ArticulationAPI):
             self.move_to_home()
 
     def move_to_pose(self, position: list[float], orientation: list[float], linear_velocity: list[float] = [0.0, 0.0, 0.0], angular_velocity: list[float] = [0.0, 0.0, 0.0]) -> None:
+        if self._ur10e_mode:
+            # linear_velocity/angular_velocity 沒有對應語意（RMPflow 是
+            # 反應式收斂，不是 feed-forward 速度控制），UR10e 呼叫端
+            # （Ur10eSwingStrategy）不會傳非零值，這裡忽略。
+            self._ur10e_active_controller = self._ur10e_rmpflow_controller
+            self._ur10e_rmpflow_controller.move_to_pose(position, orientation)
+            return
         self.move_through_poses(
             [PoseWaypoint(position=position, orientation=orientation, linear_velocity=linear_velocity, angular_velocity=angular_velocity)]
         )
@@ -1004,6 +1076,10 @@ class ArticulationAPIImpl(ArticulationAPI):
         ])
 
     def move_to_home(self) -> None:
+        if self._ur10e_mode:
+            self._ur10e_active_controller = self._ur10e_rmpflow_controller
+            self._ur10e_rmpflow_controller.move_to_home()
+            return
         self._pending_waypoints = []
         self._awaiting_waypoints_after_joint_motion = False
         if self._default_joint_positions is None or self._home_position is None:
@@ -1050,6 +1126,10 @@ class ArticulationAPIImpl(ArticulationAPI):
         return np.asarray(self._articulation.get_dof_positions())[0].tolist()
 
     def is_motion_complete(self) -> bool:
+        if self._ur10e_mode:
+            if self._ur10e_active_controller is None:
+                return True
+            return self._ur10e_active_controller.is_motion_complete()
         # ⚠️ 2026-08-31（Demo 桌真實 GUI 執行才踩到，diagnose_move_swing.py
         # 這類單執行緒手動迴圈腳本測不出來）：這個方法是外部（ObservationBuilder
         # → 狀態機）唯一查詢「動作是否完成」的入口，跟 `_step_motion()` 內部
@@ -1101,6 +1181,10 @@ class ArticulationAPIImpl(ArticulationAPI):
         return self._is_current_target_converged()
 
     def did_last_motion_timeout(self) -> bool:
+        if self._ur10e_mode:
+            if self._ur10e_active_controller is None:
+                return False
+            return self._ur10e_active_controller.did_last_motion_timeout()
         return self._did_last_motion_timeout
 
     def _is_current_target_converged(self) -> bool:
