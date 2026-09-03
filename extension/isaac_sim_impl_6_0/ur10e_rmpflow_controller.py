@@ -84,7 +84,7 @@ class Ur10eRmpflowController:
     # 很大」的路段（例如目標姿態接近起始姿態的正反面、需要接近 180 度
     # 翻轉）會讓單一 waypoint 內的方向變化量過大，RMPflow 卡住不收斂）。
     # 30 度是保守值，180 度的翻轉至少會拆成 6 段。
-    _MAX_WAYPOINT_ROTATION_RAD = 0.5235987755982988
+    _MAX_WAYPOINT_ROTATION_RAD = 0.5235987755982988  # 30 度
     _POSITION_TOLERANCE_M = 0.005
     _ORIENTATION_TOLERANCE_RAD = 0.02
     _MAX_STEPS_PER_WAYPOINT = 240

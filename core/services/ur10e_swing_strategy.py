@@ -53,6 +53,26 @@ class Ur10eSwingStrategy(RobotSwingStrategy):
         if tilt_rad is None:
             raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
 
+        # ⚠️ 2026-09-03 除錯發現：roll_rad 是球桿繞自身軸的冗餘自由度
+        # （不影響桿頭實際指向或位置），固定用預設 roll_rad=0 算出來的
+        # 姿態，對某些目前姿態（尤其從 HOME 出發的 flat 案例）剛好是最壞
+        # 選擇——跟目前姿態接近正反面，RMPflow 被迫做接近 180 度的姿態
+        # 翻轉，反應式求解容易卡在局部穩定點（實測殘留誤差 0.1-0.6m）。
+        # 改用讓最終姿態盡量貼近目前姿態的 roll_rad
+        # （ur10e_placement_calculator.compute_roll_minimizing_
+        # reorientation()），同一個指向所需的翻轉角度可以大幅縮小（flat
+        # 案例實測從 180 度降到 90 度）。
+        current_orientation = self._articulation_api.get_end_effector_orientation()
+        roll_rad = ur10e_placement_calculator.compute_roll_minimizing_reorientation(
+            cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset,
+            tuple(current_orientation),
+        )
+        wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
+            cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset, roll_rad=roll_rad
+        )
+        if tilt_rad is None:
+            raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
+
         direction_unit = cue_pose_calculator.compute_tilted_direction(action.shot_angle, tilt_rad)
         base_position = ur10e_placement_calculator.compute_base_position(
             tuple(wrist_position), tuple(direction_unit), table_z

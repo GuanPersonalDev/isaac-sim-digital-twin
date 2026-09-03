@@ -50,19 +50,36 @@ class TestUr10eSwingStrategyExecuteAim:
         orientation = (0.998, -0.057, 0.0, 0.0)
         direction = (0.0, -0.985, 0.172)
         base_position = (-0.036, -2.593, 0.0)
+        current_orientation = (1.0, 0.0, 0.0, 0.0)
+        best_roll_rad = 3.14159
+
+        articulation_api.get_end_effector_orientation.return_value = current_orientation
 
         with patch(
             "core.services.ur10e_swing_strategy.cue_pose_calculator.compute_tilted_wrist_pose",
             return_value=(wrist, orientation, 0.1134, None),
-        ), patch(
+        ) as mock_compute_wrist, patch(
             "core.services.ur10e_swing_strategy.cue_pose_calculator.compute_tilted_direction",
             return_value=direction,
         ), patch(
+            "core.services.ur10e_swing_strategy.ur10e_placement_calculator.compute_roll_minimizing_reorientation",
+            return_value=best_roll_rad,
+        ) as mock_compute_roll, patch(
             "core.services.ur10e_swing_strategy.ur10e_placement_calculator.compute_base_position",
             return_value=base_position,
         ) as mock_compute_base:
             strategy.execute_aim(action, cue_ball, TABLE_Z, BALL_RADIUS)
 
+        mock_compute_roll.assert_called_once_with(
+            cue_ball, 12.0, TABLE_Z, BALL_RADIUS, action.position_offset, current_orientation
+        )
+        # roll_rad 是找到最貼近目前姿態的旋轉自由度後，重算一次
+        # compute_tilted_wrist_pose() 套用（見 execute_aim() 除錯註解），
+        # 呼叫兩次：第一次（roll_rad 預設 0）只為了拿 tilt_rad 判斷幾何
+        # 是否有解，第二次才是真正套用 roll_rad 的版本。
+        assert mock_compute_wrist.call_count == 2
+        second_call_kwargs = mock_compute_wrist.call_args_list[1].kwargs
+        assert second_call_kwargs["roll_rad"] == best_roll_rad
         mock_compute_base.assert_called_once_with(wrist, direction, TABLE_Z)
         robot_arm.reposition.assert_called_once_with(base_position)
         articulation_api.set_robot_base_pose.assert_called_once_with(
@@ -70,9 +87,12 @@ class TestUr10eSwingStrategyExecuteAim:
         )
         articulation_api.move_to_pose.assert_called_once_with(list(wrist), list(orientation))
 
-    def test_infeasible_geometry_raises(self, strategy: Ur10eSwingStrategy):
+    def test_infeasible_geometry_raises(
+        self, strategy: Ur10eSwingStrategy, articulation_api: MagicMock
+    ):
         action = _action()
         cue_ball = (0.0, 0.0)
+        articulation_api.get_end_effector_orientation.return_value = (1.0, 0.0, 0.0, 0.0)
 
         with patch(
             "core.services.ur10e_swing_strategy.cue_pose_calculator.compute_tilted_wrist_pose",

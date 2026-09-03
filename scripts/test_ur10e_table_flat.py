@@ -47,13 +47,22 @@ AIM 目標需要接近 180 度的姿態翻轉，會讓 RMPflow 卡在很差的�
 production 本來就是 RESET→AIM，不會從 raw 預設姿態直接跳 AIM）之後，
 殘留誤差降到 0.16m——明顯更好，但仍未達到容許誤差。
 
-具體診斷證據（記錄下來供後續深入研究參考）：逐 waypoint 記錄過六個關節
-角度，flat 案例卡住時 wrist_1_joint 在短短几個 waypoint 內從接近 0 衝到
-超過 -π（-3.5+ rad）才折返，elbow_joint 也在某個 waypoint 之後由遞增
-轉為遞減——這個「先衝過頭、方向反轉、卡住不動」的模式，比較像手臂在
-waypoint 之間的路徑規劃上遇到局部運動學條件不佳的區域（可能接近某種
-奇異點附近，但不是已排除的 wrist_2=0 那個特定奇異點），需要更完整的
-逐步比對 flat／bridge 兩個案例的關節軌跡差異才能定位，留給後續處理。
+具體診斷證據：逐 waypoint 記錄過六個關節角度，flat 案例卡住時
+wrist_1_joint 在短短幾個 waypoint 內從接近 0 衝到超過 -π（-3.5+ rad）
+才折返，elbow_joint 也在某個 waypoint 之後由遞增轉為遞減——這個「先衝
+過頭、方向反轉、卡住不動」的模式，指向手臂被迫做過大的姿態翻轉。
+
+真正找到的根因：cue_pose_calculator.compute_tilted_wrist_pose() 的
+roll_rad（球桿繞自身軸的冗餘自由度，不影響桿頭實際指向）預設用 0（最短
+弧慣例），但這個選擇剛好讓 flat 案例的目標姿態跟 HOME 附近的實際朝向
+接近正反面，需要接近 180 度翻轉。改用
+ur10e_placement_calculator.compute_roll_minimizing_reorientation()
+搜尋讓翻轉角度最小的 roll_rad 後（同一個指向改用另一個滾動角表示），
+所需翻轉角度從 180 度降到 90 度，AIM 殘留誤差從 0.16m（HOME-first 版）
+大幅降到 0.056m——已經是 10 倍以上的改善，但仍未收斂到 1cm 容許值內，
+研判是接近舒適姿態邊界的最後一段路徑本身還有殘留的局部穩定點，需要更
+進一步的策略（例如收斂到接近後改用差動 IK 之類的精確控制器收尾）才能
+完全解決，留給後續處理。
 
 跑法：
     ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \
