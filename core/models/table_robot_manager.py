@@ -19,6 +19,15 @@ class TableRobotManager:
     # Cylinder axis="Y" 與 cue_pose_calculator.py 的 _CUE_LOCAL_AXIS）前後
     # 滑動，跟推桿方向一致。
     _CUE_SLIDE_JOINT_AXIS = "Y"
+    # 新建立的 PrismaticJoint 預設沒有 drive（跟其餘手臂關節不同——那些是
+    # URDF 轉換來的，本來就帶 drive），沒有這組增益 set_dof_position_
+    # targets()/set_dof_velocity_targets() 對這個 DOF 完全沒有作用力，實測
+    # 踩過：關節位置幾秒內飄到 1000+ 公尺外（見
+    # extension/isaac_sim_impl_6_0/ur10e_cue_slide_controller.py 開發過程
+    # 的除錯記錄）。數值刻意選得很寬裕（球桿質量很輕，不會是效能瓶頸）。
+    _CUE_SLIDE_JOINT_DRIVE_STIFFNESS = 1.0e5
+    _CUE_SLIDE_JOINT_DRIVE_DAMPING = 1.0e4
+    _CUE_SLIDE_JOINT_DRIVE_MAX_FORCE = 1.0e6
 
     _ROBOT_OFFSET_FROM_TABLE_CENTER = (1.5, 0.0, 0.0)
 
@@ -51,6 +60,9 @@ class TableRobotManager:
             stage_api.create_prismatic_joint(
                 joint_path, self._cue_stick_prim_path, end_effector_path,
                 axis=self._CUE_SLIDE_JOINT_AXIS,
+                drive_stiffness=self._CUE_SLIDE_JOINT_DRIVE_STIFFNESS,
+                drive_damping=self._CUE_SLIDE_JOINT_DRIVE_DAMPING,
+                drive_max_force=self._CUE_SLIDE_JOINT_DRIVE_MAX_FORCE,
             )
         else:
             joint_path = self._cue_stick_prim_path + "/FixedJointToRobot"

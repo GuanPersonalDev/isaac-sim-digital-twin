@@ -85,6 +85,9 @@ class StageAPI(ABC):
         axis: str = "Y",
         lower_limit: float | None = None,
         upper_limit: float | None = None,
+        drive_stiffness: float = 0.0,
+        drive_damping: float = 0.0,
+        drive_max_force: float = 0.0,
     ) -> None:
         """
         在 joint_path 建立 Prismatic Joint Prim，讓 body0_path 與 body1_path
@@ -95,6 +98,16 @@ class StageAPI(ABC):
 
         lower_limit／upper_limit（單位：公尺，相對兩端初始重合位置的偏移）
         皆為 None 時不設限（PhysX 預設無限制）。
+
+        ⚠️ drive_stiffness／drive_damping／drive_max_force 預設 0 只建立
+        joint 的幾何約束（body0/body1/axis），不會有 PD 驅動——
+        `Articulation.set_dof_position_targets()`/`set_dof_velocity_targets()`
+        對這個 DOF 完全沒有作用力可循（實測踩過：關節位置在幾秒內飄到
+        1000+ 公尺外，`switch_dof_control_mode()` 讀到的「預設增益」本身
+        就是 0）。UR10e 的 CueSlideJoint 是全新建立的 joint（不像其餘手臂
+        關節是從官方 URDF 轉換來的、本來就帶 drive），呼叫端必須明確傳入
+        非零的 drive_stiffness/drive_damping/drive_max_force 才能讓
+        position/velocity 控制生效（見 TableRobotManager 的呼叫端）。
         """
         ...
 

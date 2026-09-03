@@ -307,6 +307,9 @@ class TestTableRobotManagerUr10ePrismaticJoint:
             fixed_joint_paths["cue_stick"],
             fixed_joint_paths["base"] + "/Robot/wrist_3_link",
             axis="Y",
+            drive_stiffness=100000.0,
+            drive_damping=10000.0,
+            drive_max_force=1000000.0,
         )
 
     def test_other_robot_arm_classes_still_create_fixed_joint(

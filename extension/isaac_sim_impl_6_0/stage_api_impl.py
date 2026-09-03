@@ -78,6 +78,9 @@ class StageAPIImpl(StageAPI):
         axis: str = "Y",
         lower_limit: float | None = None,
         upper_limit: float | None = None,
+        drive_stiffness: float = 0.0,
+        drive_damping: float = 0.0,
+        drive_max_force: float = 0.0,
     ) -> None:
         joint = UsdPhysics.PrismaticJoint.Define(self.get_stage(), joint_path)
         joint.CreateBody0Rel().SetTargets([body0_path])
@@ -87,6 +90,19 @@ class StageAPIImpl(StageAPI):
             joint.CreateLowerLimitAttr().Set(lower_limit)
         if upper_limit is not None:
             joint.CreateUpperLimitAttr().Set(upper_limit)
+
+        if drive_stiffness > 0.0 or drive_damping > 0.0:
+            # PrismaticJoint 的單一 DOF drive instance 名稱固定是 "linear"
+            # （對照 RevoluteJoint 用 "angular"，同一組 UsdPhysics.DriveAPI
+            # multi-apply schema）。新建立的 joint 預設完全沒有 drive，
+            # Articulation.set_dof_position_targets()/set_dof_velocity_
+            # targets() 對這個 DOF 不會有任何作用力（見 core/ports/stage_api.py
+            # create_prismatic_joint() 的說明）。
+            drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "linear")
+            drive.CreateTypeAttr().Set("force")
+            drive.CreateStiffnessAttr().Set(drive_stiffness)
+            drive.CreateDampingAttr().Set(drive_damping)
+            drive.CreateMaxForceAttr().Set(drive_max_force)
 
     def align_prim_to_target(self, prim_path: str, target_path: str) -> None:
         prim = self._get_prim(prim_path)
