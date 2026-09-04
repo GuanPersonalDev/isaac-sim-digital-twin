@@ -1,7 +1,12 @@
 import json
+import logging
 import os
 
 import numpy as np
+
+from core.services import ur10e_analytic_ik
+
+logger = logging.getLogger(__name__)
 
 _CONFIG_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "assets", "rmpflow_config", "ur10e_cue", "rmpflow"
@@ -184,11 +189,23 @@ class Ur10eRmpflowController:
         self._finish_steps = 0
         self._finish_target_position: np.ndarray | None = None
         self._finish_target_orientation: np.ndarray | None = None
+        # 收尾用 joint-space 精確目標的狀態（見 _start_finishing_phase()
+        # 2026-09-04 補充）。
+        self._joint_finish_active = False
+        self._joint_finish_target: np.ndarray | None = None
+        self._wrist_gains_boosted_for_finish = False
+        # set_robot_base_pose() 存下來的底座世界座標，供
+        # _compute_analytic_finish_joint_target() 把世界座標目標轉成
+        # ur10e_analytic_ik 需要的「機器人底座座標系」用——假設底座朝向
+        # 固定是單位四元數（見 Ur10eSwingStrategy._BASE_ORIENTATION），
+        # 只需要平移，不需要旋轉。
+        self._base_position: np.ndarray | None = None
 
     def set_robot_base_pose(self, base_position, base_orientation) -> None:
         """告訴 RMPflow 手臂底座目前在世界座標系的實際位姿。"""
+        self._base_position = np.asarray(base_position, dtype=float)
         self._rmp_flow.set_robot_base_pose(
-            np.asarray(base_position, dtype=float),
+            self._base_position,
             np.asarray(base_orientation, dtype=float),
         )
 
@@ -265,6 +282,10 @@ class Ur10eRmpflowController:
         return self._did_last_motion_timeout
 
     def step(self, frame_duration: float) -> None:
+        if self._joint_finish_active:
+            self._step_joint_space_finish()
+            return
+
         if self._finishing_active:
             self._step_finish_ik()
             return
@@ -317,12 +338,232 @@ class Ur10eRmpflowController:
             self._motion_active = False
             return
 
+        # 2026-09-04 補充：優先用 ur10e_analytic_ik 的 closed-form 解算出
+        # 精確關節目標，直接 joint-space 收尾——PhysX position-mode drive
+        # 追蹤固定關節目標的精度已經實測驗證過（tracking gap ~6e-5 rad，
+        # 見 scripts/test_ur10e_table_flat.py 稍早的診斷），不像 Cartesian
+        # 差動 IK 那樣疊代逼近，不會受 Jacobian 在某些姿態附近病態
+        # （運動學奇異點）影響——實測發現差動 IK 收尾在某些姿態會卡在
+        # 0.0294rad 的方向誤差不再收斂，換算成 1.35m 長球桿的桿尖偏移
+        # 超過球半徑，是這個「精確關節收尾」要解決的問題。只有 analytic
+        # IK 真的找不到可達解（理論上不該發生，wrist 目標已經是 RMPflow
+        # 自己收斂過的可達姿態）才退回原本的 Cartesian 差動 IK 當保底。
+        joint_target = self._compute_analytic_finish_joint_target(target_position, target_orientation)
+        if joint_target is not None:
+            self._boost_wrist_gains_for_finish_once()
+            self._joint_finish_target = joint_target
+            self._joint_finish_active = True
+            self._finish_steps = 0
+            return
+
+        logger.warning(
+            "analytic IK 找不到可達解，退回 Cartesian 差動 IK 收尾（見 "
+            "_compute_analytic_finish_joint_target() 說明，理論上不該發生）"
+        )
         self._finish_target_position = target_position
         self._finish_target_orientation = target_orientation
         if self._jac_link_index is None:
             self._jac_link_index = self._resolve_jacobian_link_index()
         self._finishing_active = True
         self._finish_steps = 0
+
+    def _compute_analytic_finish_joint_target(
+        self, target_position: np.ndarray, target_orientation: np.ndarray
+    ) -> np.ndarray | None:
+        """把世界座標的 wrist 目標轉成 ur10e_analytic_ik 需要的機器人底座
+        座標系，解出所有可達的 closed-form 關節解，回傳跟目前實際關節
+        角度差距（wrap 到 ±π 後取最大分量）最小的一組——這組解在關節空間
+        裡離目前姿態最近，最貼近 RMPflow 自己會收斂到的那個分支，走
+        joint-space 直接過去只是「走完最後一小段」，不是憑空跳到任意
+        姿態。`_base_position` 還沒設定（理論上不該發生，AIM 呼叫前一定
+        會先 set_robot_base_pose()）或 analytic IK 找不到可達解時回傳
+        None，呼叫端負責退回差動 IK。"""
+        if self._base_position is None:
+            return None
+
+        position_in_base = target_position - self._base_position
+        rotation_matrix = ur10e_analytic_ik.quat_wxyz_to_rotation_matrix(target_orientation)
+        dh_position, dh_rotation = ur10e_analytic_ik.isaac_to_dh_frame(position_in_base, rotation_matrix)
+        solutions = ur10e_analytic_ik.inverse_kinematics(dh_position, dh_rotation)
+        if not solutions:
+            return None
+
+        current_positions = np.asarray(self._articulation.get_dof_positions())[0]
+        current_active_positions = current_positions[self._active_dof_indices]
+
+        def _wrapped_diff(solution: np.ndarray) -> np.ndarray:
+            return np.mod(solution - current_active_positions + np.pi, 2.0 * np.pi) - np.pi
+
+        best_solution = min(solutions, key=lambda s: float(np.max(np.abs(_wrapped_diff(s)))))
+
+        if os.environ.get("DEBUG_UR10E_FINISH_IK"):
+            check_position, check_rotation = ur10e_analytic_ik.forward_kinematics(best_solution)
+            check_position_isaac, check_rotation_isaac = ur10e_analytic_ik.dh_to_isaac_frame(
+                check_position, check_rotation
+            )
+            position_check_error = float(np.linalg.norm(check_position_isaac - position_in_base))
+            rotation_check_error = float(np.max(np.abs(check_rotation_isaac - rotation_matrix)))
+            print(
+                f"[analytic_finish] n_solutions={len(solutions)} best_solution={best_solution.tolist()} "
+                f"FK驗證：position_check_error={position_check_error:.6f}m rotation_check_error={rotation_check_error:.6f}",
+                flush=True,
+            )
+
+        # ⚠️ 2026-09-04 除錯記錄：只挑「wrap 後距離最近」的解還不夠——
+        # UR 關節範圍是 ±2π（連續旋轉，不是 ±π 就繞回來），analytic IK
+        # 解出來的原始數值（arctan2/arccos 的值域大約落在 [-π,π]）可能
+        # 跟目前實際關節角相差了一整圈但「等效角度」很近（例如目前關節
+        # 角實際存的是 4.5 rad，解析解算出等效的 -1.78 rad，wrap 後距離
+        # 很近，但兩個原始數值差了快 2π）。PhysX 的 position-mode drive
+        # 不會自動幫關節抄近路，只會照 set_dof_position_targets() 給的
+        # 原始數值直接追——實測踩過：joint_space_finish 240 步還收斂不了
+        # （最大誤差 0.033rad），懷疑就是走了遠路。這裡把每個關節分量都
+        # 平移成「離目前實際角度最近的等效角度」再回傳，讓 drive 真的走
+        # 最短路徑。
+        return current_active_positions + _wrapped_diff(best_solution)
+
+    _WRIST_GAIN_BOOST_JOINT_NAME_SUBSTRINGS = ("wrist_1", "wrist_3")
+    _WRIST_GAIN_STIFFNESS = 1e6
+    _WRIST_GAIN_DAMPING = 1e4
+    _WRIST_GAIN_MAX_EFFORT_MULTIPLIER = 20.0
+    """⚠️ 2026-09-04 除錯記錄：一開始照抄 ArticulationAPIImpl.
+    _boost_wrist_gains_for_cue_stick_load()（UR3e 驗證過的同一組常數，
+    stiffness=1e15/damping=1e5），結果 wrist_1_joint 在 joint-space 收尾
+    完全卡住不動（240 步、1120N·m 飽和力矩幾乎無效）。逐一排除碰撞（全
+    連桿 contact reporting 確認零接觸）、關節極限（差六圈以上）、drive
+    type（確認是 "force"，不是 "none"）、gains 寫入沒生效（讀原始碼確認
+    update_default_gains 預設 True，boost 有正確持續生效）之後，靠 A/B
+    對照測試（verify_ur10e_arm_table_collision.py 的
+    DEBUG_WRIST_GAIN_STIFFNESS/_DAMPING 環境變數覆寫）發現：wrist_1_joint
+    原始 baked stiffness 只有約 72,662，1e15 是這個值的一百多億倍，跟同一
+    條運動鏈上其他關節（例如 CueSlideJoint 的 max_effort=1e6）的量級差距
+    過大，讓 PhysX 的 TGS 迭代求解器對這個最僵硬的關節反而欠收斂——數值
+    上病態，不是真的「增益不夠」。改成 1e6/1e4（約為原始值的 14 倍，遠比
+    UR3e 那組「1e15/1e5」溫和）之後，實測 2 個 physics tick 就收斂
+    （joint_error 從 0.033rad 降到 0.0096rad，容許值 0.02rad）。UR3e 跟
+    UR10e 兩邊的下游負載結構不同，同一組「越硬越好」的增益常數不能直接
+    照搬，這是這次除錯的教訓。"""
+
+    def _boost_wrist_gains_for_finish_once(self) -> None:
+        """2026-09-04 除錯記錄：joint-space 收尾（_step_joint_space_finish()）
+        第一版只加了重力補償力矩前饋，逐 tick log 顯示 wrist_1_joint 幾乎
+        沒有改善，仍然穩定卡在離目標 0.033rad 的地方——代表問題不只是
+        重力矩本身，是預設 PD 增益（stiffness/damping/max_effort）對這個
+        負載來說太軟，不管有沒有額外的重力補償力矩，stiffness 項都不夠
+        力氣把殘留誤差壓到收斂容許值內。改用跟 ArticulationAPIImpl.
+        _boost_wrist_gains_for_cue_stick_load()（UR3e 上驗證過的同一個
+        問題／同一個修法）完全相同的增益數值。
+
+        故意只在真的要進入 joint-space 收尾時才呼叫（第一次呼叫後用
+        `_wrist_gains_boosted_for_finish` 擋掉後續重複呼叫），刻意不放進
+        `__init__()` 對整個 AIM 過程常駐生效——RMPflow 自己的 waypoint
+        chain 階段（`_step_rmpflow()`）已經實測驗證過用預設增益就能正常
+        收斂（每 tick 重新給貼近目前值的新目標，等於變相用位置追蹤模擬
+        速度追蹤，沒有這個穩態下垂問題），套用未驗證過的高增益去干擾
+        那段是沒必要的新變因。
+        """
+        if self._wrist_gains_boosted_for_finish:
+            return
+        self._wrist_gains_boosted_for_finish = True
+
+        dof_names = list(self._articulation.dof_names)
+        target_indices = [
+            i for i, name in enumerate(dof_names)
+            if any(sub in name.lower() for sub in self._WRIST_GAIN_BOOST_JOINT_NAME_SUBSTRINGS)
+        ]
+        if not target_indices:
+            return
+
+        stiffnesses, dampings = self._articulation.get_dof_gains()
+        stiffnesses = np.asarray(stiffnesses.numpy() if hasattr(stiffnesses, "numpy") else stiffnesses, dtype=float)
+        dampings = np.asarray(dampings.numpy() if hasattr(dampings, "numpy") else dampings, dtype=float)
+        max_efforts = np.asarray(
+            self._articulation.get_dof_max_efforts().numpy()
+            if hasattr(self._articulation.get_dof_max_efforts(), "numpy")
+            else self._articulation.get_dof_max_efforts(),
+            dtype=float,
+        )
+        if stiffnesses.ndim == 2:
+            stiffnesses, dampings, max_efforts = stiffnesses[0], dampings[0], max_efforts[0]
+
+        for idx in target_indices:
+            stiffnesses[idx] = self._WRIST_GAIN_STIFFNESS
+            dampings[idx] = self._WRIST_GAIN_DAMPING
+            max_efforts[idx] = max_efforts[idx] * self._WRIST_GAIN_MAX_EFFORT_MULTIPLIER
+
+        logger.info(
+            "ur10e joint-space finish wrist gain boost: joint indices=%s new_max_efforts=%s",
+            target_indices, [max_efforts[i] for i in target_indices],
+        )
+        self._articulation.set_dof_gains(stiffnesses[None, :], dampings[None, :])
+        self._articulation.set_dof_max_efforts(max_efforts[None, :])
+
+    def _step_joint_space_finish(self) -> None:
+        """把 `_compute_analytic_finish_joint_target()` 算出的精確關節角
+        當 joint-space 目標，交給 PhysX 關節驅動器自己插值到位——跟
+        `ArticulationAPIImpl._start_joint_space_motion()`（WAM7/UR3e 的
+        joint-space 移動）同一個精神：起點離目標很近，不需要（也不適合）
+        再跑一次差動 IK。收斂判定看六個關節角度是不是都進到
+        `_POSITION_TOLERANCE_M` 換算的容許值內——這裡直接沿用弧度制
+        `_ORIENTATION_TOLERANCE_RAD` 當關節角度容許值，量級相符（都是
+        「小角度」等級的收斂判定）。"""
+        full_position_targets = np.asarray(self._articulation.get_dof_positions())[0].copy()
+        full_position_targets[self._active_dof_indices] = self._joint_finish_target
+        self._articulation.switch_dof_control_mode("position")
+        self._articulation.set_dof_position_targets(full_position_targets[None, :])
+
+        if os.environ.get("DEBUG_UR10E_FINISH_IK") and self._finish_steps == 0:
+            stiffnesses, dampings = self._articulation.get_dof_gains()
+            stiffnesses = np.asarray(stiffnesses.numpy() if hasattr(stiffnesses, "numpy") else stiffnesses, dtype=float)
+            dampings = np.asarray(dampings.numpy() if hasattr(dampings, "numpy") else dampings, dtype=float)
+            max_efforts = self._articulation.get_dof_max_efforts()
+            max_efforts = np.asarray(max_efforts.numpy() if hasattr(max_efforts, "numpy") else max_efforts, dtype=float)
+            print(
+                f"[joint_space_finish DIAG] 剛套用 position target 之後讀回的 gains："
+                f"stiffness={stiffnesses.tolist()} damping={dampings.tolist()} max_effort={max_efforts.tolist()}",
+                flush=True,
+            )
+        # ⚠️ 2026-09-04 除錯記錄：第一版沒加重力補償，逐 tick log 顯示
+        # wrist_1_joint 穩定卡在離目標 0.033rad 的地方完全不動（其餘 5 個
+        # 關節都準確追到 1e-4rad 等級）——這正是 ArticulationAPIImpl.
+        # _boost_wrist_gains_for_cue_stick_load() 修過的同一類問題（球桿
+        # 透過 CueSlideJoint 掛在 wrist_3_link 之後的槓桿臂重力力矩，超過
+        # wrist_1/wrist_3 預設 PD 增益能扛住的範圍，position-mode 下穩定
+        # 卡在「stiffness×殘留誤差＝重力力矩」的平衡點）。UR10e 的
+        # _step_rmpflow() 之所以沒踩到，是因為 RMPflow 每個 tick 都重新
+        # 給一個貼近目前值的新目標，等於變相用位置追蹤模擬速度追蹤，
+        # 掩蓋了這個穩態誤差；這裡是固定目標長時間 hold，穩態下垂才會
+        # 顯現。加上重力補償力矩前饋（跟 _step_strike()／差動 IK 收尾
+        # 同一個做法），讓 stiffness 項只需要修正真正的追蹤誤差，不用
+        # 同時對抗重力。
+        gravity_compensation_forces = self._articulation.get_dof_gravity_compensation_forces()
+        self._articulation.set_dof_efforts(gravity_compensation_forces)
+
+        self._finish_steps += 1
+        current_positions = np.asarray(self._articulation.get_dof_positions())[0]
+        current_active_positions = current_positions[self._active_dof_indices]
+        joint_error = float(np.max(np.abs(current_active_positions - self._joint_finish_target)))
+        converged = joint_error <= self._ORIENTATION_TOLERANCE_RAD
+        timed_out = self._finish_steps >= self._FINISH_MAX_STEPS
+
+        if os.environ.get("DEBUG_UR10E_FINISH_IK"):
+            print(
+                f"[joint_space_finish] step={self._finish_steps} joint_error={joint_error:.5f}rad "
+                f"current={current_active_positions.tolist()} target={self._joint_finish_target.tolist()}",
+                flush=True,
+            )
+
+        if not (converged or timed_out):
+            return
+
+        if not converged:
+            logger.warning(
+                "joint_space_finish 逾時未收斂（%d 步）：關節角最大誤差=%.5frad（容許%.5frad）",
+                self._finish_steps, joint_error, self._ORIENTATION_TOLERANCE_RAD,
+            )
+        self._did_last_motion_timeout = not converged
+        self._joint_finish_active = False
+        self._motion_active = False
 
     def _resolve_jacobian_link_index(self) -> int:
         """跟 ArticulationAPIImpl._resolve_end_effector_jacobian_index()
@@ -359,11 +600,41 @@ class Ur10eRmpflowController:
         live_position = np.asarray(live_position[0], dtype=float)
         live_orientation = np.asarray(live_orientation[0], dtype=float)
 
-        converged = self._is_pose_converged(
+        position_error, orientation_error = self._pose_error_components(
             live_position, live_orientation, self._finish_target_position, self._finish_target_orientation
         )
+        position_ok = position_error <= self._POSITION_TOLERANCE_M
+        orientation_ok = orientation_error <= self._ORIENTATION_TOLERANCE_RAD
+        converged = position_ok and orientation_ok
+
+        # 2026-09-04 補充：逐 tick 記錄位置/方向誤差的收斂趨勢（收斂中/
+        # 卡住不動/來回震盪），只在 DEBUG_UR10E_FINISH_IK 環境變數開啟時
+        # 印出，避免正常執行時洗版——用法跟既有 DEBUG_MOVE_SWING 慣例一致
+        # （見 ArticulationAPIImpl.move_swing()）。
+        if os.environ.get("DEBUG_UR10E_FINISH_IK"):
+            print(
+                f"[finish_ik] step={self._finish_steps} "
+                f"position_error={position_error:.5f}m(ok={position_ok}) "
+                f"orientation_error={orientation_error:.5f}rad(ok={orientation_ok})",
+                flush=True,
+            )
+
         self._finish_steps += 1
         if converged or self._finish_steps >= self._FINISH_MAX_STEPS:
+            if not converged:
+                # 逾時未收斂——明確記錄是位置、方向、還是兩者都沒到容許值
+                # 內，不要只留一個「did_last_motion_timeout=True」的布林值。
+                # 見 _pose_error_components() docstring：AIM 單看位置誤差
+                # 曾經誤判為「已收斂」，但方向誤差沒收斂會被 1.35m 長的
+                # 球桿放大成數公分等級的桿尖偏移，讓 STRIKE 完全打不到球。
+                logger.warning(
+                    "finish_ik 逾時未收斂（%d 步）：position_error=%.5fm（容許%.5fm，%s）"
+                    " orientation_error=%.5frad（容許%.5frad，%s）",
+                    self._finish_steps, position_error, self._POSITION_TOLERANCE_M,
+                    "OK" if position_ok else "未達標",
+                    orientation_error, self._ORIENTATION_TOLERANCE_RAD,
+                    "OK" if orientation_ok else "未達標",
+                )
             # ⚠️ 2026-09-04 除錯記錄：第一版在這裡直接 return，沒有歸零
             # velocity target——velocity-mode drive 會持續套用「上一次」
             # 下達的非零角速度指令，直到有新指令覆寫為止。收斂判定成立的
@@ -405,16 +676,34 @@ class Ur10eRmpflowController:
         gravity_compensation_forces = self._articulation.get_dof_gravity_compensation_forces()
         self._articulation.set_dof_efforts(gravity_compensation_forces)
 
+    @staticmethod
+    def _pose_error_components(
+        live_position: np.ndarray, live_orientation: np.ndarray,
+        target_position: np.ndarray, target_orientation: np.ndarray,
+    ) -> tuple[float, float]:
+        """回傳 (position_error_m, orientation_error_rad)——拆成兩個獨立
+        分量，供 `_is_pose_converged()`／`_step_finish_ik()` 共用，也讓
+        逾時當下能明確記錄「是哪一項沒收斂」（見 2026-09-04 除錯記錄：
+        `scripts/test_ur10e_table_flat.py` 的桿尖-母球距離診斷發現，AIM
+        單看位置誤差「看起來合格」，實際上是方向誤差沒收斂，被 1.35m 長
+        的球桿槓桿放大成 4cm+ 的桿尖偏移——只回報一個布林值「有沒有收斂」
+        看不出是哪個分量出問題）。"""
+        position_error = float(np.linalg.norm(live_position - target_position))
+        dot = float(np.clip(np.abs(np.dot(live_orientation, target_orientation)), -1.0, 1.0))
+        orientation_error = 2.0 * np.arccos(dot)
+        return position_error, orientation_error
+
     def _is_pose_converged(
         self, live_position: np.ndarray, live_orientation: np.ndarray,
         target_position: np.ndarray, target_orientation: np.ndarray,
     ) -> bool:
-        position_error = float(np.linalg.norm(live_position - target_position))
-        if position_error > self._POSITION_TOLERANCE_M:
-            return False
-        dot = float(np.clip(np.abs(np.dot(live_orientation, target_orientation)), -1.0, 1.0))
-        orientation_error = 2.0 * np.arccos(dot)
-        return orientation_error <= self._ORIENTATION_TOLERANCE_RAD
+        position_error, orientation_error = self._pose_error_components(
+            live_position, live_orientation, target_position, target_orientation
+        )
+        return (
+            position_error <= self._POSITION_TOLERANCE_M
+            and orientation_error <= self._ORIENTATION_TOLERANCE_RAD
+        )
 
     def _activate_current_waypoint(self) -> None:
         position, orientation = self._waypoints[self._waypoint_index]

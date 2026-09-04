@@ -53,30 +53,37 @@ class Ur10eSwingStrategy(RobotSwingStrategy):
         if tilt_rad is None:
             raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
 
-        # ⚠️ 2026-09-03 除錯發現：roll_rad 是球桿繞自身軸的冗餘自由度
-        # （不影響桿頭實際指向或位置），固定用預設 roll_rad=0 算出來的
-        # 姿態，對某些目前姿態（尤其從 HOME 出發的 flat 案例）剛好是最壞
-        # 選擇——跟目前姿態接近正反面，RMPflow 被迫做接近 180 度的姿態
-        # 翻轉，反應式求解容易卡在局部穩定點（實測殘留誤差 0.1-0.6m）。
-        # 改用讓最終姿態盡量貼近目前姿態的 roll_rad
-        # （ur10e_placement_calculator.compute_roll_minimizing_
-        # reorientation()），同一個指向所需的翻轉角度可以大幅縮小（flat
-        # 案例實測從 180 度降到 90 度）。
+        # base_position 只由 wrist 位置／方向決定，roll_rad（球桿繞自身軸
+        # 的冗餘自由度）不影響位置，因此可以在搜尋 roll_rad 之前先算好、
+        # 傳給下面的搜尋函式用——不用等 roll_rad 決定之後才算，也不用為了
+        # 搜尋而重算好幾次。
+        direction_unit = cue_pose_calculator.compute_tilted_direction(action.shot_angle, tilt_rad)
+        base_position = ur10e_placement_calculator.compute_base_position(
+            tuple(wrist_position), tuple(direction_unit), table_z
+        )
+
+        # ⚠️ 2026-09-03 除錯發現、2026-09-04 補強：roll_rad 是球桿繞自身軸
+        # 的冗餘自由度（不影響桿頭實際指向或位置），固定用預設 roll_rad=0
+        # 算出來的姿態，對某些目前姿態（尤其從 HOME 出發的 flat 案例）剛好
+        # 是最壞選擇——跟目前姿態接近正反面，RMPflow 被迫做接近 180 度的
+        # 姿態翻轉，反應式求解容易卡在局部穩定點（實測殘留誤差
+        # 0.1-0.6m）。單純改成「翻轉角度最小」還不夠——找到的姿態可能剛好
+        # 逼近 UR10e 手腕的運動學奇異點（實測：flat 案例卡在方向誤差
+        # 0.0294 rad 不再收斂，換算成桿尖偏移超過球半徑，STRIKE 完全打不
+        # 到球），改用 compute_roll_minimizing_reorientation() 搜尋「翻轉
+        # 角度最小、且離奇異點夠遠」的 roll_rad（見該函式 2026-09-04 補充：
+        # 用 ur10e_analytic_ik 的 closed-form 逆向運動學直接評估每個候選
+        # 離奇異點多遠）。
         current_orientation = self._articulation_api.get_end_effector_orientation()
         roll_rad = ur10e_placement_calculator.compute_roll_minimizing_reorientation(
             cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset,
-            tuple(current_orientation),
+            tuple(current_orientation), base_position,
         )
         wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
             cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset, roll_rad=roll_rad
         )
         if tilt_rad is None:
             raise ValueError("幾何無解（即使垂直抬高也無法閃避庫邊）")
-
-        direction_unit = cue_pose_calculator.compute_tilted_direction(action.shot_angle, tilt_rad)
-        base_position = ur10e_placement_calculator.compute_base_position(
-            tuple(wrist_position), tuple(direction_unit), table_z
-        )
 
         self._robot_arm.reposition(base_position)
         # reposition() 只搬動 USD prim，RMPflow 的內部運動學模型需要另外

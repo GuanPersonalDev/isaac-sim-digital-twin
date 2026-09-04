@@ -88,9 +88,10 @@ class TestComputeRollMinimizingReorientation:
             -0.00024397906963713467, 0.0003263941325712949,
             0.7071066498756409, 0.7071066498756409,
         )
+        base_position = (0.0, -1.35, 0.0)
 
         roll_rad = ur10e_placement_calculator.compute_roll_minimizing_reorientation(
-            cue_ball, shot_angle_deg, table_z, ball_radius, [0.0, 0.0], current_orientation
+            cue_ball, shot_angle_deg, table_z, ball_radius, [0.0, 0.0], current_orientation, base_position
         )
 
         assert roll_rad == pytest.approx(np.pi, abs=np.radians(5.0))
@@ -106,6 +107,7 @@ class TestComputeRollMinimizingReorientation:
         current_orientation = tuple(
             np.asarray(current_orientation) / np.linalg.norm(current_orientation)
         )
+        base_position = (0.0, -1.35, 0.0)
 
         def _angle_for_roll(roll_rad: float) -> float:
             _, orientation, _, _ = cue_pose_calculator.compute_tilted_wrist_pose(
@@ -115,7 +117,7 @@ class TestComputeRollMinimizingReorientation:
             return 2.0 * np.arccos(dot)
 
         roll_rad = ur10e_placement_calculator.compute_roll_minimizing_reorientation(
-            cue_ball, shot_angle_deg, table_z, ball_radius, [0.0, 0.0], current_orientation
+            cue_ball, shot_angle_deg, table_z, ball_radius, [0.0, 0.0], current_orientation, base_position
         )
 
         assert _angle_for_roll(roll_rad) <= _angle_for_roll(0.0) + 1e-6

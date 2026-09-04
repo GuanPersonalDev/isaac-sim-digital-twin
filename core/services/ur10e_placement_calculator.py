@@ -1,6 +1,10 @@
+import logging
+
 import numpy as np
 
-from . import cue_pose_calculator
+from . import cue_pose_calculator, ur10e_analytic_ik
+
+logger = logging.getLogger(__name__)
 
 _BASE_STANDOFF_M = 0.5
 """UR10e 基座沿擊球方向水平反方向、從 wrist 目標退開的距離。
@@ -63,7 +67,41 @@ quat() 的預設「最短弧」慣例）算出來的姿態，對某些起始姿�
 盡量接近目前姿態的 roll_rad，同一個指向可以只需要小得多的翻轉角度
 （實測：flat 案例從 180 度降到 90 度）。這個函式搜尋讓翻轉角度最小化的
 roll_rad。
+
+⚠️ 2026-09-04 補充：只用「翻轉角度最小」當唯一準則，找到的 roll_rad
+可能剛好逼近 UR10e 手腕的運動學奇異點（實測：flat 案例最終姿態卡在
+wrist_2≈1.70 rad 附近的差動 IK 收尾，方向誤差穩定卡在 0.0294 rad
+（容許值 0.02 rad）不再收斂，換算成桿尖偏移超過球半徑，STRIKE 完全打不
+到球——這是 DLS 類疊代方法在奇異點附近精度/穩定性互相拖累的已知結構性
+限制，不是加大步數/調參能解決的）。改成用 `core/services/
+ur10e_analytic_ik.py` 的 UR10e closed-form 逆向運動學，直接算出每個候選
+roll_rad 對應姿態的實際可達關節解，用 `wrist_singularity_margin()` 篩掉
+太靠近奇異點的候選，只在「安全」的候選裡挑翻轉角度最小的——不再是盲目
+只看翻轉角度，這樣選出來的目標姿態本身就遠離奇異點，RMPflow／差動 IK
+收尾自然不會卡住（"避開奇異點"比"卡住後想辦法補救"更直接）。
 """
+
+_WRIST_SINGULARITY_MARGIN_THRESHOLD = 0.3
+"""`ur10e_analytic_ik.wrist_singularity_margin()` 的安全門檻——對應
+wrist_2 離 0/π 至少約 17.5 度，留了不小的餘裕，不是卡在剛好過門檻的邊緣。
+搜尋 roll_rad 時只在候選解的 margin 超過這個值才視為「安全」。"""
+
+
+def _best_wrist_singularity_margin(
+    wrist_position_in_base: np.ndarray, wrist_orientation_wxyz: np.ndarray,
+) -> float:
+    """回傳這個 wrist 目標位姿（機器人底座座標系）在 UR10e 幾何下，所有
+    可達 closed-form 解析解分支裡 manipulability margin 最好的那個值——
+    不管實際會落在哪個分支，只要存在一個安全的分支，就代表這個目標本身
+    不是結構性卡死在奇異點上（目標本身不可達，回傳 0.0，視同不安全）。"""
+    rotation_matrix = ur10e_analytic_ik.quat_wxyz_to_rotation_matrix(wrist_orientation_wxyz)
+    dh_position, dh_rotation = ur10e_analytic_ik.isaac_to_dh_frame(
+        np.asarray(wrist_position_in_base, dtype=float), rotation_matrix
+    )
+    solutions = ur10e_analytic_ik.inverse_kinematics(dh_position, dh_rotation)
+    if not solutions:
+        return 0.0
+    return max(ur10e_analytic_ik.wrist_singularity_margin(solution) for solution in solutions)
 
 
 def compute_roll_minimizing_reorientation(
@@ -73,24 +111,35 @@ def compute_roll_minimizing_reorientation(
     ball_radius: float,
     position_offset: list[float],
     current_orientation: tuple[float, float, float, float],
+    base_position: tuple[float, float, float],
 ) -> float:
-    """搜尋讓 wrist 目標姿態跟 current_orientation 之間旋轉角度最小的
-    roll_rad（見模組說明的除錯發現）。純數學搜尋，不需要模擬，對每個
-    候選 roll_rad 呼叫 cue_pose_calculator.compute_tilted_wrist_pose()
-    算出對應姿態，比較跟 current_orientation 的四元數夾角，回傳最小的
-    那一個。
+    """搜尋讓 wrist 目標姿態跟 current_orientation 之間旋轉角度最小、且
+    遠離 UR10e 手腕奇異點的 roll_rad（見模組說明的除錯發現）。純數學
+    搜尋，不需要模擬，對每個候選 roll_rad 呼叫 cue_pose_calculator.
+    compute_tilted_wrist_pose() 算出對應姿態，比較跟 current_orientation
+    的四元數夾角，並用 ur10e_analytic_ik 算出實際可達關節解評估離奇異點
+    多遠，在「安全」的候選裡挑夾角最小的。
 
     current_orientation: [qw, qx, qy, qz]，通常是手臂目前（AIM 前，例如
     RESET 後的 HOME）的實際末端朝向。
+    base_position: 機器人底座目前的世界座標（`compute_base_position()`
+    算出來的值）——wrist 目標本身不受 roll_rad 影響，呼叫端應該在搜尋前
+    就先算好、傳進來，不用每個候選都重算一次。用來把 wrist 目標從世界
+    座標轉成 `ur10e_analytic_ik` 需要的機器人底座座標系（機器人底座朝向
+    固定是單位四元數，見 Ur10eSwingStrategy._BASE_ORIENTATION，所以只需要
+    平移，不需要旋轉）。
     """
     current_orientation_arr = np.asarray(current_orientation, dtype=float)
+    base_position_arr = np.asarray(base_position, dtype=float)
 
     best_roll_rad = 0.0
     best_dot = -1.0
+    best_safe_roll_rad = None
+    best_safe_dot = -1.0
     num_candidates = int(round(360.0 / _ROLL_SEARCH_STEP_DEG))
     for i in range(num_candidates):
         roll_rad = np.radians(i * _ROLL_SEARCH_STEP_DEG)
-        _, orientation, tilt_rad, _ = cue_pose_calculator.compute_tilted_wrist_pose(
+        wrist_position, orientation, tilt_rad, _ = cue_pose_calculator.compute_tilted_wrist_pose(
             cue_ball, shot_angle_deg, table_z, ball_radius, position_offset, roll_rad=roll_rad
         )
         if orientation is None:
@@ -100,4 +149,20 @@ def compute_roll_minimizing_reorientation(
             best_dot = dot
             best_roll_rad = roll_rad
 
+        margin = _best_wrist_singularity_margin(
+            np.asarray(wrist_position, dtype=float) - base_position_arr, orientation
+        )
+        if margin >= _WRIST_SINGULARITY_MARGIN_THRESHOLD and dot > best_safe_dot:
+            best_safe_dot = dot
+            best_safe_roll_rad = roll_rad
+
+    if best_safe_roll_rad is not None:
+        return best_safe_roll_rad
+
+    logger.warning(
+        "compute_roll_minimizing_reorientation：360 度網格內找不到 wrist_singularity_margin "
+        ">= %.2f 的安全候選，退回只看翻轉角度最小的舊準則（roll_rad=%.4f），"
+        "這個 AIM 目標可能結構性地逼近奇異點，建議另外檢查 cue_ball=%s shot_angle_deg=%.2f",
+        _WRIST_SINGULARITY_MARGIN_THRESHOLD, best_roll_rad, cue_ball, shot_angle_deg,
+    )
     return best_roll_rad

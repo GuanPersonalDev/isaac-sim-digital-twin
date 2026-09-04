@@ -71,7 +71,7 @@ class TestUr10eSwingStrategyExecuteAim:
             strategy.execute_aim(action, cue_ball, TABLE_Z, BALL_RADIUS)
 
         mock_compute_roll.assert_called_once_with(
-            cue_ball, 12.0, TABLE_Z, BALL_RADIUS, action.position_offset, current_orientation
+            cue_ball, 12.0, TABLE_Z, BALL_RADIUS, action.position_offset, current_orientation, base_position
         )
         # roll_rad 是找到最貼近目前姿態的旋轉自由度後，重算一次
         # compute_tilted_wrist_pose() 套用（見 execute_aim() 除錯註解），

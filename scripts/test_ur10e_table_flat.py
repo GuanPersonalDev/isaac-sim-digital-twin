@@ -90,7 +90,7 @@ def _run() -> None:
     import numpy as np
     import omni.usd
     import omni.timeline
-    from pxr import UsdPhysics, Sdf, Usd
+    from pxr import UsdPhysics, Sdf, Usd, UsdGeom
 
     from isaac_sim_impl_6_0.stage_api_impl import StageAPIImpl
     from isaac_sim_impl_6_0.material_api_impl import MaterialAPIImpl
@@ -103,8 +103,37 @@ def _run() -> None:
     from core.models.table_robot_manager import TableRobotManager
     from core.models.ur10e_robot import UR10eRobot
     from core.services import cue_pose_calculator, swing_trajectory_calculator
+    from core.services.base_placement_calculator import CUE_STICK_GRIP_TO_TIP
     from core.services.ur10e_swing_strategy import Ur10eSwingStrategy
     from isaacsim.core.experimental.prims import RigidPrim
+
+    def _compute_bbox_tip_local_offset(stage, prim_path: str) -> np.ndarray:
+        """跟 ArticulationAPIImpl._compute_tip_local_offset() 同一套邏輯：
+        讀 prim 自己的 local bounding box，沿最長軸找「離原點最遠那一端」
+        當尖端局部座標——直接量 CueStick 本身的真實幾何尖端，不透過
+        CUE_STICK_GRIP_TO_TIP 假設值，用來交叉驗證那個常數對不對得上
+        UR10e 實際掛接的桿身幾何（見本檔案 STRIKE 診斷）。"""
+        prim = stage.GetPrimAtPath(prim_path)
+        bbox_cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]
+        )
+        local_range = bbox_cache.ComputeUntransformedBound(prim).ComputeAlignedRange()
+        min_pt = np.array(local_range.GetMin())
+        max_pt = np.array(local_range.GetMax())
+        if np.any(min_pt > max_pt):
+            return np.zeros(3)
+        axis_index = int(np.argmax(max_pt - min_pt))
+        tip_local = np.zeros(3)
+        tip_local[axis_index] = (
+            max_pt[axis_index] if abs(max_pt[axis_index]) > abs(min_pt[axis_index]) else min_pt[axis_index]
+        )
+        return tip_local
+
+    def _rotate_vector_by_quat(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
+        w = quat_wxyz[0]
+        q_xyz = quat_wxyz[1:]
+        t = 2.0 * np.cross(q_xyz, vec)
+        return vec + w * t + np.cross(q_xyz, t)
 
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath("/PhysicsScene").IsValid():
@@ -173,6 +202,10 @@ def _run() -> None:
     sys.stdout.flush()
 
     ball_rigid_prim = RigidPrim(paths=ball_prim_path)
+    cue_stick_rigid_prim = RigidPrim(paths=cue_stick_prim_path)
+    cue_tip_bbox_local_offset = _compute_bbox_tip_local_offset(stage, cue_stick_prim_path)
+    print(f"[flat] CueStick bbox 量測尖端局部座標={cue_tip_bbox_local_offset.tolist()}"
+          f"（跟 CUE_STICK_GRIP_TO_TIP={CUE_STICK_GRIP_TO_TIP} 沿 +Y 的假設值比較用）")
 
     contacts = []
     physics_api.enable_contact_reporting(cue_stick_prim_path)
@@ -187,6 +220,21 @@ def _run() -> None:
         cue_ball_placement=list(_CUE_BALL),
         should_execute_action=True,
     )
+
+    def _measure_tip_to_ball():
+        """回傳 (tip_world, ball_world, distance)——桿尖世界座標用 bbox
+        量測到的真實幾何尖端（見 _compute_bbox_tip_local_offset()），不是
+        CUE_STICK_GRIP_TO_TIP 假設值。"""
+        cue_position, cue_orientation = cue_stick_rigid_prim.get_world_poses()
+        cue_position = np.asarray(cue_position[0], dtype=float)
+        cue_orientation = np.asarray(cue_orientation[0], dtype=float)
+        tip_world = cue_position + _rotate_vector_by_quat(cue_orientation, cue_tip_bbox_local_offset)
+
+        ball_position, _ball_orientation = ball_rigid_prim.get_world_poses()
+        ball_position = np.asarray(ball_position[0], dtype=float)
+
+        distance = float(np.linalg.norm(tip_world - ball_position))
+        return tip_world, ball_position, distance
 
     def _run_until_complete(label: str) -> int:
         step = 0
@@ -221,9 +269,29 @@ def _run() -> None:
     strategy.execute_aim(action, tuple(_CUE_BALL), table_z, ball_radius)
     _run_until_complete("AIM")
 
+    # ⚠️ 2026-09-04 除錯記錄：之前這裡只檢查位置誤差，讓一個實際上方向
+    # 沒收斂的姿態被誤判成「AIM 成功」——1.35m 長的球桿會把沒被抓到的
+    # 方向誤差在桿尖處放大成數公分等級的偏移（見
+    # scripts_diag 桿尖-母球距離診斷）。現在兩者都檢查。
+    # `wrist_position`（top-level 變數）用 roll_rad=0 算的，但 roll 不影響
+    # 位置（見 cue_pose_calculator.compute_tilted_wrist_pose() docstring），
+    # 位置比較仍然有效；方向則必須跟 execute_aim() 內部實際用的
+    # roll-optimized 目標比（直接讀 controller 記錄的最終 waypoint，不是
+    # 重算一次，避免跟正式路徑的計算邏輯不同步）。
     live_wrist_position = np.asarray(articulation_api.get_end_effector_position())
-    aim_error = float(np.linalg.norm(live_wrist_position - np.asarray(wrist_position)))
-    print(f"[flat] AIM 收斂後 wrist 位置={live_wrist_position.tolist()}  跟目標誤差={aim_error:.5f} m")
+    live_wrist_orientation = np.asarray(articulation_api.get_end_effector_orientation())
+    aim_position_error = float(np.linalg.norm(live_wrist_position - np.asarray(wrist_position)))
+
+    rmp_ctrl_for_target = articulation_api._ur10e_rmpflow_controller
+    final_target_position, final_target_orientation = rmp_ctrl_for_target._waypoints[-1]
+    orientation_dot = float(np.clip(np.abs(np.dot(live_wrist_orientation, final_target_orientation)), -1.0, 1.0))
+    aim_orientation_error = 2.0 * np.arccos(orientation_dot)
+
+    print(f"[flat] AIM 收斂後 wrist 位置={live_wrist_position.tolist()}  位置誤差={aim_position_error:.5f} m（容許 0.01 m）")
+    print(f"[flat] AIM 收斂後 wrist 方向={live_wrist_orientation.tolist()}  目標方向={np.asarray(final_target_orientation).tolist()}"
+          f"  方向誤差={aim_orientation_error:.5f} rad（容許 0.02 rad，約 1.15 度）")
+    print(f"[flat] AIM 判定：位置{'OK' if aim_position_error <= 0.01 else '未達標'} "
+          f"方向{'OK' if aim_orientation_error <= 0.02 else '未達標'}")
 
     # 診斷：RMPflow 最後一次算出的關節目標 vs 實際量到的關節位置——
     # 用來分辨殘留誤差是「PhysX joint drive 追不上 RMPflow 給的目標」
@@ -245,9 +313,39 @@ def _run() -> None:
     ball_velocity_before, _ = ball_rigid_prim.get_velocities()
     print(f"[flat] STRIKE 前母球速度={np.asarray(ball_velocity_before[0]).tolist()}（應接近 0）")
 
+    tip_world, ball_world, distance = _measure_tip_to_ball()
+    print(f"[flat] STRIKE 開始前（桿子已退到後擺位置）桿尖={tip_world.tolist()} "
+          f"母球={ball_world.tolist()} 距離={distance:.5f} m（miss 向量={( tip_world - ball_world).tolist()}）")
+
     print("[flat] 呼叫 Ur10eSwingStrategy.execute_strike() ...")
     strategy.execute_strike(action, tuple(_CUE_BALL), table_z, ball_radius)
-    strike_steps = _run_until_complete("STRIKE")
+
+    # 診斷：STRIKE 全程逐 tick 記錄桿尖(bbox量測)跟母球的距離，找出整段
+    # 行程中最接近的瞬間跟距離／miss 向量——藉此判斷「完全沒打到球」是
+    # 系統性的幾何偏移（q=0 時桿尖本來就沒有真的對準球心，miss 向量在
+    # 垂直於揮桿方向上有固定分量）還是 AIM 殘留誤差造成的偶發性偏移。
+    min_distance = float("inf")
+    min_distance_step = -1
+    min_distance_tip = None
+    min_distance_ball = None
+    strike_steps = 0
+    while not articulation_api.is_motion_complete() and strike_steps < _MAX_STEPS_PER_ACTION:
+        simulation_app.update()
+        strike_steps += 1
+
+        tip_world, ball_world, distance = _measure_tip_to_ball()
+        if distance < min_distance:
+            min_distance = distance
+            min_distance_step = strike_steps
+            min_distance_tip = tip_world
+            min_distance_ball = ball_world
+
+    print(f"[flat] STRIKE 完成，steps={strike_steps} did_last_motion_timeout={articulation_api.did_last_motion_timeout()}")
+    print(f"[flat] STRIKE 全程桿尖離母球最近的瞬間：step={min_distance_step}  距離={min_distance:.5f} m"
+          f"（球半徑={ball_radius:.5f} m，距離 <= 球半徑代表桿尖曾經進入球體範圍）")
+    if min_distance_tip is not None:
+        miss_vector = min_distance_tip - min_distance_ball
+        print(f"[flat]   當下桿尖={min_distance_tip.tolist()}  母球={min_distance_ball.tolist()}  miss 向量（桿尖-母球）={miss_vector.tolist()}")
 
     # 揮桿完成後再多跑幾步，讓球的速度穩定下來（衝量剛作用完那一瞬間的
     # get_velocities() 可能還沒反映完整動量轉移）。
