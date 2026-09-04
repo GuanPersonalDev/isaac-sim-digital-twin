@@ -11,6 +11,7 @@ from isaacsim.core.simulation_manager import SimulationManager, SimulationEvent
 
 from core.ports.articulation_api import ArticulationAPI
 from core.models.pose_waypoint import PoseWaypoint
+from core.services import swing_trajectory_calculator
 from core.services.base_placement_calculator import CUE_STICK_GRIP_TO_TIP
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,13 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._ur10e_cue_slide_controller = None
         self._ur10e_active_controller = None
         self._ur10e_step_callback_id: int | None = None
+        # move_to_pose() 的「先退桿再移動手臂」兩段式序列狀態（2026-09-04
+        # 補充，見該方法說明）：_ur10e_awaiting_arm_move_after_retract=True
+        # 期間 _ur10e_active_controller 指向 cue_slide_controller，退桿完成
+        # 才切到 rmpflow_controller 移動手臂，_ur10e_pending_arm_target 存
+        # 退桿完成後要餵給 rmpflow_controller.move_to_pose() 的目標。
+        self._ur10e_awaiting_arm_move_after_retract: bool = False
+        self._ur10e_pending_arm_target: tuple[list[float], list[float]] | None = None
 
     def initialize(self) -> None:
         # 在 timeline play 之後呼叫
@@ -239,6 +247,21 @@ class ArticulationAPIImpl(ArticulationAPI):
         )
 
     def _step_ur10e_motion(self, step_dt, context) -> None:
+        if self._ur10e_awaiting_arm_move_after_retract:
+            if not self._ur10e_cue_slide_controller.is_motion_complete():
+                self._ur10e_cue_slide_controller.step(step_dt)
+                return
+            # 退桿完成（或逾時，best-effort 繼續，不擋住整段動作）——切到
+            # RMPflow 控制器移動手臂，退桿階段自己的 did_last_motion_timeout
+            # 不往外傳（見 move_to_pose() 說明：這個序列最終只回報手臂移動
+            # 那一段的完成/逾時狀態）。
+            self._ur10e_awaiting_arm_move_after_retract = False
+            position, orientation = self._ur10e_pending_arm_target
+            self._ur10e_pending_arm_target = None
+            self._ur10e_active_controller = self._ur10e_rmpflow_controller
+            self._ur10e_rmpflow_controller.move_to_pose(position, orientation)
+            return
+
         if self._ur10e_active_controller is not None:
             self._ur10e_active_controller.step(step_dt)
 
@@ -454,13 +477,34 @@ class ArticulationAPIImpl(ArticulationAPI):
             self._pending_move_to_home = False
             self.move_to_home()
 
+    # AIM 移動手臂前，CueSlideJoint 先退到這個位置（跟 Ur10eSwingStrategy.
+    # execute_strike() 揮桿用的後擺距離同一個常數來源，見 move_to_pose()
+    # 說明），維持整個專案只有一份「後擺距離」的定義，不要兩處各自寫死。
+    _UR10E_AIM_RETRACT_POSITION_M = -swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M
+
     def move_to_pose(self, position: list[float], orientation: list[float], linear_velocity: list[float] = [0.0, 0.0, 0.0], angular_velocity: list[float] = [0.0, 0.0, 0.0]) -> None:
         if self._ur10e_mode:
             # linear_velocity/angular_velocity 沒有對應語意（RMPflow 是
             # 反應式收斂，不是 feed-forward 速度控制），UR10e 呼叫端
             # （Ur10eSwingStrategy）不會傳非零值，這裡忽略。
-            self._ur10e_active_controller = self._ur10e_rmpflow_controller
-            self._ur10e_rmpflow_controller.move_to_pose(position, orientation)
+            #
+            # 2026-09-04 補充：AIM 收斂後 CueSlideJoint 原本停在 q=0（桿尖
+            # 貼著接觸點，見 Ur10eCueSlideController docstring），代表手臂
+            # 這段移動／收尾差動 IK 修正全程都是在桿尖已經貼球的狀態下
+            # 進行——只要修正路徑不是精準沿球桿軸，就有蹭到球的風險（實測
+            # 踩過：STRIKE 開始前母球就已經有非零速度、STRIKE 出現兩次分開
+            # 的碰撞事件，最終球速只有目標的 12%）。改成移動手臂前先讓
+            # CueSlideJoint 退到後擺位置（見 _UR10E_AIM_RETRACT_POSITION_M），
+            # 退到位才開始移動手臂——手臂定位全程桿尖都在安全距離外，STRIKE
+            # 開始時桿子已經在後擺位置，move_cue_slide_stroke() 的退桿子
+            # 階段會直接判定已收斂，接著才真正加速揮桿。實際序列由
+            # _step_ur10e_motion() 的 _ur10e_awaiting_arm_move_after_retract
+            # 狀態機驅動（先跑 cue_slide_controller.retract()，收斂後才切到
+            # rmpflow_controller.move_to_pose()），這裡只負責啟動。
+            self._ur10e_pending_arm_target = (position, orientation)
+            self._ur10e_awaiting_arm_move_after_retract = True
+            self._ur10e_active_controller = self._ur10e_cue_slide_controller
+            self._ur10e_cue_slide_controller.retract(self._UR10E_AIM_RETRACT_POSITION_M)
             return
         self.move_through_poses(
             [PoseWaypoint(position=position, orientation=orientation, linear_velocity=linear_velocity, angular_velocity=angular_velocity)]
@@ -1104,6 +1148,24 @@ class ArticulationAPIImpl(ArticulationAPI):
         )
 
     def get_end_effector_position(self) -> list[float]:
+        # ⚠️ 2026-09-04 除錯記錄：UR10e 模式下這裡曾經誤用下面
+        # _compute_tip_local_offset()（讀 end effector link 自身的 bounding
+        # box，找「離原點最遠那一端」當工具尖端）——那是幫 WAM7/UR3e 找
+        # 「球桿用 align_prim_to_target 掛接的實體參考點」設計的，UR10e 的
+        # 球桿是透過 CueSlideJoint 掛在 wrist_3_link 之後，跟 wrist_3_link
+        # 自己的 flange 幾何體完全無關；wrist_3_link 本身確實有真實幾何體
+        # （不是空 bounding box），套用這個偏移量會加上一個跟 AIM 目標
+        # （`cue_pose_calculator` 算出的是「wrist」位置，RMPflow／收尾差動
+        # IK 追蹤的也是同一個 raw wrist_3_link 世界座標，兩者都沒有這個
+        # 偏移量）無關的常數位移，讓 AIM 收斂診斷憑空多出約 5cm 的「假
+        # 誤差」（實測：joint tracking gap 僅約 6e-5 rad，代表關節本身
+        # 幾乎完美收斂到 RMPflow 目標，但套用這個偏移量量出來的末端位置
+        # 卻跟目標差了 5.6cm——整段對不上）。UR10e 模式直接回傳 raw
+        # wrist_3_link 世界座標，不套用這個只對 WAM7/UR3e 有意義的偏移量。
+        if self._ur10e_mode:
+            positions, _orientations = self._end_effector_rigid_prim.get_world_poses()
+            return np.array(positions[0].list()).tolist()
+
         if self._tip_local_offset is None:
             self._tip_local_offset = self._compute_tip_local_offset()
 
@@ -1127,6 +1189,19 @@ class ArticulationAPIImpl(ArticulationAPI):
 
     def is_motion_complete(self) -> bool:
         if self._ur10e_mode:
+            # ⚠️ 2026-09-04 除錯記錄：不能只看 _ur10e_active_controller 目前
+            # 的狀態——退桿完成的那個 tick，_ur10e_active_controller 仍然是
+            # cue_slide_controller（真正切到 rmpflow_controller、餵入手臂
+            # 目標，要等 _step_ur10e_motion() 的下一次呼叫才會做），若這裡
+            # 直接回傳 cue_slide_controller.is_motion_complete()==True，
+            # 呼叫端的輪詢迴圈會在那個 tick 就判定「整段動作完成」提早跳出
+            # ——手臂的移動指令永遠沒有機會被送出去（實測踩過：AIM 27 步
+            # 就回報完成，量到的最終姿態幾乎還停在 HOME，因為 move_to_pose()
+            # 從未真的被呼叫）。_ur10e_awaiting_arm_move_after_retract 為
+            # True 這段期間，不管 cue_slide_controller 內部狀態如何，一律
+            # 回報「尚未完成」，讓 _step_ur10e_motion() 有機會真正做完交接。
+            if self._ur10e_awaiting_arm_move_after_retract:
+                return False
             if self._ur10e_active_controller is None:
                 return True
             return self._ur10e_active_controller.is_motion_complete()

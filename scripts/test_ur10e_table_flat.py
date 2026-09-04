@@ -225,6 +225,23 @@ def _run() -> None:
     aim_error = float(np.linalg.norm(live_wrist_position - np.asarray(wrist_position)))
     print(f"[flat] AIM 收斂後 wrist 位置={live_wrist_position.tolist()}  跟目標誤差={aim_error:.5f} m")
 
+    # 診斷：RMPflow 最後一次算出的關節目標 vs 實際量到的關節位置——
+    # 用來分辨殘留誤差是「PhysX joint drive 追不上 RMPflow 給的目標」
+    # （tracking gap，可靠 stiffness/damping 補強修，見 UR3e
+    # _boost_wrist_gains_for_cue_stick_load() 先例）還是「RMPflow 自己算出
+    # 的關節目標，即使完美追上也不對應期望的末端位姿」（RMPflow 本身的
+    # reactive 殘留，需要換精確控制器收尾）。
+    rmp_ctrl = articulation_api._ur10e_rmpflow_controller
+    last_targets = rmp_ctrl._last_active_position_targets
+    if last_targets is not None:
+        current_full_positions = np.asarray(articulation_api._articulation.get_dof_positions())[0]
+        current_active_positions = current_full_positions[rmp_ctrl._active_dof_indices]
+        joint_gap = current_active_positions - last_targets
+        print(f"[flat] active_joint_names={rmp_ctrl._active_joint_names}")
+        print(f"[flat] RMPflow 最後關節目標={last_targets.tolist()}")
+        print(f"[flat] 實際量到的關節位置    ={current_active_positions.tolist()}")
+        print(f"[flat] 關節 tracking gap (實際-目標)={joint_gap.tolist()}  max_abs_gap={np.max(np.abs(joint_gap)):.6f} rad")
+
     ball_velocity_before, _ = ball_rigid_prim.get_velocities()
     print(f"[flat] STRIKE 前母球速度={np.asarray(ball_velocity_before[0]).tolist()}（應接近 0）")
 

@@ -29,6 +29,33 @@ def _slerp(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
     return q0 * np.cos(theta) + q2 * np.sin(theta)
 
 
+def _quat_error(current_wxyz: np.ndarray, target_wxyz: np.ndarray) -> np.ndarray:
+    """q_error = q_target * q_current⁻¹（wxyz），q_error.w 為負時整體取反，
+    走最短路徑。跟 ArticulationAPIImpl._quat_error() 同一套公式，複製一份
+    避免這個模組反過來依賴 ArticulationAPIImpl 的私有方法。"""
+    w0, x0, y0, z0 = current_wxyz
+    current_inv = np.array([w0, -x0, -y0, -z0])
+
+    w1, x1, y1, z1 = target_wxyz
+    w2, x2, y2, z2 = current_inv
+    q_error = np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+    if q_error[0] < 0:
+        q_error = -q_error
+    return q_error
+
+
+def _orientation_error_to_angular_velocity(current_wxyz: np.ndarray, target_wxyz: np.ndarray) -> np.ndarray:
+    """四元數誤差轉角速度指令：q_error 的虛部乘 2 即為（小角度近似下的）
+    修正角速度方向與大小，跟 ArticulationAPIImpl 差動 IK 用的公式一致。"""
+    q_error = _quat_error(current_wxyz, target_wxyz)
+    return 2.0 * q_error[1:]
+
+
 def _load_rmp_flow(config_dir: str = _CONFIG_DIR):
     """依 config.json 的 relative_asset_paths 組出絕對路徑，建構 RmpFlow。
 
@@ -76,6 +103,21 @@ class Ur10eRmpflowController:
     依序餵給 RMPflow，每段收斂（或逾時）才切下一段——精神上跟 WAM7 舊架構
     「Phase 0 安全姿態加 Cartesian waypoint 序列」類似，差別是這裡每一段
     都交給 RMPflow 自己導航加避障，不是差動 IK。
+
+    2026-09-04 補充（收尾差動 IK）：`scripts/test_ur10e_table_flat.py` 的
+    診斷發現，flat 案例走完整段 waypoint 後仍殘留 5.6cm 誤差，但 RMPflow
+    算出的關節目標跟 PhysX 實際量到的關節位置幾乎完全吻合（tracking gap
+    僅約 6e-5 rad）——代表這不是 joint drive 追不上目標（那種情況才需要
+    比照 ArticulationAPIImpl._boost_wrist_gains_for_cue_stick_load() 補強
+    gain），而是 RMPflow 這個 reactive controller 本身在這個姿態附近的
+    計算殘留（多個 RMP 分量互相拉扯出的穩態偏差，NVIDIA 官方論壇也有
+    相同回報：forums.developer.nvidia.com/t/imprecise-control-via-
+    rmpflow/253139）。對照 ArticulationAPIImpl 既有 WAM7/UR3e 差動 IK 的
+    做法，在最後一個 waypoint 收斂（或逾時）之後，若仍未進入容許誤差，
+    改用同一套 DLS（damped least squares）差動 IK 再收尾（見
+    _step_finish_ik()）——此時手臂已經很接近目標姿態，不會像大位移那樣
+    掃過球檯，跳過 RMPflow 的避障不是新風險。這個收尾只在最終目標未收斂
+    時才會啟動，其餘情況（例如提早收斂的 waypoint）完全不受影響。
     """
 
     _MAX_WAYPOINT_STEP_M = 0.08
@@ -88,6 +130,16 @@ class Ur10eRmpflowController:
     _POSITION_TOLERANCE_M = 0.005
     _ORIENTATION_TOLERANCE_RAD = 0.02
     _MAX_STEPS_PER_WAYPOINT = 240
+
+    # 收尾差動 IK 用的常數，數值沿用 ArticulationAPIImpl 既有 WAM7/UR3e
+    # 差動 IK 的同名常數（POSITION_GAIN/ORIENTATION_GAIN/DLS_LAMBDA 等）
+    # ——同一個 codebase 已經實測驗證過的收斂行為，不是另外拍腦袋調的。
+    _FINISH_POSITION_GAIN = 5.0
+    _FINISH_ORIENTATION_GAIN = 5.0
+    _FINISH_MAX_LINEAR_SPEED = 2.0  # m/s
+    _FINISH_MAX_ANGULAR_SPEED = 3.0  # rad/s
+    _FINISH_DLS_LAMBDA = 0.05
+    _FINISH_MAX_STEPS = 240  # 跟 _MAX_STEPS_PER_WAYPOINT 同量級
 
     # UR10e 重新設計計畫決策 11：手動指定一組安全、離球檯足夠遠的固定
     # HOME 關節角度，不沿用「USD 重新放進場景時自然落點當 HOME」的舊
@@ -109,10 +161,12 @@ class Ur10eRmpflowController:
         from isaacsim.core.experimental.prims import RigidPrim
 
         self._articulation = articulation
+        self._end_effector_prim_path = end_effector_prim_path
         self._end_effector_rigid_prim = RigidPrim(paths=end_effector_prim_path)
         self._rmp_flow = _load_rmp_flow()
 
         dof_names = list(self._articulation.dof_names)
+        self._num_dofs = len(dof_names)
         self._active_joint_names = list(self._rmp_flow.get_active_joints())
         self._active_dof_indices = [dof_names.index(name) for name in self._active_joint_names]
 
@@ -121,6 +175,15 @@ class Ur10eRmpflowController:
         self._steps_on_current_waypoint = 0
         self._motion_active = False
         self._did_last_motion_timeout = False
+        self._last_active_position_targets: np.ndarray | None = None
+        self._last_active_positions_before_step: np.ndarray | None = None
+
+        # 收尾差動 IK 狀態（見類別 docstring 2026-09-04 補充）。
+        self._jac_link_index: int | None = None
+        self._finishing_active = False
+        self._finish_steps = 0
+        self._finish_target_position: np.ndarray | None = None
+        self._finish_target_orientation: np.ndarray | None = None
 
     def set_robot_base_pose(self, base_position, base_orientation) -> None:
         """告訴 RMPflow 手臂底座目前在世界座標系的實際位姿。"""
@@ -202,6 +265,10 @@ class Ur10eRmpflowController:
         return self._did_last_motion_timeout
 
     def step(self, frame_duration: float) -> None:
+        if self._finishing_active:
+            self._step_finish_ik()
+            return
+
         if not self._motion_active:
             return
 
@@ -218,9 +285,136 @@ class Ur10eRmpflowController:
 
         self._waypoint_index += 1
         if self._waypoint_index >= len(self._waypoints):
-            self._motion_active = False
+            self._start_finishing_phase()
         else:
             self._activate_current_waypoint()
+
+    def _start_finishing_phase(self) -> None:
+        """最後一個 waypoint 收斂（或逾時）之後的收尾判斷：已經在容許
+        誤差內就直接結束；否則切到差動 IK 收尾（見類別 docstring
+        2026-09-04 補充），維持 `_motion_active=True` 讓 step() 繼續被
+        呼叫，只是改走 `_step_finish_ik()` 這個分支。
+
+        ⚠️ 不能用 `_is_current_waypoint_converged()`——那個方法讀
+        `self._waypoints[self._waypoint_index]`，但呼叫端（`step()`）在
+        呼叫這裡之前已經把 `_waypoint_index` 遞增到 `len(self._waypoints)`
+        （迴圈結束的信號），會是 out-of-range index（實測踩過：
+        IndexError，PHYSICS_POST_STEP callback 內的例外被 Kit 印出但
+        不會讓整個 SimulationApp 崩潰，導致 AIM/RESET 兩段都靜默卡死到
+        `_MAX_STEPS_PER_ACTION` 逾時，而不是真的收斂或報錯）。改成直接用
+        `self._waypoints[-1]`（最終目標，跟 out-of-range 那個 index 無關）
+        搭配 `_is_pose_converged()`。
+        """
+        target_position, target_orientation = self._waypoints[-1]
+        target_position = np.asarray(target_position, dtype=float)
+        target_orientation = np.asarray(target_orientation, dtype=float)
+
+        live_position, live_orientation = self._end_effector_rigid_prim.get_world_poses()
+        live_position = np.asarray(live_position[0], dtype=float)
+        live_orientation = np.asarray(live_orientation[0], dtype=float)
+
+        if self._is_pose_converged(live_position, live_orientation, target_position, target_orientation):
+            self._motion_active = False
+            return
+
+        self._finish_target_position = target_position
+        self._finish_target_orientation = target_orientation
+        if self._jac_link_index is None:
+            self._jac_link_index = self._resolve_jacobian_link_index()
+        self._finishing_active = True
+        self._finish_steps = 0
+
+    def _resolve_jacobian_link_index(self) -> int:
+        """跟 ArticulationAPIImpl._resolve_end_effector_jacobian_index()
+        同一套邏輯（fixed-base articulation 的 Jacobian 不含 base link），
+        複製一份避免這個模組反過來依賴 ArticulationAPIImpl 的私有方法。"""
+        end_effector_link_name = self._end_effector_prim_path.rsplit("/", 1)[-1]
+        link_names = None
+        for attr in ("link_names", "body_names"):
+            if hasattr(self._articulation, attr):
+                link_names = list(getattr(self._articulation, attr))
+                break
+        if link_names is None:
+            raise RuntimeError("Articulation 沒有 link_names/body_names 屬性，無法定位末端執行器")
+        link_index = link_names.index(end_effector_link_name)
+
+        jacobians = np.asarray(self._articulation.get_jacobian_matrices().numpy())[0]
+        if jacobians.shape[0] == len(link_names) - 1:
+            return link_index - 1
+        if jacobians.shape[0] == len(link_names):
+            return link_index
+        raise RuntimeError(
+            f"Jacobian link 數 {jacobians.shape[0]} 與 link 名稱數 {len(link_names)} 對不上，"
+            f"無法安全對應 {end_effector_link_name}"
+        )
+
+    def _step_finish_ik(self) -> None:
+        """DLS 差動 IK 收尾一個 physics tick。只驅動 RMPflow 認得的 6 個
+        手臂關節（`_active_dof_indices`），CueSlideJoint 的速度目標固定為
+        0（原地保持，跟 `_step_rmpflow()` 對這個 DOF 的處理精神一致）。
+        沿用 `_apply_velocity_targets_with_gravity_compensation()` 同一個
+        重力補償理由：velocity-mode PD 不會自動抗重力，見
+        ArticulationAPIImpl 該方法的說明。"""
+        live_position, live_orientation = self._end_effector_rigid_prim.get_world_poses()
+        live_position = np.asarray(live_position[0], dtype=float)
+        live_orientation = np.asarray(live_orientation[0], dtype=float)
+
+        converged = self._is_pose_converged(
+            live_position, live_orientation, self._finish_target_position, self._finish_target_orientation
+        )
+        self._finish_steps += 1
+        if converged or self._finish_steps >= self._FINISH_MAX_STEPS:
+            # ⚠️ 2026-09-04 除錯記錄：第一版在這裡直接 return，沒有歸零
+            # velocity target——velocity-mode drive 會持續套用「上一次」
+            # 下達的非零角速度指令，直到有新指令覆寫為止。收斂判定成立的
+            # 那一刻其實還帶著非零殘留速度，若不歸零，手臂會在收斂之後
+            # 繼續照原速度漂移（實測：STRIKE 開始前母球速度就已經非零，
+            # 代表收斂後手臂漂移的桿子先撞到了球）。比照 ArticulationAPIImpl.
+            # _stop_motion() 停止差動 IK 動作時的做法，收斂/逾時當下先明確
+            # 下達一次全零速度指令止住殘留漂移。
+            self._articulation.set_dof_velocity_targets(np.zeros((1, self._num_dofs)))
+            self._did_last_motion_timeout = not converged
+            self._finishing_active = False
+            self._motion_active = False
+            return
+
+        position_error = self._finish_target_position - live_position
+        linear_velocity = np.clip(
+            self._FINISH_POSITION_GAIN * position_error,
+            -self._FINISH_MAX_LINEAR_SPEED, self._FINISH_MAX_LINEAR_SPEED,
+        )
+        angular_velocity = self._FINISH_ORIENTATION_GAIN * _orientation_error_to_angular_velocity(
+            live_orientation, self._finish_target_orientation
+        )
+        angular_velocity = np.clip(
+            angular_velocity, -self._FINISH_MAX_ANGULAR_SPEED, self._FINISH_MAX_ANGULAR_SPEED
+        )
+        twist = np.concatenate([linear_velocity, angular_velocity])
+
+        jacobians = np.asarray(self._articulation.get_jacobian_matrices().numpy())[0]
+        jacobian_full = jacobians[self._jac_link_index]
+        jacobian_active = jacobian_full[:, self._active_dof_indices]
+        jjt = jacobian_active @ jacobian_active.T + (self._FINISH_DLS_LAMBDA ** 2) * np.eye(6)
+        qdot_active = jacobian_active.T @ np.linalg.solve(jjt, twist)
+
+        full_velocity_targets = np.zeros(jacobian_full.shape[1])
+        full_velocity_targets[self._active_dof_indices] = qdot_active
+
+        self._articulation.switch_dof_control_mode("velocity")
+        self._articulation.set_dof_velocity_targets(full_velocity_targets[None, :])
+        gravity_compensation_forces = self._articulation.get_dof_gravity_compensation_forces()
+        self._articulation.set_dof_efforts(gravity_compensation_forces)
+
+    def _is_pose_converged(
+        self, live_position: np.ndarray, live_orientation: np.ndarray,
+        target_position: np.ndarray, target_orientation: np.ndarray,
+    ) -> bool:
+        position_error = float(np.linalg.norm(live_position - target_position))
+        if position_error > self._POSITION_TOLERANCE_M:
+            return False
+        dot = float(np.clip(np.abs(np.dot(live_orientation, target_orientation)), -1.0, 1.0))
+        orientation_error = 2.0 * np.arccos(dot)
+        return orientation_error <= self._ORIENTATION_TOLERANCE_RAD
 
     def _activate_current_waypoint(self) -> None:
         position, orientation = self._waypoints[self._waypoint_index]
@@ -272,6 +466,8 @@ class Ur10eRmpflowController:
 
         full_position_targets = positions.copy()
         full_position_targets[self._active_dof_indices] = position_targets
+        self._last_active_position_targets = position_targets.copy()
+        self._last_active_positions_before_step = active_positions.copy()
 
         self._articulation.switch_dof_control_mode("position")
         self._articulation.set_dof_position_targets(full_position_targets[None, :])

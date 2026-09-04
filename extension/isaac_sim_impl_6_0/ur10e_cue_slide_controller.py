@@ -62,6 +62,27 @@ class Ur10eCueSlideController:
     def did_last_motion_timeout(self) -> bool:
         return self._did_last_motion_timeout
 
+    def retract(self, backswing_position: float) -> None:
+        """只把 CueSlideJoint 退到 backswing_position，退到後**不**接著自動
+        觸發 STRIKE 揮桿子階段（跟 move_stroke() 的差別）——給 AIM 期間
+        「桿尖先退開，避免手臂定位/收尾修正過程蹭到球」用（見
+        ArticulationAPIImpl.move_to_pose() 的 UR10e 分流：AIM 移動手臂前
+        先呼叫這個方法，等退到位才開始移動手臂，2026-09-04 補充）。跟
+        move_stroke() 共用同一套 joint-space 位置控制到 backswing_position
+        的底層邏輯，只是完成後停在這裡，不像 move_stroke() 會接著解
+        quintic 並切到 velocity 模式往前揮。
+        """
+        self._backswing_position = float(backswing_position)
+        self._phase = "retract_only"
+        self._backswing_steps = 0
+        self._motion_active = True
+        self._did_last_motion_timeout = False
+
+        positions = np.asarray(self._articulation.get_dof_positions())[0].copy()
+        positions[self._slide_dof_index] = self._backswing_position
+        self._articulation.switch_dof_control_mode("position")
+        self._articulation.set_dof_position_targets(positions[None, :])
+
     def move_stroke(self, backswing_position: float, target_velocity: float) -> None:
         """開始一次完整的後擺＋揮桿。backswing_position 是負值（沿球桿軸
         退開的距離），target_velocity 是滑軌關節在 q=0（接觸點）當下要
@@ -89,6 +110,22 @@ class Ur10eCueSlideController:
             self._step_backswing(physics_dt)
         elif self._phase == "strike":
             self._step_strike(physics_dt)
+        elif self._phase == "retract_only":
+            self._step_retract_only()
+
+    def _step_retract_only(self) -> None:
+        positions = np.asarray(self._articulation.get_dof_positions())[0]
+        current = float(positions[self._slide_dof_index])
+        self._backswing_steps += 1
+
+        converged = abs(current - self._backswing_position) <= self._POSITION_TOLERANCE_M
+        timed_out = self._backswing_steps >= self._MAX_BACKSWING_STEPS
+        if not (converged or timed_out):
+            return
+
+        if timed_out and not converged:
+            self._did_last_motion_timeout = True
+        self._motion_active = False
 
     def _step_backswing(self, physics_dt: float) -> None:
         positions = np.asarray(self._articulation.get_dof_positions())[0]
