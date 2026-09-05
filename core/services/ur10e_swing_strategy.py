@@ -39,14 +39,10 @@ class Ur10eSwingStrategy(RobotSwingStrategy):
         ball_radius: float,
     ) -> None:
         # 跟 WAM7/UR3e 一樣沿用 cue_pose_calculator.py 既有邏輯算 wrist
-        # 目標（decision 4：「完全沿用...不用改」）。差異在基座計算：
-        # WAM7 用 compute_base_pose()、UR3e 用 ur3e_placement_calculator，
-        # 兩者都是為了讓「特定關節組合」能沿方向出力而設計的精密解；UR10e
-        # 靠 RMPflow 解完整 6-DOF IK，基座只需要落在舒適可達範圍內即可
-        # （見 ur10e_placement_calculator.py 模組說明——decision 4 原本
-        # 假設固定基座位置夠用，實測發現對某些母球位置距離目標遠達 2.6m、
-        # 超過 UR10e 1.3m 可達距離，因此改回 per-shot 重新計算，但比
-        # WAM7/UR3e 簡單很多）。
+        # 目標。差異在基座計算：WAM7/UR3e 是為了讓「特定關節組合」能沿
+        # 方向出力設計的精密解；UR10e 靠 RMPflow 解完整 6-DOF IK，基座
+        # 只需要落在舒適可達範圍內即可，per-shot 重新計算但比 WAM7/UR3e
+        # 簡單很多（見 ur10e_placement_calculator.py 模組說明）。
         wrist_position, wrist_orientation, tilt_rad, crossing = cue_pose_calculator.compute_tilted_wrist_pose(
             cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset
         )
@@ -62,18 +58,15 @@ class Ur10eSwingStrategy(RobotSwingStrategy):
             tuple(wrist_position), tuple(direction_unit), table_z
         )
 
-        # ⚠️ 2026-09-03 除錯發現、2026-09-04 補強：roll_rad 是球桿繞自身軸
-        # 的冗餘自由度（不影響桿頭實際指向或位置），固定用預設 roll_rad=0
-        # 算出來的姿態，對某些目前姿態（尤其從 HOME 出發的 flat 案例）剛好
-        # 是最壞選擇——跟目前姿態接近正反面，RMPflow 被迫做接近 180 度的
-        # 姿態翻轉，反應式求解容易卡在局部穩定點（實測殘留誤差
-        # 0.1-0.6m）。單純改成「翻轉角度最小」還不夠——找到的姿態可能剛好
-        # 逼近 UR10e 手腕的運動學奇異點（實測：flat 案例卡在方向誤差
-        # 0.0294 rad 不再收斂，換算成桿尖偏移超過球半徑，STRIKE 完全打不
-        # 到球），改用 compute_roll_minimizing_reorientation() 搜尋「翻轉
-        # 角度最小、且離奇異點夠遠」的 roll_rad（見該函式 2026-09-04 補充：
-        # 用 ur10e_analytic_ik 的 closed-form 逆向運動學直接評估每個候選
-        # 離奇異點多遠）。
+        # roll_rad 是球桿繞自身軸的冗餘自由度（不影響桿頭實際指向或
+        # 位置），固定用預設 roll_rad=0 算出來的姿態，對某些目前姿態
+        # （尤其從 HOME 出發的 flat 案例）可能剛好跟目前姿態接近正反面，
+        # 讓 RMPflow 被迫做接近 180 度的姿態翻轉，反應式求解容易卡在局部
+        # 穩定點；也可能逼近 UR10e 手腕的運動學奇異點導致收斂不了。用
+        # compute_roll_minimizing_reorientation() 搜尋「翻轉角度最小、且
+        # 離奇異點夠遠」的 roll_rad（用 ur10e_analytic_ik 的 closed-form
+        # 逆向運動學評估每個候選離奇異點多遠，實測數據見
+        # docs/CHANGELOG.md）。
         current_orientation = self._articulation_api.get_end_effector_orientation()
         roll_rad = ur10e_placement_calculator.compute_roll_minimizing_reorientation(
             cue_ball, action.shot_angle, table_z, ball_radius, action.position_offset,

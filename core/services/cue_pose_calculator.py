@@ -31,39 +31,16 @@ _RAILS = [
 # 高架橋轉向（C1）時手臂本體（不是桿頭）可能掃過球檯庫邊/袋口，用
 # `roll_rad` 這個閃避自由度可以避開。
 #
-# ⚠️ 2026-08-28 全面重建：舊表（0°/15°/45°/60° 這種小角度）是用物理模擬
-# 手動試誤選出來的、只確認「無碰撞」，從未真正驗證「AIM 差動 IK 收得斂」；
-# 見 docs/issue-180-reachability-analysis.md 第十四節，20 案例 STRIKE 0/20
-# 全滅的根因追到最後，就是這個查表逼 shoulder_pitch／wrist_pitch／palm_yaw
-# 同時頂死關節限位。用 `scripts/wam7_kinematics.py` 的純數值 IK（不跑物理，
-# 秒級可測數百組候選）重新搜尋，發現正確的 roll 落在完全不同的範圍
-# （-180°~165°），而且——關鍵發現——**roll 只跟 cue_ball_y 有關，跟
-# cue_ball_x 無關**（base_yaw 關節會吸收 X 方向的差異，同一個 Y、不同 X
-# 的三個案例算出來的最佳 roll 完全一致，見 scripts/search_roll_for_full_
-# swing.py 的實測輸出）。
+# 這份表用 `scripts/search_collision_free_roll.py` 對
+# `action_bounds.CUE_BALL_PLACEMENT_X/Y` 的完整 3×3 網格逐點搜尋：對每個
+# 候選 roll 依差動 IK 餘裕排序，逐一用真實 Isaac Sim 物理模擬＋
+# `enable_contact_reporting` 碰撞回報驗證，取第一個「AIM→後擺→隨揮終點
+# 整條軌跡在同一分支內收斂、且無碰撞」的候選——比只驗證「目標可達」更
+# 貼近真實 `ArticulationAPIImpl._step_motion()` 的行為。roll 不能只看
+# cue_ball_y（碰撞跟世界座標系裡離哪個庫邊/袋口近有關，不是只看關節
+# 構型），因此對 X/Y 都逐點驗證。推導歷程見 docs/CHANGELOG.md。
 #
-# 這個表不是只驗證「AIM 目標本身可達」，是用
-# `scripts/search_roll_for_full_swing.py` 模擬真實差動 IK「不會跳關節分支」
-# 的行為——AIM 解當後擺的起點、後擺解當隨揮終點的起點，確認整條
-# AIM→後擺→隨揮終點軌跡在同一分支內都收斂、且沒有任何關節被逼到限位
-# （margin < 0.05rad）——比舊表更貼近真實 `ArticulationAPIImpl._step_motion()`
-# 的行為。
-#
-# ⚠️ 2026-08-28 二次修正：純數值 IK 沒有建模手臂本體碰撞（C1 轉向時手臂
-# 本體可能掃過庫邊/袋口，這正是 roll 這個自由度原本要解決的問題），只用
-# IK 餘裕排序的表在完整 20 案例網格上大多數是 COLLISION。改用
-# `scripts/search_collision_free_roll.py`：對每個候選點依 IK 餘裕由高到
-# 低嘗試候選（候選清單來自 `search_roll_for_full_swing.py`），逐一用真實
-# Isaac Sim 物理模擬＋正式的 `enable_contact_reporting`／`ContactEvent`
-# 碰撞回報驗證，取第一個「IK 收斂 + 無碰撞」都成立的候選。
-#
-# ⚠️ 三次修正：「roll 只跟 cue_ball_y 有關」只在**數值 IK 可達性**這個
-# 面向成立（`wam_base_yaw_joint` 會吸收 X 方向的關節構型差異）——但**碰撞
-# 跟世界座標系裡離哪個庫邊/袋口近有關，不是只看關節構型**，同一個 Y、不同
-# X 的三個案例常常需要不同的 roll 才能避開碰撞（見下表 y=-0.9382125／
-# y=-0.635 兩列，X 不同時 roll 並不總是一樣）。下表因此改成對
-# `action_bounds.CUE_BALL_PLACEMENT_X/Y` 的完整 3×3 網格逐點驗證，不再假設
-# X 無關。`y=-1.241425`（`CUE_BALL_PLACEMENT_Y` 下界）純幾何無解
+# `y=-1.241425`（`CUE_BALL_PLACEMENT_Y` 下界）純幾何無解
 # （`compute_required_tilt_rad()` 回傳 `None`），roll 用不到，沿用鄰近列的
 # 值只是讓 nearest-neighbor 查表有合理落點。
 #
@@ -94,25 +71,16 @@ def lookup_roll_rad(cue_ball_xy: tuple[float, float]) -> float:
     return math.radians(roll_deg)
 
 
-# ⚠️ 2026-08-31～09-01：`DEFAULT_BACKSWING_DISTANCE_M`（0.15m）跟關節實際
-# 能提供的加速能力完全脫鉤，實測揮桿速度只達目標 55%（見
-# docs/issue-180-reachability-analysis.md 第十八節「待處理 B」與這次新增
-# 的一節）。改用 `scripts/search_backswing_distance_ik.py`（純數值 IK 可達
-# 邊界法：沿擊球反方向從 contact pose 逐步後退，找到「還能收斂、且離關節
-# 硬限位有安全餘裕」的最大距離，多組不同關節構型分支各自延伸取最遠——同一
-# 接觸點常有多組不同分支都收斂，只挑單一「最精準」種子延伸容易漏掉空間
-# 更大的分支）反推每個高架橋案例的後擺距離，取代寫死常數。
-#
-# ⚠️ 曾經試過把機器人基座水平位移也當自由變數一起搜尋（能讓部分案例的
-# 後擺距離大幅提升），但用真實 Isaac Sim headless（`diagnose_move_swing.py`）
-# 驗證發現：純運動學可達性分析找到的基座偏移，會讓 `ArticulationAPIImpl`
-# 真正用的差動 IK 控制迴圈（Phase 0→B1→B2→C1→C2）不收斂（逾時 1000 步，
-# 揮桿打空）——一次性可達性求解沒有模擬差動 IK 沿路徑逐步收斂的動態行為，
-# 偏移越大、路徑幾何改變越多，風險越高。改成**基座位置一律用
-# `compute_base_pose()` 的公式值，完全不搜尋偏移**，只保留後擺距離的改善——
-# 消除差動 IK 不收斂的風險，代價是 manipulability 上限本來就低的案例（見
-# 第十六節：`y=-0.9382125` 這排任何 roll 都到不了目標球速）速度依然達不到
-# 目標，這是已知、可接受的既有限制，不是這次任務要解決的範圍。
+# `DEFAULT_BACKSWING_DISTANCE_M`（0.15m）跟關節實際能提供的加速能力脫鉤，
+# 這份表用 `scripts/search_backswing_distance_ik.py`（純數值 IK 可達邊界
+# 法：沿擊球反方向從 contact pose 逐步後退，找到「還能收斂、且離關節硬
+# 限位有安全餘裕」的最大距離，多組不同關節構型分支各自延伸取最遠）反推
+# 每個高架橋案例的後擺距離，取代寫死常數。基座位置一律用
+# `compute_base_pose()` 的公式值，不額外搜尋偏移——曾經嘗試把基座偏移也
+# 當自由變數搜尋，但一次性可達性求解沒有模擬差動 IK 沿路徑逐步收斂的
+# 動態行為，會導致真實控制迴圈不收斂，已放棄，推導歷程見
+# docs/CHANGELOG.md。manipulability 上限本來就低的案例（`y=-0.9382125`
+# 這排）速度依然達不到目標，是已知、可接受的既有限制。
 #
 # (cue_ball_x, cue_ball_y, backswing_distance_m)
 # y=-1.241425（CUE_BALL_PLACEMENT_Y 下界）純幾何無解，沿用鄰近列（y=
@@ -253,10 +221,10 @@ def _axis_angle_quat(axis: np.ndarray, angle_rad: float) -> np.ndarray:
 
 def _nlerp_quat(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
     # 四元數線性內插＋正規化（NLERP，不是精確的球面內插 SLERP，但角度差
-    # 不大、切成夠多段時誤差可忽略，用來把 compute_elevated_bridge_waypoints()
-    # 的 C1 轉向階段拆成多個中繼姿態，見該函式 2026-08-27 改版說明。
-    # q0/q1 可能差了正負號（同一個旋轉的兩種表示），內積為負時先取反 q1
-    # 走最短路徑，否則內插會繞遠路甚至反向轉。
+    # 不大、切成夠多段時誤差可忽略），用來把 compute_elevated_bridge_waypoints()
+    # 的 C1 轉向階段拆成多個中繼姿態。q0/q1 可能差了正負號（同一個旋轉的
+    # 兩種表示），內積為負時先取反 q1 走最短路徑，否則內插會繞遠路甚至
+    # 反向轉。
     if np.dot(q0, q1) < 0:
         q1 = -q1
     q = (1 - t) * q0 + t * q1
@@ -384,32 +352,14 @@ def compute_elevated_bridge_waypoints(
           —— 安全高度原地轉到最終傾斜姿態，拆成 `rotate_steps` 個中繼姿態
       C2 (final_wrist_position, final_orientation) —— 純垂直下降
 
-    ⚠️ 2026-08-27 二次修正：C1 原本是單一個大跳躍 waypoint（一次性把姿態
-    從 `current_orientation` 直接下差動 IK 的目標改成 `final_orientation`），
-    實測發現即使腕部位置全程沒動，差動 IK 為了在單一 waypoint 內達成這個
-    姿態變化，會讓 `shoulder_yaw`/`elbow_pitch` 沿路劇烈擺盪（走過中間一段
-    不必要的極端關節配置），導致手臂本體（不是桿頭）掃過球檯庫邊/袋口，
-    在 Kitchen 正中心案例撞到 `Cushion_Head`／`Pocket_HeadLeft`（見
-    docs/issue-180-reachability-analysis.md 第十三節）。改成跟舊版
-    `scan_elevated_bridge_approach.py` 的 `_move_through_waypoints()` 同一個
-    做法：用 NLERP 把這段轉向拆成多個中繼姿態，每個中繼點角度差小很多，
-    差動 IK 不需要走極端關節配置就能追上，手臂本體的運動軌跡也更貼近
-    「原地小角度轉」而不是「大幅度甩動」。
-
-    ⚠️ 2026-08-27 一次修正：舊版第一階段是「原地轉向朝正上方」（Phase A），
-    目的是保證轉向過程中桿頭（離腕部 1.35m）不會掃低撞到桌面。但實測發現
-    這個「轉到正上方」是接近 90° 的大幅重新定向，會把 `wrist_yaw`（總行程
-    只有 5.8 rad，起點在 0）／`wrist_pitch`（總行程只有 π rad≈180°，起點在
-    -32°）逼到硬限位卡死收斂不了，且跟 `shoulder_pitch`/`elbow_pitch` 的
-    固定姿態餘裕無關——不管怎麼調 `CANONICAL_REST_JOINTS` 都救不了（見
-    docs/issue-180-reachability-analysis.md 第十三節，`shoulder_pitch` 從
-    1.9 降到 1.5 對這個瓶頸完全沒有幫助，殘留誤差幾乎不變）。
-
-    改用「保持目前姿態原地爬升」取代「先轉正上方再爬升」：目前姿態是水平
-    （`tip_z = wrist_z`，桿頭跟腕部同高，沒有額外墊高），爬升與平移全程
-    桿頭都跟著腕部一起在安全高度，同樣安全；轉向動作延後到 C1，此時只需要
-    從水平姿態直接轉到最終傾斜姿態（`compute_required_tilt_rad()` 算出來
-    通常只有 5°~30°），比原本的 ~90° 小得多，不會逼死 wrist_yaw/wrist_pitch。
+    B1/B2 用「保持目前姿態原地爬升＋平移」而非「先轉向正上方再爬升」：
+    轉向動作延後到 C1，此時只需要從水平姿態直接轉到最終傾斜姿態（通常
+    只有 5°~30°），不會像先轉 90° 到正上方那樣逼死 wrist_yaw/wrist_pitch
+    的硬限位。C1 用 NLERP 把轉向拆成多個中繼姿態（不是單一大跳躍
+    waypoint）：單一大跳躍會讓差動 IK 為了在一個 waypoint 內達成整個姿態
+    變化，逼 `shoulder_yaw`/`elbow_pitch` 沿路劇烈擺盪、掃過球檯庫邊/
+    袋口；拆成多個小角度中繼姿態後手臂本體的運動軌跡更貼近「原地小角度
+    轉」。兩輪修正的實測數據見 docs/CHANGELOG.md。
 
     `current_orientation`：呼叫端在真正下達 Phase 0（joint-space 回安全
     姿態）之前，這個姿態還沒真的在場景裡發生，不能用
@@ -425,42 +375,18 @@ def compute_elevated_bridge_waypoints(
     先呼叫 `compute_tilted_wrist_pose()` 算出最終 wrist/orientation/tilt_rad，
     回傳 `None` 代表它判定幾何無解。
 
-    ⚠️ `backswing_distance_m`（2026-08-29 新增為 `contact_clearance_m`，
-    2026-09-01 改名＋移除預設值＋升格為 AIM／STRIKE 共用契約，見
-    docs/issue-180-reachability-analysis.md 第十七、十八節）：
-    `compute_tilted_wrist_pose()` 回傳的 `wrist`（配合 `CUE_STICK_GRIP_TO_TIP`
-    反推出的桿尖位置）精確落在**母球球心**，不是球面——這是
-    `compute_contact_point()`／`required_grip_position()` 共用的既有慣例
-    （`position_offset=[0,0]` 退化為 `ball_center`，STRIKE 用同一個 `wrist`
-    當揮桿參考點時無妨，因為揮桿是高速通過、真正的物理碰撞遠早於軟體
-    目標點被打到就已經發生）。但 AIM／搭橋是慢速 P 控制器收斂到這個固定
-    目標，一路收斂會把桿尖持續往球心推、真的把母球往前推走（實測會推到
-    0.3m/s、母球在揮桿真正執行前就已經滾開 28cm，揮桿因此打空）——不是
-    PhysX 碰撞求解器的問題。這裡把 AIM／搭橋收斂的**最終**（C2）目標點
-    沿 `-direction` 方向退開 `backswing_distance_m`，讓收斂終點停在母球表面
-    外側，而不是球心，此為唯一改動 wrist 目標的地方，`wrist`／
-    `compute_tilted_wrist_pose()` 本身不受影響。
-
-    2026-09-01：這個參數原本叫 `contact_clearance_m`（預設 0.05m，只為了
-    避免推球，見下方校準記錄），跟 STRIKE 後擺起點用的
-    `swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M`（0.15m）是
-    兩個獨立數字，中間那段差距原本由裸的差動 IK P 控制器走，沒有防撞驗證
-    （第十八節「待處理 B」）。現在統一成同一個值：AIM 收斂終點＝STRIKE
-    後擺起點，呼叫端一律傳
-    `cue_pose_calculator.lookup_backswing_distance_m(cue_ball_xy)`（用 IK
-    可達邊界法反推、遠大於舊的 0.05m/0.15m，見該函式與
-    `_BACKSWING_DISTANCE_LOOKUP_GRID` 的說明），不再有獨立預設值——移除
-    預設值是刻意的，強制呼叫端明示，避免忘記傳新值又悄悄退回舊行為。
-
-    舊 `contact_clearance_m=0.05` 的校準記錄（`scripts/diagnose_move_swing.py`
-    的 `AIM_CONTACT_CLEARANCE_M` 覆寫開關實測，真實 Isaac Sim 物理模擬，
-    非解析推算，僅存歷史價值）：0.01m 仍會被 P 控制器的收斂爬升「追上」
-    （母球殘留速度從無間距的 0.32m/s 降到 0.15m/s，但沒有歸零）；0.03m
-    AIM 階段仍有一次極小的觸碰（母球殘留 ~0.1m/s），但已經足以讓
-    STRIKE 揮桿階段量到真實非零衝量（`impulse=0.201`、母球
-    `1.06m/s`）；**0.05m 完全消除 AIM 階段的碰撞事件**（全程 `ball_speed
-    =0.0000`）。新的查表值（0.34~0.35m）遠大於這個下限，同樣或更能避免
-    推球，不衝突。
+    `backswing_distance_m`：`compute_tilted_wrist_pose()` 回傳的 `wrist`
+    精確落在母球球心，不是球面（`compute_contact_point()`／
+    `required_grip_position()` 共用的既有慣例，STRIKE 高速通過用同一個
+    `wrist` 當揮桿參考點無妨）。但 AIM／搭橋是慢速 P 控制器收斂到這個
+    固定目標，一路收斂會把桿尖持續往球心推、真的把母球推走。這裡把
+    AIM／搭橋收斂的最終（C2）目標點沿 `-direction` 方向退開
+    `backswing_distance_m`，讓收斂終點停在母球表面外側，不是球心；此為
+    唯一改動 wrist 目標的地方，`wrist`／`compute_tilted_wrist_pose()`
+    本身不受影響。呼叫端一律傳
+    `cue_pose_calculator.lookup_backswing_distance_m(cue_ball_xy)`（AIM
+    收斂終點＝STRIKE 後擺起點，統一成同一個值，不再有獨立預設值，強制
+    呼叫端明示），數值來源與校準記錄見 docs/CHANGELOG.md。
     """
     wrist, orientation, tilt_rad, crossing = compute_tilted_wrist_pose(
         cue_ball_xy, shot_angle_deg, table_z, ball_radius, position_offset, roll_rad

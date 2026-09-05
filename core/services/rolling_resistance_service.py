@@ -89,18 +89,15 @@ class RollingResistanceService:
                 and residual_magnitude < SETTLING_NOISE_CEILING
             ):
                 # 水平跟自旋都只是沉降/多球接觸解算的數值雜訊量級，根本不是真的
-                # 在滾動或自旋。實測發現：即使只是要把這種雜訊「夾到 0」，只要
-                # 每個 tick 持續呼叫 set_velocities()，這個顯式寫入本身就會讓
-                # PhysX 沒機會把球放進 sleep 狀態——接觸解算會持續在雜訊量級
-                # 重新產生類似大小的殘留（永遠不是精確的 0），導致球永遠卡在
-                # 這個殘留值上不消失（見 GUI 實測回報：9 顆 rack 球卡在
-                # vz≈0.0687 永久不動，is_ball_moving 永遠是 True，狀態機卡死
-                # 在 IDLE）。正確做法是完全跳過寫入，把這種雜訊交還給 PhysX
-                # 自己的 sleep 機制處理（純物理環境不受干擾時，會在 0.4 秒內
-                # 自然收斂到 0 並保持 sleep）。注意：這跟下面 horizontally_at_
-                # rest／spin_at_rest 的「視覺門檻」是不同層級的判斷——門檻附近
-                # 真正的低速蠕動（例如 #203 回報的 bug）量級明顯大於這裡的雜訊
-                # 上限，仍然會落到下面的分支被主動夾停，不會被這裡誤判跳過。
+                # 在滾動或自旋。即使只是要把這種雜訊「夾到 0」，只要每個 tick
+                # 持續呼叫 set_velocities()，這個顯式寫入本身就會讓 PhysX 沒
+                # 機會把球放進 sleep 狀態——接觸解算會持續重新產生類似大小的
+                # 殘留，球永遠卡在這個值上不消失（見 docs/CHANGELOG.md 的 GUI
+                # 實測回報）。正確做法是完全跳過寫入，把雜訊交還給 PhysX 自己
+                # 的 sleep 機制處理。注意：這跟下面 horizontally_at_rest／
+                # spin_at_rest 的「視覺門檻」是不同層級的判斷——門檻附近真正的
+                # 低速蠕動（例如 #203 回報的 bug）量級明顯大於這裡的雜訊上限，
+                # 仍然會落到下面的分支被主動夾停，不會被這裡誤判跳過。
                 continue
 
             if horizontally_at_rest:

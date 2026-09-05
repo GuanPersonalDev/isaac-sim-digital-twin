@@ -87,11 +87,8 @@ constants.py`（`shoulder_pan=0` 時量測，這裡存的是 Stage 1 的原始�
 不是套用 `required_pan` 之後的值——套用旋轉是 `_solve_base_position_and_
 joint_targets()` 這個函式自己的職責，常數只存 pan=0 基準）。真實揮桿執行
 達成率驗證見 `scripts/test_elevated_bridge_ur3e_table.py`（96.1%，settle
-階段僅輕微擦地 impulse 1.07，非碰撞等級）——那支腳本驗證時用的是同一組
-`joints_pan0`，但當時記錄的 `direction_local`／`local_tip_position` 是
-套用 `required_pan` 之後的量測值，跟這裡的 pan=0 基準不是同一份數字，
-不能直接拿那份 log 的數字填這裡（曾經填錯一次，找到 bug 後才用
-`search_ur3e_placement_constants.py` 重新在 pan=0 量一次）。
+階段僅輕微擦地 impulse 1.07，非碰撞等級，見 docs/CHANGELOG.md 的取值
+說明）。
 
 `speed_per_unit_omega`：肘關節每 1 rad/s 角速度能給桿尖多少沿 `target_
 direction` 的線速度（m/s），是這組姿態本身的固有幾何量（跟 cue_ball_speed
@@ -140,14 +137,11 @@ _FLAT_PLACEMENT: tuple[tuple[float, ...], tuple[float, float, float], tuple[floa
     # （elbow_margin_ratio_est=0.8535，餘裕 14.6%）。
     #
     # ⚠️ 跟 `scripts/test_ur3e_human_pose_swing_speed.py` 驗證過 104.7%
-    # 達成率的那組 joints=[0,-1.7,-0.9,-1.6,-1.5708,0] **不是同一組**——
-    # 那次驗證是空場景（沒有球檯），桿尖高度算出來是 1.8m，真的擺到球檯
-    # 旁邊會要求基座陷進地板（跟高架橋案例第一版踩過的坑一樣），不能直接
-    # 沿用那組數字。這裡的常數改用有「桿尖高度合理」約束的搜尋結果，
-    # margin 從空場景版本的 33% 降到 14.6%，換取基座位置落在合理範圍，
-    # 但**還沒有像高架橋案例那樣接上真實球檯＋quintic 揮桿執行驗證**——
-    # 目前只確認了 Stage 1/2 的運動學可行性（`omega_elbow_needed<=限制`），
-    # 沒有實測過真實達成率會是多少，是這個模組目前最大的未驗證缺口。
+    # 達成率的那組 joints **不是同一組**——那次驗證是空場景（沒有球檯），
+    # 桿尖高度算出來是 1.8m，真的擺到球檯旁邊會要求基座陷進地板，不能
+    # 直接沿用（見 docs/CHANGELOG.md）。這裡的常數目前只確認了 Stage 1/2
+    # 的運動學可行性，還沒有像高架橋案例那樣接上真實球檯＋quintic 揮桿
+    # 執行驗證，是這個模組目前最大的未驗證缺口。
     (-2.8, -0.8, -0.7, -0.5, 0.0),
     (0.99999, 0.000123, 0.004412),
     (-0.229146, 1.397064, 0.803869),

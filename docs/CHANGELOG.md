@@ -1,0 +1,262 @@
+# 除錯與設計歷程 CHANGELOG
+
+**狀態**：持續累積
+**用途**：集中收納原本散落在程式碼註解裡的除錯過程、日期、根因追蹤細節。程式碼內只保留「來源＋用意」，完整的推導過程、試過但失敗的方案、量測數據都記在這裡。各 `docs/issue-*.md` 已有完整分析的項目不重複貼，只在此留一行指標。
+
+條目格式：`### <檔案路徑> — <主題>`，內文含日期（若已知）與推導脈絡。
+
+---
+
+## extension/isaac_sim_impl_6_0/articulation_api_impl.py
+
+### `_boost_wrist_gains_for_cue_stick_load()` — wrist_1/wrist_3 增益補強（2026-09-02）
+
+真實 GUI 執行（`billiard_digital_twin.py` 換成 `UR3eRobot` 之後）逐 tick log 顯示：`move_swing_elbow_pivot()` 進入「joint-space 移動到後擺姿態」子動作時，肘關節正常收斂，但 `wrist_1`／`wrist_3` 兩個關節即使目標角度完全沒變，也會在肘關節做大幅度動態擺動的過程中被拖離目標（wrist_1 從 -0.6999 漂移到 -0.433、wrist_3 從 ~0 漂移到 0.072，之後卡住不動），導致這個子動作永遠收斂不了、1000 步後逾時，STRIKE 從此卡死在錯誤姿態、桿尖離母球 1.87m。
+
+根因：UR3e 官方 USD 的關節 PD 增益／扭矩上限是針對「手臂自身負載」調的，沒考慮到球桿透過 FixedJoint 剛性掛在腕部後，1.35m 力臂在肘關節動態擺動時對 wrist_1/wrist_3 產生的額外反作用力矩。修法：提高這兩個關節的 stiffness/damping/max_effort（沿用官方 Gain Tuner「SET STIFF GAINS」慣例值）。
+
+### `_UR10E_AIM_RETRACT_POSITION_M` — 退桿距離加大實驗（2026-09-05，已回退）
+
+查證發現真正蹭到母球的是桿身（不是桿尖），試過把退桿距離從 `DEFAULT_BACKSWING_DISTANCE_M`（0.15m）加大到 `CUE_STICK_GRIP_TO_TIP+安全邊際`（1.45m），指望讓整根 1.35m 長的桿身徹底撤出母球所在的軸向區間。**實測證實這會讓情況更糟**：手臂從 RESET(HOME) 移動到 AIM 目標的過程中，退更遠的桿子拖著更長的尾巴一起掃過更大空間，反而撞到地板（impulse=2.34）、撞到多顆原本沒事的球——比原本輕微蹭到一顆球（impulse=0.024）嚴重得多。「退桿完成後靜止時的安全距離」跟「手臂移動過程中桿子掃過的空間大小」是互相拉扯的兩個需求，不能只靠加大退桿距離單方面解決。已回退為沿用 `DEFAULT_BACKSWING_DISTANCE_M`，接受桿身蹭到球的殘留風險；真正的修法應該是讓 RMPflow 路徑規劃本身知道母球/球檯的存在。
+
+### `_UR10E_AIM_STAGING_OFFSET_M` — 分階段避障的推導過程（2026-09-05，三輪）
+
+**第一輪**：註冊母球/球檯為 RMPflow 障礙物後，直接接觸問題解決（CueStick-母球 impulse 從 0.024 降到 0），但單一長距離、大幅重新定向的 waypoint chain（從 HOME 直接規劃到貼近母球的最終 AIM 姿態）反而更容易在避障的複雜決策空間裡卡進錯誤姿態分支（實測：方向誤差從 0.02rad 惡化到 0.86rad 等級，wxyz 符號幾乎完全相反）。改成兩階段：先移到方向與最終目標相同、沿桿軸往後退開 offset 的「安全中繼姿態」（避障全程啟用），再從中繼姿態沿同一軸向直線平移到最終位置。
+
+**第二輪**：最終逼近（第 2 步）的終點本來就緊貼母球，母球避障全程停用，代表整段（~1.45m）都沒有防護——實測踩過：桿身在抵達終點前的倒數第二個 waypoint（桿尖離球心僅 0.054m）擦到母球，撞出殘留速度，命中率變成 0%。
+
+**第三輪**：嘗試縮短這個距離降低無防護暴露長度，改成 0.3m 跟 0.6m 都讓 AIM 整個收斂變差（0.3m：位置誤差 0.306m，比整段 FINAL_APPROACH 的移動距離本身還長；0.6m：結果幾乎跟 0.3m 一樣，對這個參數不敏感）——研判 STAGING 階段本身的避障規劃在終點離母球太近時會被過度擠壓，不是單純調小數字能解決。退回已驗證能完全收斂的原始值（1.45m），中途擦碰問題改用「分段停用避障」（見下一條）處理。
+
+### 分段停用避障（第四輪，`_UR10E_FINAL_APPROACH_SAFE_MARGIN_M`，2026-09-05）
+
+FINAL_APPROACH 拆成兩段：先在避障開著的情況下逼近到只剩緩衝距離的「逼近緩衝點」，最後才關避障直線逼近剩下一小段，大幅縮小無防護暴露長度（從 ~1.45m 縮到 0.2m）。結果：擦碰沒有完全消失，只是位置往後移到更短的無防護段末端，且撞擊力道變大（impulse 0.042，先前是 0.0）。結論：這是終點姿態本身跟母球物理間距過緊的幾何問題，不是路徑規劃問題，分段避障無法根治，需要調整退桿距離或接觸點計算。
+
+### Default gains 快取污染 bug（差動 IK 收尾方向誤差卡在 0.073rad，2026-09-05）
+
+`Articulation.set_dof_gains()` 的 `update_default_gains` 參數預設 `True`：joint-space 收尾（`_boost_wrist_gains_for_cue_stick_load()` 的增益 boost）呼叫時若沒明確關閉，會永久污染 `switch_dof_control_mode()` 內部快取的「預設增益」，導致差動 IK 收尾切到 velocity 模式時，wrist_1/wrist_2/wrist_3/elbow 的阻尼被錯誤帶入 boost 過的數值，跟同鏈其他關節量級差異懸殊，重演同一類耦合病態。修法：呼叫時加 `update_default_gains=False`，並在建構時提前呼叫一次 `switch_dof_control_mode()` 用原始烘焙值把快取填好，關閉呼叫順序競態。修正後 AIM 位置/方向誤差穩定收斂到 0.0008m / 0.00225rad（此前最好僅達 0.665m / 1.3rad）。
+
+### `is_motion_complete()` 提早判定完成 bug（2026-08-31，Demo 桌真實 GUI 才踩到）
+
+`_on_tick`（驅動狀態機）跟 `_step_motion`（驅動實際換下一個子動作）是兩個各自獨立註冊的 PHYSICS_POST_STEP callback，`_on_tick` 註冊得早，每個 physics step 會搶先執行。當某個「中繼子動作」（`move_through_poses()` 的 Phase 0 joint-space 安全姿態、或 `move_swing()` 的後擺子階段）剛好在這個 physics step 收斂時，`_on_tick` 會搶先讀到「目前子目標已收斂」，讓外部誤以為**整個**動作做完、狀態機直接跳下一個狀態——但 `_step_motion()` 根本還沒機會把動作換到後面真正的目標，手臂因此永遠卡在中繼姿態（實測：球桿跟母球呈現不合理角度，STRIKING 卻已經在執行）。曾經誤把這個守門邏輯加進 `_is_current_target_converged()` 本體，結果連 `_step_motion()` 自己判斷「這個 waypoint 到了、該換下一個」都被擋住，整條 waypoint 序列永遠卡在第一個——改成只在 `is_motion_complete()` 這一層額外把關，不動 `_step_motion()` 依賴的內部判定。
+
+### `_capture_home_position_once()` 擷取時機 bug
+
+`_default_joint_positions` 與 `_home_position` 原本不同步擷取；`get_dof_positions()` 若在 `initialize()` 裡同步呼叫（physics 可能一步都還沒跑）會拿到不可靠的值（跟 `scripts/probe_palm_yaw_correction.py` 除錯時踩到「剛建構的 Articulation 沒等 physics 穩定就讀，拿到垃圾值」同一類問題），導致 `move_to_home()` 把關節開回一個不可靠的 `_default_joint_positions`，永遠碰不到用正確方式量到的 `_home_position`，是 RESET 狀態卡死、`is_motion_complete()` 恆為 False 的根因。修法：兩者搬到同一個 PHYSICS_POST_STEP callback 一起擷取。
+
+### `_is_current_target_converged()` — 曾嘗試放寬 waypoint 容許值（2026-08-28，已還原）
+
+曾經加過「帶 feedforward 速度的 waypoint 放寬容許值」修正（見 docs/issue-180-reachability-analysis.md 第十五節的穩態誤差公式），但用 `scripts/verify_swing_trajectory.py` 的真實桿尖速度量測驗證後發現：那個放寬容許值的門檻剛好落在 P 控制器+feedforward 的穩態平衡點（合力趨近 0，關節速度也趨近 0），系統會在那裡「宣告完成」，但桿尖當下幾乎靜止（實測 speed_error_ratio≈0.98，實際速度只有該有速度的 ~2%），等於沒真正揮桿。已還原，根因修法改成 `move_swing()`（線性規劃直接下令沿揮桿方向速度最優的關節速度指令，不是放寬既有 pose-tracking 的完成判定，見文件第十六節）。
+
+### `register_static_box_obstacle()` — FixedCuboid → VisualCuboid（2026-09-05）
+
+一開始用 `FixedCuboid`——那是「靜態剛體＋真實 PhysX 碰撞」，不是純粹給 RMPflow 內部避障邏輯參考用的幾何標記。實測踩過：這個障礙物箱體跟真正的球檯位置重疊，變成真的會撞的東西，CueStick 反覆跟它產生接觸事件。改用 `VisualCuboid`（純幾何+世界座標，沒有 RigidBodyAPI/CollisionAPI），不會參與真實 PhysX 碰撞反應。
+
+### `register_dynamic_sphere_obstacle()` — 無法直接包既有母球 prim（2026-09-05）
+
+一開始直接 `DynamicSphere(prim_path=母球路徑)` 想包一層現有的母球 prim，實測噴例外「cannot be parsed as a Sphere object」。母球實際的 USD 結構不是頂層就是一個 `UsdGeom.Sphere`（真正的 Sphere geometry 在更深的子節點），`DynamicSphere` 建構子對「包既有 prim」這個用法會嚴格檢查 prim type，包不了。改成建立一個全新、獨立的 `DynamicSphere` 障礙物 proxy，每個 tick 從母球真正的 `RigidPrim` 讀取最新世界座標手動同步過去。
+
+### `move_swing_elbow_pivot()` 設計動機
+
+`move_swing()` 對 WAM7 有效是因為 WAM7 需要多個關節協調（線性規劃跨全部關節求解）才能達到目標桿尖速度。UR3e 已驗證不需要這樣：只讓 `elbow_dof_index` 這一個關節從 0 加速到目標速度，其餘關節角速度指令精確為 0，就足以達到目標桿尖速度（見 `scripts/test_ur3e_human_pose_swing_speed.py`／`scripts/test_elevated_bridge_ur3e_table.py` 的真實 quintic 軌跡執行驗證，分別達成 104.7%／96.1%），而且完全靜止的 base/肩關節更貼近人體揮桿手肘擺動的動作設計。
+
+### `_apply_velocity_targets_with_gravity_compensation()` — UR3e 重力漂移驗證
+
+專案目前用的 WAM7 沒踩到重力漂移問題，但不是因為刻意處理過：URDF→USD 轉換工具幫每個關節寫死了一組偏高的 damping（`drive:angular:physics:damping=174.53`），意外地夠抗重力，不是專案自己調過的值。這是結構性風險：`scripts/test_ur3e_human_pose_swing_speed.py` 在 isolated 測試場景真的踩到過，達成率一度只有理論值的 10~55%——整支手臂在還沒開始揮桿前就先自由落體，量到的低速度是重力漂移的假象，不是姿態設計本身的問題。
+
+### `get_end_effector_position()` — UR10e 誤用 tip_local_offset bug（2026-09-04）
+
+UR10e 模式下這裡曾經誤用 `_compute_tip_local_offset()`（讀 end effector link 自身的 bounding box，找「離原點最遠那一端」當工具尖端）——那是幫 WAM7/UR3e 找「球桿用 align_prim_to_target 掛接的實體參考點」設計的，UR10e 的球桿是透過 CueSlideJoint 掛在 wrist_3_link 之後，跟 wrist_3_link 自己的 flange 幾何體完全無關。套用這個偏移量會加上一個跟 AIM 目標無關的常數位移，讓 AIM 收斂診斷憑空多出約 5cm 的「假誤差」（實測：joint tracking gap 僅約 6e-5 rad，代表關節本身幾乎完美收斂到 RMPflow 目標，但套用偏移量量出來的末端位置卻跟目標差了 5.6cm）。
+
+---
+
+## extension/isaac_sim_impl_6_0/ur10e_rmpflow_controller.py
+
+### 類別設計動機（2026-09-03～09-04）
+
+RMPflow 對「一次給一個很大的末端目標位移」（約 30cm 量級的對角線跳躍）會卡在局部穩定點，殘留誤差可達 0.1m 以上、長時間不再收斂——這是 reactive RMP controller 的已知特性（多個 RMP 分量互相拉扯），不是 bug。`move_to_pose()` 因此把大位移目標拆成一串位移量不超過 `_MAX_WAYPOINT_STEP_M` 的中繼 waypoint。
+
+`scripts/test_ur10e_table_flat.py` 的診斷發現，flat 案例走完整段 waypoint 後仍殘留 5.6cm 誤差，但 RMPflow 算出的關節目標跟 PhysX 實際量到的關節位置幾乎完全吻合（tracking gap 僅約 6e-5 rad）——代表不是 joint drive 追不上目標，而是 RMPflow 這個 reactive controller 本身在這個姿態附近的計算殘留（NVIDIA 官方論壇也有相同回報：forums.developer.nvidia.com/t/imprecise-control-via-rmpflow/253139）。修法：在最後一個 waypoint 收斂（或逾時）後，若仍未進入容許誤差，改用差動 IK 再收尾（見 `_step_finish_ik()`）——此時手臂已經很接近目標姿態，跳過 RMPflow 的避障不是新風險。
+
+### `move_to_pose()` — 方向也需逐段內插（2026-09-03）
+
+只內插位置、方向從第一段就直接設成最終目標，對「位置移動量大＋方向本身需要旋轉」（例如高架橋案例的傾斜姿態）的真實 AIM 目標會卡住不收斂——研判是 RMPflow 被迫在離最終位置還很遠的中繼點就同時追蹤最終方向，跟位置追蹤互相拉扯出局部穩定點。方向也逐段內插後，兩者不再互相打架。
+
+### `_FINAL_ORIENTATION_TOLERANCE_RAD` — 收緊容許值的排查（2026-09-04）
+
+一開始把 `_ORIENTATION_TOLERANCE_RAD` 整體從 0.02 收緊到 0.005，結果 AIM 直接崩潰（3379 步逾時，位置誤差 0.408m、方向誤差 0.86rad）——因為這個常數同時被 waypoint chain 每一段中繼點的收斂判定沿用，中繼點容許值收太緊會讓每一段都逼近 240 步逾時上限，累積誤差整段路徑跑歪。改成只在「最終姿態」精度收緊：實測 AIM 方向誤差 0.00933rad（在原本 0.02 容許值內，判定「收斂成功」）換算桿尖偏移約 1.26cm，跟 STRIKE 實測 miss 向量的橫向分量（約 1.2cm）吻合——這個偏移小於「球桿半徑+母球半徑」，導致 STRIKE 階段球桿的圓柱形桿身（不是桿尖）貼著母球側面蹭過去，衝量沒有正面轉移，達成率只有 42%。
+
+### `_HOME_JOINT_POSITIONS` — wrist_2 奇異點排查（2026-09-03，未證實）
+
+`default_q` 的 `wrist_2_joint=0`，懷疑落在 UR 家族手臂的手腕奇異點（wrist_2=0 時 wrist_1／wrist_3 兩軸平行/耦合）附近，可能是某些 AIM 目標（尤其 flat 案例）從 HOME 出發會卡在局部穩定點的原因之一。實測把 wrist_2 改成 π/2（遠離這個值）之後，HOME 本身跟後續 AIM 反而都變得更難收斂（HOME 自己開始逾時、AIM 殘留誤差從 0.16m 惡化到 0.20m），已改回原始 `default_q`——這個假設沒有被證實，問題根因仍待查。
+
+### `set_solver_iteration_counts()` 門檻效應實測數據（2026-09-05）
+
+拉高 iteration count 有明顯的門檻效應，不是線性漸進：255（WAM7 探針腳本驗證假設用的極端值）能把殘留誤差壓到 0.002rad，但代價是每個 waypoint 收斂明顯變慢（RESET 905→2407 步、STAGING 1999→4164 步仍逾時）；降到 32 幾乎沒有效果（殘留誤差 0.0902，等於沒調）。128 跟 255 效果相同（殘留誤差同樣壓到 0.002~0.005rad），代價也相同——門檻落在 32~128 之間，且修正效果與變慢代價綁在一起，無法只取其一。選 128（不用 255）是「先取一個明確跨過門檻、且非必要不用極端值」的保守選擇。
+
+### `_compute_analytic_finish_joint_target()` — 奇異點解集合退化（2026-09-04）
+
+收緊 `_FINAL_ORIENTATION_TOLERANCE_RAD` 後才踩到的新問題——`move_to_home()` 走的也是同一條收尾路徑，而 HOME 姿態的 `wrist_2_joint=0` 正好卡在 UR 家族手臂的手腕奇異點上。在奇異點附近，closed-form IK 的解集合會退化（實測：只解出 4 組，不是滿額的 8 組），這時候「挑離目前姿態最近的分支」完全不可信——實測踩過：目前關節角幾乎正好在 HOME，選出來的「最近」分支卻離目前姿態達 2.7rad，把手臂拖去完全錯誤的姿態。加一個寬鬆的合理性上限（`_MAX_REASONABLE_FINISH_DELTA_RAD=0.5`），超過就視為不可信、退回差動 IK。
+
+### `_FINISH_GAIN_OVERRIDES` 排查歷程（2026-09-04～09-05）
+
+一開始照抄 `ArticulationAPIImpl._boost_wrist_gains_for_cue_stick_load()`（UR3e 驗證過的同一組常數，stiffness=1e15/damping=1e5），結果 `wrist_1_joint` 在 joint-space 收尾完全卡住不動（240 步、1120N·m 飽和力矩幾乎無效）。逐一排除碰撞（全連桿 contact reporting 確認零接觸）、關節極限（差六圈以上）、drive type（確認是 "force"）、gains 寫入沒生效之後，靠 A/B 對照測試發現：`wrist_1_joint` 原始 baked stiffness 只有約 72,662，1e15 是這個值的一百多億倍，跟同一條運動鏈上其他關節的量級差距過大，讓 PhysX 的 TGS 迭代求解器對這個最僵硬的關節反而欠收斂——數值上病態，不是真的「增益不夠」。改成 1e6/1e4（約為原始值的 14 倍，遠比 UR3e 那組溫和）之後，實測 2 個 physics tick 就收斂（joint_error 從 0.033rad 降到 0.0096rad）。UR3e 跟 UR10e 兩邊的下游負載結構不同，同一組「越硬越好」的增益常數不能直接照搬。
+
+收緊 `_FINAL_ORIENTATION_TOLERANCE_RAD` 到 0.005 之後才浮現：逐關節 log 證實應該針對個別關節依其負載分別調整增益（Isaac Sim 官方 Gain Tuner 文件、PhysX 官方文件一致建議），逾時當下 `elbow_joint` 誤差 0.02205rad（遠高於其他關節），`wrist_1_joint` 0.00504rad，其餘 4 個關節都遠低於容許值——不是「全部關節都不夠力」，是原本沒被列入 boost 名單、扛著整條下游手臂重力力矩的 `elbow_joint` 不夠力。把 "elbow" 加進 boost 名單解決。
+
+加入 RMPflow 障礙物避讓（AIM 兩階段分期）後才浮現：逐關節 log 顯示 `joint_space_finish` 逾時當下 `wrist_2_joint` 誤差 0.089~0.138rad（其餘 5 個關節都在 0.01rad 以內）。一開始誤判成跟 elbow 同一類「增益不夠」問題，把 stiffness/damping 加倍成 2e6/2e4、`max_effort_multiplier` 從 20x 加到 40x（2240N·m），殘留誤差都幾乎沒變（三次都落在 0.0887~0.0890rad）——不是 PD 穩態誤差（加倍 stiffness 應該讓誤差大致減半），也不是 max_effort 飽和（加倍上限應該有反應）。逐 tick log 顯示這個關節一開始其實已經很接近目標（誤差 0.0065rad），是之後 240 步內平滑地被拉往另一個平衡點，典型「多關節耦合系統 solver 迭代次數不足」的假影特徵——真正的修法是 `set_solver_iteration_counts()`（見上一條），不是 gain override，wrist_2 維持跟 wrist_1/wrist_3 一致的數值。
+
+### `_step_joint_space_finish()` — 缺重力補償的排查（2026-09-04）
+
+第一版沒加重力補償，逐 tick log 顯示 `wrist_1_joint` 穩定卡在離目標 0.033rad 的地方完全不動（其餘 5 個關節都準確追到 1e-4rad 等級）——這正是 `ArticulationAPIImpl._boost_wrist_gains_for_cue_stick_load()` 修過的同一類問題。UR10e 的 `_step_rmpflow()` 之所以沒踩到，是因為 RMPflow 每個 tick 都重新給一個貼近目前值的新目標，等於變相用位置追蹤模擬速度追蹤，掩蓋了這個穩態誤差；joint-space 收尾是固定目標長時間 hold，穩態下垂才會顯現。
+
+### `_step_finish_ik()` — 缺速度歸零的排查（2026-09-04）
+
+第一版在收斂/逾時時直接 return，沒有歸零 velocity target——velocity-mode drive 會持續套用「上一次」下達的非零角速度指令，直到有新指令覆寫為止。實測：STRIKE 開始前母球速度就已經非零，代表收斂後手臂漂移的桿子先撞到了球。
+
+### `add_dynamic_sphere_obstacle()` — DynamicSphere 互撞問題（2026-09-05）
+
+`DynamicSphere` 本身是「動態剛體＋真實 PhysX 碰撞」，不是純幾何標記——實測踩過：這個 proxy 跟真正的母球位置完全重疊（故意同步成一樣），兩個都有真實碰撞形狀，直接互撞，母球被撞出 impulse 31 等級的力道，整顆彈飛去撞牆撞地板。改用 `VisualSphere`。
+
+---
+
+## core/models/action_bounds.py
+
+### `SHOT_ANGLE` — 為什麼是 (-180, 180) 而不是 (0, 360)（#231，2026-08-11）
+
+覆蓋範圍完全相同，差別只在端點擺在哪裡：
+
+| | 舊 (0, 360) | 新 (-180, 180) |
+|---|---|---|
+| normalized -1 | 0°（正對球堆） | -180°（背對球堆） |
+| normalized 0 | 180°（背對球堆） | 0°（正對球堆） |
+| normalized +1 | 360°（正對球堆） | 180°（背對球堆） |
+
+1. Gaussian policy 的初始輸出集中在 normalized 0。舊區間等於預設瞄準球堆的反方向——#123 短訓練的 valid_ratio ≈ 0.175（平均 episode 5.7 步，遠短於落定的 10~12 步）就是「母球沒撞到球堆、彈幾次庫就停」的長度。
+2. 舊區間把開球的最佳方向 0° 放在 -1 邊界上：policy 要瞄它就得把平均值推到邊界、分佈有一半被 clip；而物理上等價的 359° 與 1° 在正規化域是 +0.994 與 -0.994，相距 1.99——幾乎整個動作空間的寬度。Gaussian 表達不了這種週期性。
+3. `rl_task/scripts/verify_spread_ref.py` 原本必須從 -1 與 +1 兩端各取一半樣本才能涵蓋 0° 附近，那個 workaround 本身就是端點放錯位置的證據。
+
+### `SHOT_ANGLE` — Milestone A 收窄為 ±30° 的 PPO 實測數據（2026-08-11）
+
+```
+Mean value loss   1.1871 → 0.7214 → 0.2653 → 0.0534 → 0.0105
+Mean surrogate    0.0037 → -0.0003 → -0.0001 → -0.0006 → -0.0010
+Mean action std   0.40 → 0.40 → 0.40 → 0.40 → 0.40
+```
+
+critic 五個 iteration 就把 value loss 壓到 0.01——因為答案永遠是 -1.5。value 準了之後 advantage ≈ 0，surrogate 掉到 ±0.001，policy 完全不動。反推信號密度：Episode_Reward/foul = -0.0743 × 20 = -1.486，代表只有約 0.9% 的 episode 拿到 foul = 0；每輪約 180 局裡只有 2 局帶資訊。
+
+根因是解析度：母球到 1 號球 1.5875 m，接觸只容許側向 2R = 0.05715 m，換算角度窗口僅 ±2.062°（擺位偏 3 cm 時只剩 ±0.980°）。init_std = 0.4 在 ±180° 的區間上是 ±72° 的探索半寬——命中質量比只有 2.9%。
+
+| 半寬 | 命中窗口（正規化） | init_std=0.4 命中質量比 |
+|---|---|---|
+| ±180° | ±0.0115 | 2.9% |
+| ±45° | ±0.0458 | 11.5% |
+| ±30° | ±0.0687 | 17.2%（採用） |
+
+### `CUE_BALL_SPEED` — 上界飽和假設已被推翻（2026-08-11）
+
+原本寫「spread 要到約 1.8 m/s 才飽和」，那個數字來自一個被 RunPod 實測推翻的 2D 模型，已證實錯誤。真實 PhysX 的速度掃描（各 500+ 筆 first_contact == 1）顯示完全沒有飽和：
+
+```
+1.3223 m/s  spread 0.01349   legal break  0.0%
+1.9946 m/s  spread 0.01798   legal break  0.0%
+2.6669 m/s  spread 0.03451   legal break 28.7%
+3.3392 m/s  spread 0.04264   legal break 44.8%
+```
+
+扣掉 rack 基準後的彈性 d ln(spread-rack)/d ln(v) 在上界處仍有 1.36（飽和的話會趨近 0），也就是上界 3.3392 本身才是瓶頸。連帶的事實：低於約 2.6 m/s 的整段是策略上的嚴格劣勢——spread 更差，而且 legal break 掛零，保證吃 -0.5，policy 會學成永遠輸出速度上界，這一維不會有有意義的策略。
+
+---
+
+## core/services/cue_pose_calculator.py
+
+### `_ROLL_LOOKUP_GRID` 三輪修正歷程（2026-08-28，見 docs/issue-180-reachability-analysis.md 第十四節）
+
+**第一輪（全面重建）**：舊表（0°/15°/45°/60° 這種小角度）是用物理模擬手動試誤選出來的、只確認「無碰撞」，從未真正驗證「AIM 差動 IK 收得斂」——20 案例 STRIKE 0/20 全滅的根因追到最後，就是這個查表逼 shoulder_pitch／wrist_pitch／palm_yaw 同時頂死關節限位。用 `scripts/wam7_kinematics.py` 的純數值 IK 重新搜尋，發現正確的 roll 落在完全不同的範圍（-180°~165°），且 roll 只跟 cue_ball_y 有關、跟 cue_ball_x 無關（base_yaw 關節會吸收 X 方向的差異）。
+
+**第二輪**：純數值 IK 沒有建模手臂本體碰撞，只用 IK 餘裕排序的表在完整 20 案例網格上大多數是 COLLISION。改用 `scripts/search_collision_free_roll.py`：對每個候選點依 IK 餘裕由高到低嘗試候選，逐一用真實 Isaac Sim 物理模擬驗證，取第一個「IK 收斂 + 無碰撞」都成立的候選。
+
+**第三輪**：「roll 只跟 cue_ball_y 有關」只在數值 IK 可達性這個面向成立——碰撞跟世界座標系裡離哪個庫邊/袋口近有關，不是只看關節構型，同一個 Y、不同 X 的三個案例常常需要不同的 roll。改成對 `action_bounds.CUE_BALL_PLACEMENT_X/Y` 的完整 3×3 網格逐點驗證，不再假設 X 無關。
+
+### `_BACKSWING_DISTANCE_LOOKUP_GRID` — 基座偏移搜尋失敗記錄（2026-08-31～09-01）
+
+`DEFAULT_BACKSWING_DISTANCE_M`（0.15m）跟關節實際能提供的加速能力完全脫鉤，實測揮桿速度只達目標 55%（見 docs/issue-180-reachability-analysis.md 第十八節）。曾經試過把機器人基座水平位移也當自由變數一起搜尋（能讓部分案例的後擺距離大幅提升），但用真實 Isaac Sim headless（`diagnose_move_swing.py`）驗證發現：純運動學可達性分析找到的基座偏移，會讓 `ArticulationAPIImpl` 真正用的差動 IK 控制迴圈（Phase 0→B1→B2→C1→C2）不收斂（逾時 1000 步，揮桿打空）——一次性可達性求解沒有模擬差動 IK 沿路徑逐步收斂的動態行為，偏移越大、路徑幾何改變越多，風險越高。改成基座位置一律用 `compute_base_pose()` 的公式值，完全不搜尋偏移，只保留後擺距離的改善。
+
+### `compute_elevated_bridge_waypoints()` — C1/B1 兩輪修正的實測數據（2026-08-27，見 docs/issue-180-reachability-analysis.md 第十三節）
+
+**C1 二次修正**：原本是單一個大跳躍 waypoint，實測發現即使腕部位置全程沒動，差動 IK 為了在單一 waypoint 內達成姿態變化，會讓 `shoulder_yaw`/`elbow_pitch` 沿路劇烈擺盪，導致手臂本體掃過球檯庫邊/袋口，在 Kitchen 正中心案例撞到 `Cushion_Head`／`Pocket_HeadLeft`。改用 NLERP 拆成多個中繼姿態解決。
+
+**B1 一次修正**：舊版第一階段是「原地轉向朝正上方」，目的是保證轉向過程中桿頭不會掃低撞到桌面。但這個「轉到正上方」是接近 90° 的大幅重新定向，會把 `wrist_yaw`（總行程只有 5.8 rad，起點在 0）／`wrist_pitch`（總行程只有 π rad≈180°，起點在 -32°）逼到硬限位卡死收斂不了，且跟 `shoulder_pitch`/`elbow_pitch` 的固定姿態餘裕無關——不管怎麼調 `CANONICAL_REST_JOINTS` 都救不了（`shoulder_pitch` 從 1.9 降到 1.5 對這個瓶頸完全沒有幫助，殘留誤差幾乎不變）。改用「保持目前姿態原地爬升」解決。
+
+### `backswing_distance_m` 命名沿革與舊校準記錄（2026-08-29～09-01，見 docs/issue-180-reachability-analysis.md 第十七、十八節）
+
+這個參數原本叫 `contact_clearance_m`（預設 0.05m），跟 STRIKE 後擺起點用的 `swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M`（0.15m）是兩個獨立數字，中間那段差距原本由裸的差動 IK P 控制器走，沒有防撞驗證。2026-09-01 統一成同一個值並改名、移除預設值。
+
+舊 `contact_clearance_m=0.05` 的校準記錄（`scripts/diagnose_move_swing.py` 的 `AIM_CONTACT_CLEARANCE_M` 覆寫開關實測，真實 Isaac Sim 物理模擬，僅存歷史價值）：0.01m 仍會被 P 控制器的收斂爬升「追上」（母球殘留速度從無間距的 0.32m/s 降到 0.15m/s，但沒有歸零）；0.03m AIM 階段仍有一次極小的觸碰（母球殘留 ~0.1m/s），但已經足以讓 STRIKE 揮桿階段量到真實非零衝量（impulse=0.201、母球 1.06m/s）；0.05m 完全消除 AIM 階段的碰撞事件（全程 ball_speed=0.0000）。新的查表值（0.34~0.35m）遠大於這個下限。
+
+---
+
+## core/services/ur3e_placement_calculator.py
+
+### `_VALIDATED_BRIDGE_*` 常數的取值 bug（曾經填錯一次）
+
+`scripts/test_elevated_bridge_ur3e_table.py` 驗證時用的是同一組 `joints_pan0`，但當時記錄的 `direction_local`／`local_tip_position` 是套用 `required_pan` 之後的量測值，跟這裡要存的 pan=0 基準不是同一份數字——曾經直接拿那份驗證 log 的數字填進常數，填錯一次，找到 bug 後才改用 `search_ur3e_placement_constants.py` 重新在 `shoulder_pan=0` 量一次。
+
+### `_FLAT_PLACEMENT` — 與空場景驗證數據不是同一組
+
+跟 `scripts/test_ur3e_human_pose_swing_speed.py` 驗證過 104.7% 達成率的那組 `joints=[0,-1.7,-0.9,-1.6,-1.5708,0]` 不是同一組：那次驗證是空場景（沒有球檯），桿尖高度算出來是 1.8m，真的擺到球檯旁邊會要求基座陷進地板（跟高架橋案例第一版踩過的坑一樣）。改用有「桿尖高度合理」約束的搜尋結果，margin 從空場景版本的 33% 降到 14.6%，換取基座位置落在合理範圍。
+
+---
+
+## core/services/aim_shaping_calculator.py
+
+### #124 第一輪訓練失敗模式（2026-08-11，it 238）
+
+失敗模式不是「訊號太少」而是「reward 地形是平的」：
+
+```
+沒碰到任何球                  -1.5
+碰到錯球                      -1.5     ← 與上一列完全相同
+碰到 1 號球未滿 4 顆碰顆星      -0.5 + spread
+合法開球                       0.0 + spread
+```
+
+policy 起點附近整片都是 -1.5，唯一的梯度是命中率約 4.5% 的那根尖刺。PPO 在平原上只會縮變異數、往取樣雜訊剛好指的方向收斂——實測 238 個 iteration 後 `Policy/mean_std` 0.400 → 0.196、`Loss/learning_rate` 6.67e-4 → 2.3e-5，而 `Episode_Reward/spread` 與 `Episode_Termination/break_foul` 雙雙歸零：前者代表沒有任何一局合法接觸（1024 env 只要有一局，raw 值就會是 4.9e-5 而不是 0.000000），後者代表也沒有碰到錯球——母球一顆球都沒碰到。
+
+---
+
+## core/services/rolling_resistance_service.py
+
+### 沉降雜訊誤判為「速度未歸零」bug（GUI 實測回報）
+
+即使只是要把沉降/多球接觸解算的數值雜訊「夾到 0」，只要每個 tick 持續呼叫 `set_velocities()`，這個顯式寫入本身就會讓 PhysX 沒機會把球放進 sleep 狀態——接觸解算會持續在雜訊量級重新產生類似大小的殘留（永遠不是精確的 0）。實測回報：9 顆 rack 球卡在 `vz≈0.0687` 永久不動，`is_ball_moving` 永遠是 True，狀態機卡死在 IDLE。修法：低於 `SETTLING_NOISE_CEILING` 的雜訊完全跳過寫入，交還給 PhysX 自己的 sleep 機制處理（純物理環境不受干擾時會在 0.4 秒內自然收斂到 0 並保持 sleep）。
+
+---
+
+## core/services/ur10e_swing_strategy.py
+
+### `ur10e_placement_calculator` 基座策略調整（2026-09-03）
+
+decision 4 原本假設固定基座位置夠用，實測發現對某些母球位置距離目標遠達 2.6m、超過 UR10e 1.3m 可達距離，因此改回 per-shot 重新計算。
+
+### `compute_roll_minimizing_reorientation()` 的排查過程（2026-09-03～09-04）
+
+固定用預設 `roll_rad=0` 算出來的姿態，對某些目前姿態（尤其從 HOME 出發的 flat 案例）剛好是最壞選擇——跟目前姿態接近正反面，RMPflow 被迫做接近 180 度的姿態翻轉，反應式求解容易卡在局部穩定點（實測殘留誤差 0.1-0.6m）。單純改成「翻轉角度最小」還不夠——找到的姿態可能剛好逼近 UR10e 手腕的運動學奇異點（實測：flat 案例卡在方向誤差 0.0294 rad 不再收斂，換算成桿尖偏移超過球半徑，STRIKE 完全打不到球）。
+
+---
+
+## extension/isaac_sim_impl_6_0/ur10e_cue_slide_controller.py
+
+### `_MAX_STRIKE_STEPS`／中點法則取樣的排查過程（2026-09-05）
+
+STRIKE 揮桿全程通常只有 5~6 個 physics tick（T 只有 0.1 秒量級），逐 tick 直接量測發現 velocity-mode PD 追蹤幾乎零誤差（每個 tick 量到的實際速度就是上個 tick 的指令值），排除「阻尼追不上指令」這個假設。真正原因是取樣點數太少造成的離散積分系統性低估：`_step_strike()` 原本用左端點取樣（zero-order hold 取「這個 tick 一開始」的瞬時速度），對一段持續遞增的速度曲線是標準的左黎曼和低估——手動積分實測量到的速度只走了 0.1386m，但 quintic 邊界條件保證的位移是 0.14855m，差了約 1.3cm，導致 CueSlideJoint 停在 q≈-0.03~-0.04（沒有真的到 q=0），桿尖因此沒真正碰到球心。改成中點法則取樣後精度比左端點好一個數量級。
+
+### `switch_dof_control_mode()` 未限定 dof_indices 導致手臂漂移（2026-09-04）
+
+不帶 `dof_indices` 會套用到全部 7 個 DOF——"velocity" 模式把 stiffness 歸零，若不限定只作用在 CueSlideJoint，等於連其餘 6 個手臂關節的 stiffness 也一起歸零，讓 AIM 收斂好的姿態在整段揮桿期間完全沒有位置回復力可以抵抗 CueSlideJoint 加速的反作用力，只剩 damping／重力補償撐著，手臂因此在推桿當下漂移（實測：STRIKE 全程桿尖 Z 座標多爬升 3.24cm，跟純沿桿軸滑動的幾何預期不符，是造成桿尖沒打中球心的真正原因）。
+
+### 揮桿完成判定的雙邊窄窗 bug（2026-09-05）
+
+第一版用 `abs(current_position) <= _POSITION_TOLERANCE_M`（雙邊 2mm 窄窗）判斷收斂，實測直接撞出更嚴重的新問題——目標速度 1.5+ m/s、每個 physics tick 本身就會移動約 2.5cm，遠大於 2mm 容許窗，joint 從「還沒到」一個 tick 就直接「已經衝過頭」，永遠不會有任何一個 tick 剛好落在窄窗內。於是 `timed_out` 之前 `converged` 恆為 False，指令速度持續卡在 `target_velocity` 硬推，實測衝出去 27cm 一路撞上球檯庫邊（impulse=28，比修正前的「差一點點沒到」嚴重多了）。改成「有沒有抵達或超過 0」（單邊判定）解決。
+
+---

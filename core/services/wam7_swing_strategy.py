@@ -126,27 +126,17 @@ class Wam7SwingStrategy(RobotSwingStrategy):
             )
 
         direction_unit = cue_pose_calculator.compute_tilted_direction(action.shot_angle, tilt_rad)
-        # ⚠️ 2026-08-29：改用 move_swing()（見 core/ports/articulation_api.py
-        # 抽象方法／extension/isaac_sim_impl_6_0/articulation_api_impl.py
-        # 實作），取代原本的 compute_swing_waypoints()+move_through_poses()
-        # 兩段式呼叫——後者是靜態目標點的 P 控制器+feedforward pose
-        # tracking，有結構性穩態誤差，隨揮終點永遠差一截到不了（見
-        # docs/issue-180-reachability-analysis.md 第十五節）。move_swing()
-        # 改成每個 physics tick 用線性規劃求「姿態修正在有限額度內、沿
-        # 揮桿方向最大化速度」，是真正驗證過能讓桿尖碰到球、量到真實非零
-        # 碰撞衝量的版本（第十七節，diagnose_move_swing.py 實測
-        # impulse=0.201、母球 1.05m/s）。
+        # move_swing()（線性規劃求「姿態修正在有限額度內、沿揮桿方向最大化
+        # 速度」）取代靜態目標點的 P 控制器+feedforward pose tracking——後者
+        # 有結構性穩態誤差，隨揮終點永遠差一截到不了（見
+        # docs/issue-180-reachability-analysis.md 第十五節）。
+        # orientation_gain=1.0／max_angular_speed=1.0 沿用實測驗證過的數值
+        # （比 move_swing() 的預設 max_angular_speed=0.5 更寬）。
         #
-        # orientation_gain=1.0／max_angular_speed=1.0 是實測驗證用的數值
-        # （比 move_swing() 方法本身的預設 max_angular_speed=0.5 更寬），
-        # 沿用同一組數值才能保證跟已驗證過的行為一致。
-        # ⚠️ 2026-09-01：高架橋案例改用 cue_pose_calculator.
-        # lookup_backswing_distance_m()（IK 可達邊界法反推，見該函式與
-        # _BACKSWING_DISTANCE_LOOKUP_GRID 說明），跟 execute_aim() 的 AIM
-        # 收斂終點統一成同一個距離，同一顆 cue_ball 座標查同一個值。flat
-        # 案例（tilt_rad<=1e-6）維持現狀，繼續用 DEFAULT_BACKSWING_DISTANCE_M
-        # （docs/issue-180-reachability-analysis.md 第十八節「待處理 B」
-        # 已明文決定 flat 分支不套用這套統一）。
+        # 高架橋案例的退桿距離跟 execute_aim() 的 AIM 收斂終點統一成同一個
+        # 值（同一顆 cue_ball 座標查 lookup_backswing_distance_m()）；flat
+        # 案例維持現狀，繼續用 DEFAULT_BACKSWING_DISTANCE_M（見
+        # docs/issue-180-reachability-analysis.md 第十八節）。
         if tilt_rad > 1e-6:
             backswing_distance = cue_pose_calculator.lookup_backswing_distance_m(cue_ball)
         else:

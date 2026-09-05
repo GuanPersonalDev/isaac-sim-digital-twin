@@ -49,25 +49,20 @@ from core.services.rolling_resistance_service import RollingResistanceService
 _TABLE_COUNT = 1
 _TOOL_MENU_NAME = "Tools"
 # Demo 桌實際掛載的手臂類別，換手臂只需要改這一行（見 core/models/robot_arm.py）。
-#
-# ⚠️ 2026-09-01：換成 UR3eRobot，準備在 Isaac Sim GUI 裡實際觀察瞄準/擊球
-# 行為——UR3e 這條路徑（core/services/ur3e_placement_calculator.py／
+# UR3e 這條路徑（core/services/ur3e_placement_calculator.py／
 # ArticulationAPIImpl.move_swing_elbow_pivot()）目前只有 tilt≈5.34° 高架橋
-# 案例做過真實球檯執行驗證，flat 案例／tilt≈9.91° 案例／「從手臂目前姿態
-# 安全接近到後擺姿態」這一段都還沒驗證過，實際測試時要留意這幾個已知
-# 風險（見 ur3e_placement_calculator.py 模組說明、move_swing_elbow_pivot()
-# docstring）。要換回 WAM7 只需要把這行改回 BarrettWamRobot。
+# 案例做過真實球檯執行驗證，其餘案例的已知風險見
+# ur3e_placement_calculator.py 模組說明。
 _ROBOT_ARM_CLASS: type[RobotArm] = UR3eRobot
 _TABLE_SIZE_PROBE_PATH = "/World/_TableSizeProbe"
 _POLICY_PATH = os.path.join(_PROJECT_ROOT, "models", "rl", "billiard", "policy.pt")
 _EVAL_MAX_OFFSET = 0.6
 
-# ⚠️ 2026-09-02：以下兩個環境變數僅供無人值守除錯用（headful GUI 用
+# 以下兩個環境變數僅供無人值守除錯用（headful GUI 用
 # `isaacsim.exe ... --enable billiard_digital_twin` 開啟、跑固定時間後由外部
-# timeout 關閉的場景），不影響一般互動使用——兩者預設都是關閉（空字串/0），
-# 只有明確設定環境變數才會啟用，正常互動 GUI 行為完全不受影響。用來在
-# UR3e 換手臂驗證時，不需要真人手動點 Play、肉眼盯著畫面，就能拿到逐 tick
-# 的關節角度/桿尖位置/母球位置數據事後分析。
+# timeout 關閉），不需要真人手動點 Play、肉眼盯著畫面，就能拿到逐 tick 的
+# 關節角度/桿尖位置/母球位置數據事後分析。兩者預設都是關閉（空字串/0），
+# 只有明確設定環境變數才會啟用，正常互動 GUI 行為完全不受影響。
 _AUTO_PLAY_DELAY_SEC = float(os.environ.get("BILLIARD_AUTO_PLAY_DELAY_SEC", "0") or "0")
 _DEBUG_LOG_PATH = os.environ.get("BILLIARD_DEBUG_LOG_PATH", "")
 
@@ -134,10 +129,10 @@ class BilliardExtension(omni.ext.IExt):
         self._asset_env_init()
 
         if _DEBUG_LOG_PATH:
-            # 2026-09-02：GUI 逐 tick log 只有關節角度/位置，看得出手臂卡住
-            # 但看不出是不是真的撞到東西（例如球桿後擺過程掃到地板）——加碰撞
-            # 事件回報直接證實。跟 PocketEventHandler 各自獨立一個
-            # PhysicsAPIImpl 實例／各自一個 subscribe_contact_events()：
+            # GUI 逐 tick log 只有關節角度/位置，看不出是不是真的撞到東西
+            # （例如球桿後擺過程掃到地板），加碰撞事件回報直接證實。跟
+            # PocketEventHandler 各自獨立一個 PhysicsAPIImpl 實例／各自一個
+            # subscribe_contact_events()：
             # enable_contact_reporting() 是把 PhysxContactReportAPI 掛到 USD
             # prim 上（stage 層級的效果，不屬於特定 subscriber），
             # subscribe_contact_events() 訂閱的是 PhysX 全域的 contact report

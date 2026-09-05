@@ -2,11 +2,10 @@ from ..models.break_foul_result import BreakFoulResult
 
 FIRST_CONTACT_FOUL_PENALTY = -1.5
 INSUFFICIENT_RAIL_CONTACT_PENALTY = -0.5
-# 整局沒碰到任何球，比碰到錯球更差（#124，2026-08-11）。
-#
-# 原本兩者同為 -1.5，於是 policy 起點附近整片 reward 是平的——第一輪訓練
-# 238 個 iteration 後收斂到「母球一顆球都沒碰到」，spread 與 break_foul 終止
-# 率雙雙歸零。分開之後犯規階梯變成嚴格遞增，「碰到東西」本身就是進步：
+# 整局沒碰到任何球，比碰到錯球更差（#124）。原本兩者同為 -1.5，會讓
+# policy 起點附近整片 reward 是平的（訓練失敗記錄見
+# aim_shaping_calculator.py 與 docs/CHANGELOG.md）。分開之後犯規階梯變成
+# 嚴格遞增，「碰到東西」本身就是進步：
 #
 #   -2.0  沒碰到任何球
 #   -1.5  碰到錯球
