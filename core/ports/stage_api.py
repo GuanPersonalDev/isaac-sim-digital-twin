@@ -91,10 +91,16 @@ class StageAPI(ABC):
     ) -> None:
         """
         在 joint_path 建立 Prismatic Joint Prim，讓 body0_path 與 body1_path
-        兩端只能沿 axis（"X"/"Y"/"Z"，body1 的本地座標系）相對滑動——取代
-        `create_fixed_joint()` 給 UR10e＋專用出力機構用（見 UR10e 重新設計
-        計畫決策 2/3）：球桿沿自身軸向在這個關節上前後滑動產生揮桿速度，
-        而不是靠手臂關節本身的角速度。
+        兩端只能沿 axis（"X"/"Y"/"Z"）相對滑動——取代 `create_fixed_joint()`
+        給 UR10e＋專用出力機構用（見 UR10e 重新設計計畫決策 2/3）：球桿沿
+        自身軸向在這個關節上前後滑動產生揮桿速度，而不是靠手臂關節本身的
+        角速度。
+
+        ⚠️ **body0 是父、body1 是子，順序決定 DOF 的正負方向**：關節 DOF
+        量的是「body1 的關節座標系相對 body0 沿 axis 的位移」，正的 DOF 代表
+        body1 往 +axis 移動。把被手臂驅動的連桿誤當成 body1，正方向就會反過來
+        （等效於工具往 -axis 移動）。`create_fixed_joint()` 沒有 DOF 不受這個
+        順序影響，兩者不能沿用同一套參數順序慣例。
 
         lower_limit／upper_limit（單位：公尺，相對兩端初始重合位置的偏移）
         皆為 None 時不設限（PhysX 預設無限制）。

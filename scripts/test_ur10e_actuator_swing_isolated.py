@@ -148,10 +148,30 @@ def _run() -> None:
     print(f"[actuator] 接觸瞬間 slide_position={slide_position_at_contact:.5f}（誤差 {position_error_at_contact:.5f}，挑全程最接近 0 的 tick）")
     print(f"[actuator] 接觸瞬間桿尖速度向量={tip_velocity_at_contact.tolist()}")
     print(f"[actuator] 接觸瞬間桿尖總速度={tip_speed_total:.4f} m/s")
-    print(f"[actuator] required_tip_speed={required_tip_speed:.4f} m/s  達成率={100 * tip_speed_total / required_tip_speed:.1f}%")
 
-    if tip_speed_total >= 0.9 * required_tip_speed:
-        print("[actuator] PASS：推桿機構單獨達成 >=90% 目標桿尖速度")
+    # 達成率用「沿球桿軸向（grip→tip，= CueStick 本地 +Y）的帶號投影」，不是
+    # 速度向量長度：長度是純量，方向裝反也會過關——CueSlideJoint 的 body0/
+    # body1 順序寫反時，推桿實際是往後退，這個測試卻仍回報 118.7% PASS，
+    # 直到真實球檯測試才發現桿子是從母球另一側往回抽。
+    _, cue_orientation = cue_stick_rigid_prim.get_world_poses()
+    cue_orientation = np.asarray(cue_orientation[0], dtype=float)
+    w, x, y, z = cue_orientation
+    q_xyz = np.array([x, y, z])
+    local_axis = np.array([0.0, 1.0, 0.0])
+    t = 2.0 * np.cross(q_xyz, local_axis)
+    cue_axis_world = local_axis + w * t + np.cross(q_xyz, t)
+
+    forward_speed = float(np.dot(tip_velocity_at_contact, cue_axis_world))
+    print(f"[actuator] 球桿軸向（世界座標，grip→tip）={cue_axis_world.tolist()}")
+    print(f"[actuator] 沿軸向帶號速度={forward_speed:.4f} m/s"
+          f"（負值代表推桿方向裝反）")
+    print(f"[actuator] required_tip_speed={required_tip_speed:.4f} m/s  達成率={100 * forward_speed / required_tip_speed:.1f}%")
+
+    if forward_speed >= 0.9 * required_tip_speed:
+        print("[actuator] PASS：推桿機構單獨達成 >=90% 目標桿尖速度，且方向正確")
+    elif forward_speed < 0:
+        print("[actuator] FAIL：推桿方向相反——桿尖朝遠離母球的方向移動，"
+              "檢查 create_prismatic_joint() 的 body0/body1 順序")
     else:
         print("[actuator] FAIL：推桿機構單獨未達 90% 目標桿尖速度")
 

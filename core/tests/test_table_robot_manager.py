@@ -304,13 +304,38 @@ class TestTableRobotManagerUr10ePrismaticJoint:
         fixed_joint_stage_api.create_fixed_joint.assert_not_called()
         fixed_joint_stage_api.create_prismatic_joint.assert_called_once_with(
             fixed_joint_paths["base"] + "/CueStick/CueSlideJoint",
-            fixed_joint_paths["cue_stick"],
             fixed_joint_paths["base"] + "/Robot/wrist_3_link",
+            fixed_joint_paths["cue_stick"],
             axis="Y",
             drive_stiffness=100000.0,
             drive_damping=10000.0,
             drive_max_force=1000000.0,
         )
+
+    def test_prismatic_joint_body_order_is_end_effector_then_cue_stick(
+        self, fixed_joint_paths: dict[str, str], fixed_joint_stage_api: MagicMock, articulation_api: MagicMock
+    ):
+        """body0（父）必須是手臂末端、body1（子）必須是球桿。
+
+        關節 DOF 量的是「body1 相對 body0 沿 axis 的位移」，順序寫反會讓 DOF
+        正方向變成球桿往後退，跟 `Ur10eCueSlideController`「負值＝退桿、q=0＝
+        桿尖在接觸點」的約定相反：AIM 退桿會變成把球桿往前伸過母球（逼近途中
+        直接推到球），STRIKE 則變成從母球另一側往回抽。`create_fixed_joint()`
+        沒有 DOF 不受順序影響，不能沿用它的參數順序慣例。
+        """
+        _table_robot_manager_class()(
+            table_center=(2.0, 3.0, 0.0),
+            base_path=fixed_joint_paths["base"],
+            stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
+            robot_arm_class=UR10eRobot,
+        )
+
+        _joint_path, body0_path, body1_path = (
+            fixed_joint_stage_api.create_prismatic_joint.call_args.args
+        )
+        assert body0_path == fixed_joint_paths["base"] + "/Robot/wrist_3_link"
+        assert body1_path == fixed_joint_paths["cue_stick"]
 
     def test_other_robot_arm_classes_still_create_fixed_joint(
         self,

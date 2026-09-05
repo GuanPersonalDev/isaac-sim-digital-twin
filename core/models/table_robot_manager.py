@@ -17,7 +17,9 @@ class TableRobotManager:
 
     # 球桿沿自身軸向（= end effector 的 local Y，見 ball_stick.usda 的
     # Cylinder axis="Y" 與 cue_pose_calculator.py 的 _CUE_LOCAL_AXIS）前後
-    # 滑動，跟推桿方向一致。
+    # 滑動，跟推桿方向一致。關節 DOF 的正方向＝球桿往桿尖方向（朝母球）
+    # 伸出，負值＝退桿；這個符號由 create_prismatic_joint() 的 body0/body1
+    # 順序決定，見下方呼叫端說明。
     _CUE_SLIDE_JOINT_AXIS = "Y"
     # 新建立的 PrismaticJoint 預設沒有 drive（跟其餘手臂關節不同——那些是
     # URDF 轉換來的，本來就帶 drive），沒有這組增益 set_dof_position_
@@ -57,8 +59,11 @@ class TableRobotManager:
 
         if robot_arm_class is UR10eRobot:
             joint_path = self._cue_stick_prim_path + "/CueSlideJoint"
+            # body0=手臂末端（父）、body1=球桿（子）。UsdPhysics 的 DOF 量的是
+            # 「body1 相對 body0 沿 axis 的位移」，順序寫反會讓 DOF 正方向變成
+            # 球桿往後退，跟 Ur10eCueSlideController「負值＝退桿」的約定相反。
             stage_api.create_prismatic_joint(
-                joint_path, self._cue_stick_prim_path, end_effector_path,
+                joint_path, end_effector_path, self._cue_stick_prim_path,
                 axis=self._CUE_SLIDE_JOINT_AXIS,
                 drive_stiffness=self._CUE_SLIDE_JOINT_DRIVE_STIFFNESS,
                 drive_damping=self._CUE_SLIDE_JOINT_DRIVE_DAMPING,
