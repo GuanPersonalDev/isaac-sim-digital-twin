@@ -147,6 +147,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         # 這幾個共用方法會在最前面分流，不會執行到下面 WAM7/UR3e 的邏輯。
         self._ur10e_mode: bool = False
         self._ur10e_rmpflow_controller = None
+        self._ur10e_linear_approach_controller = None
         self._ur10e_cue_slide_controller = None
         self._ur10e_active_controller = None
         self._ur10e_step_callback_id: int | None = None
@@ -203,9 +204,13 @@ class ArticulationAPIImpl(ArticulationAPI):
         完全交給 RMPflow 驅動，套用會干擾 RMPflow 自己的 PD 追蹤動態。
         """
         from .ur10e_cue_slide_controller import Ur10eCueSlideController
+        from .ur10e_linear_approach_controller import Ur10eLinearApproachController
         from .ur10e_rmpflow_controller import Ur10eRmpflowController
 
         self._ur10e_rmpflow_controller = Ur10eRmpflowController(
+            self._articulation, self._end_effector_prim_path
+        )
+        self._ur10e_linear_approach_controller = Ur10eLinearApproachController(
             self._articulation, self._end_effector_prim_path
         )
         self._ur10e_cue_slide_controller = Ur10eCueSlideController(self._articulation)
@@ -257,10 +262,12 @@ class ArticulationAPIImpl(ArticulationAPI):
             if not self._ur10e_rmpflow_controller.is_motion_complete():
                 self._ur10e_rmpflow_controller.step(step_dt)
                 return
-            # 逼近緩衝點到位——關掉母球避障，平移剩下一小段到真正的最終
-            # 姿態。終點本來就緊貼母球，母球若仍是啟用中的障礙物，等於同時
-            # 要求 RMPflow「靠近」又「遠離」同一個目標。球檯（靜態）維持
-            # 避障不受影響。
+            # 逼近緩衝點到位——剩下這一小段是純軸向平移、方向不變，改用
+            # Lula 離線軌跡精確走完（見 Ur10eLinearApproachController）。
+            # 桿子在 AIM 期間已經退到後擺位置，沿軸平移碰不到母球，安全性
+            # 由幾何保證，不需要避障，也就沒有「母球同時是障礙物又是目的地」
+            # 的矛盾。Lula 產不出軌跡時退回原本的 RMPflow 路徑（那條才需要
+            # 停用母球避障）。
             if os.environ.get("DEBUG_UR10E_AIM_PHASES"):
                 print(
                     f"[aim_phases] NEAR_FINAL 階段結束：耗費 step={self._ur10e_aim_phase_step_counter} "
@@ -271,10 +278,14 @@ class ArticulationAPIImpl(ArticulationAPI):
             self._ur10e_awaiting_final_short_leg_after_near_final = False
             position, orientation = self._ur10e_pending_arm_target
             self._ur10e_pending_arm_target = None
-            self._ur10e_rmpflow_controller.disable_dynamic_obstacles()
             self._ur10e_aim_phase_step_counter = 0
             self._ur10e_aim_final_approach_reported = False
-            self._ur10e_rmpflow_controller.move_to_pose(position, orientation)
+            if self._ur10e_linear_approach_controller.move_to_pose(position, orientation):
+                self._ur10e_active_controller = self._ur10e_linear_approach_controller
+            else:
+                self._ur10e_rmpflow_controller.disable_dynamic_obstacles()
+                self._ur10e_active_controller = self._ur10e_rmpflow_controller
+                self._ur10e_rmpflow_controller.move_to_pose(position, orientation)
             return
 
         if self._ur10e_active_controller is not None:
@@ -301,6 +312,7 @@ class ArticulationAPIImpl(ArticulationAPI):
         if not self._ur10e_mode:
             return
         self._ur10e_rmpflow_controller.set_robot_base_pose(base_position, base_orientation)
+        self._ur10e_linear_approach_controller.set_robot_base_position(base_position)
 
     def register_static_box_obstacle(self, center: list[float], size: list[float]) -> None:
         if not self._ur10e_mode:
