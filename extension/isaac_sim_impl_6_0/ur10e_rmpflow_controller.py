@@ -194,6 +194,8 @@ class Ur10eRmpflowController:
         # 呼叫端已知的關節角收尾目標，設了就跳過解析 IK 直接用（見
         # move_to_home()）。每次 move_to_pose() 都會清掉，不會外溢到下一段動作。
         self._joint_finish_override: np.ndarray | None = None
+        # 這段移動需不需要跑精確收尾，由 move_to_pose(precise=...) 指定。
+        self._precise_finish = True
         self._gains_boosted_for_finish = False
         # set_robot_base_pose() 存下來的底座世界座標，供
         # _compute_analytic_finish_joint_target() 把世界座標目標轉成
@@ -218,18 +220,22 @@ class Ur10eRmpflowController:
             np.asarray(base_orientation, dtype=float),
         )
 
-    def move_to_pose(self, target_position, target_orientation) -> None:
+    def move_to_pose(self, target_position, target_orientation, *, precise: bool = True) -> None:
         """開始一段移動：把位移拆成一串中繼 waypoint 依序餵給 RMPflow，
         方向也用 slerp 逐段內插（不是從第一段就鎖定最終方向）——若方向
         從第一段就直接設成最終目標，「位置移動量大＋方向本身需要旋轉」的
         目標（例如高架橋案例）容易讓 RMPflow 在離最終位置還很遠的中繼點
         就被迫同時追蹤最終方向，跟位置追蹤互相拉扯出局部穩定點。
+
+        `precise=False` 代表這只是一個中繼落腳點，waypoint chain 走完就結束、
+        不跑精確收尾（見 `_start_finishing_phase()`）。
         """
         # 擷取這段移動期間 RMPflow 不管的 DOF 要維持的位置（見
         # _passive_dof_hold_targets）。呼叫時機保證在退桿完成之後，擷取到的
         # 就是退桿位置本身。
         self._passive_dof_hold_targets = np.asarray(self._articulation.get_dof_positions())[0].copy()
         self._joint_finish_override = None
+        self._precise_finish = precise
 
         current_position, current_orientation = self._end_effector_rigid_prim.get_world_poses()
         current_position = np.asarray(current_position[0], dtype=float)
@@ -350,6 +356,16 @@ class Ur10eRmpflowController:
         `_waypoint_index` 遞增到 `len(self._waypoints)`，是 out-of-range
         index（見 docs/CHANGELOG.md）。
         """
+        # 中繼落腳點（STAGING／逼近緩衝點）不需要最終姿態等級的精度：收尾用的
+        # _FINAL_ORIENTATION_TOLERANCE_RAD 是為了「球桿 1.35m 槓桿臂會放大末端
+        # 方向誤差」而收緊的，只有真正要擊球的那個姿態需要。中繼點套用同一組
+        # 容許值，等於每段都白燒一次收尾預算（實測：每段逾時燒滿 240 步，
+        # shoulder_lift 殘留約 0.06rad 卻對後續完全無害——下一段的 waypoint
+        # chain 本來就會從實際位置重新規劃）。
+        if not self._precise_finish:
+            self._motion_active = False
+            return
+
         target_position, target_orientation = self._waypoints[-1]
         target_position = np.asarray(target_position, dtype=float)
         target_orientation = np.asarray(target_orientation, dtype=float)

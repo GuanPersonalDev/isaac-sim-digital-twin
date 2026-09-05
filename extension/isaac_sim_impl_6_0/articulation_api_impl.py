@@ -232,7 +232,9 @@ class ArticulationAPIImpl(ArticulationAPI):
             self._ur10e_pending_staging_target = None
             self._ur10e_active_controller = self._ur10e_rmpflow_controller
             self._ur10e_aim_phase_step_counter = 0
-            self._ur10e_rmpflow_controller.move_to_pose(staging_position, staging_orientation)
+            self._ur10e_rmpflow_controller.move_to_pose(
+                staging_position, staging_orientation, precise=False
+            )
             return
 
         if self._ur10e_awaiting_final_approach_after_staging:
@@ -254,7 +256,9 @@ class ArticulationAPIImpl(ArticulationAPI):
             near_final_position, near_final_orientation = self._ur10e_pending_near_final_target
             self._ur10e_pending_near_final_target = None
             self._ur10e_aim_phase_step_counter = 0
-            self._ur10e_rmpflow_controller.move_to_pose(near_final_position, near_final_orientation)
+            self._ur10e_rmpflow_controller.move_to_pose(
+                near_final_position, near_final_orientation, precise=False
+            )
             return
 
         if self._ur10e_awaiting_final_short_leg_after_near_final:
