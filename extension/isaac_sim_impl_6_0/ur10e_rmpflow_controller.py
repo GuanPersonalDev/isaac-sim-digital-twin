@@ -469,10 +469,25 @@ class Ur10eRmpflowController:
         # 最短路徑。
         return current_active_positions + _wrapped_diff(best_solution)
 
-    _FINISH_GAIN_BOOST_JOINT_NAME_SUBSTRINGS = ("wrist_1", "wrist_3", "elbow")
-    _FINISH_GAIN_STIFFNESS = 1e6
-    _FINISH_GAIN_DAMPING = 1e4
-    _FINISH_GAIN_MAX_EFFORT_MULTIPLIER = 20.0
+    # 2026-09-05 補充：改成逐關節分別指定 (stiffness, damping,
+    # max_effort_multiplier)，不再共用同一組數值——見下方 docstring，
+    # elbow_joint 扛的下游慣量遠大於 wrist_1/wrist_3，同一組 damping 對
+    # elbow 來說相對不足，會在收尾快速修正時產生欠阻尼震盪，實測踩過：
+    # 震盪的瞬間透過運動鏈波及退到後擺位置的球桿，把靜止中的母球撞出一個
+    # 殘留初速度（母球在 STRIKE 開始前速度非零，全程用慣性滑行，桿子根本
+    # 還沒碰到球），母球因此偏離原始擺放位置，STRIKE 打過去自然是空的。
+    _FINISH_GAIN_OVERRIDES = {
+        "wrist_1": (1e6, 1e4, 20.0),
+        "wrist_3": (1e6, 1e4, 20.0),
+        # elbow 沿用同一個 stiffness（已驗證能讓收尾快速收斂），但把
+        # damping 拉高到 5 倍（1e4→5e4）壓制欠阻尼震盪——阻尼比
+        # ζ=damping/(2*sqrt(stiffness*inertia))，同一組 stiffness/damping
+        # 對慣量更大的關節（elbow 扛整條前臂+手腕+滑軌+球桿）換算出來的
+        # ζ 天生更小（更欠阻尼），需要更高的 damping 才能拉回到接近臨界
+        # 阻尼，這是實測後的第一輪调整值，不是精確算出來的，之後如果還有
+        # 殘留震盪要再往上調。
+        "elbow": (1e6, 5e4, 20.0),
+    }
     """⚠️ 2026-09-04 除錯記錄：一開始照抄 ArticulationAPIImpl.
     _boost_wrist_gains_for_cue_stick_load()（UR3e 驗證過的同一組常數，
     stiffness=1e15/damping=1e5），結果 wrist_1_joint 在 joint-space 收尾
@@ -528,11 +543,13 @@ class Ur10eRmpflowController:
         self._gains_boosted_for_finish = True
 
         dof_names = list(self._articulation.dof_names)
-        target_indices = [
-            i for i, name in enumerate(dof_names)
-            if any(sub in name.lower() for sub in self._FINISH_GAIN_BOOST_JOINT_NAME_SUBSTRINGS)
-        ]
-        if not target_indices:
+        target_overrides = {}
+        for i, name in enumerate(dof_names):
+            for sub, override in self._FINISH_GAIN_OVERRIDES.items():
+                if sub in name.lower():
+                    target_overrides[i] = override
+                    break
+        if not target_overrides:
             return
 
         stiffnesses, dampings = self._articulation.get_dof_gains()
@@ -547,14 +564,14 @@ class Ur10eRmpflowController:
         if stiffnesses.ndim == 2:
             stiffnesses, dampings, max_efforts = stiffnesses[0], dampings[0], max_efforts[0]
 
-        for idx in target_indices:
-            stiffnesses[idx] = self._FINISH_GAIN_STIFFNESS
-            dampings[idx] = self._FINISH_GAIN_DAMPING
-            max_efforts[idx] = max_efforts[idx] * self._FINISH_GAIN_MAX_EFFORT_MULTIPLIER
+        for idx, (stiffness, damping, max_effort_multiplier) in target_overrides.items():
+            stiffnesses[idx] = stiffness
+            dampings[idx] = damping
+            max_efforts[idx] = max_efforts[idx] * max_effort_multiplier
 
         logger.info(
-            "ur10e joint-space finish wrist gain boost: joint indices=%s new_max_efforts=%s",
-            target_indices, [max_efforts[i] for i in target_indices],
+            "ur10e joint-space finish gain boost: joint indices=%s new_max_efforts=%s",
+            list(target_overrides.keys()), [max_efforts[i] for i in target_overrides],
         )
         self._articulation.set_dof_gains(stiffnesses[None, :], dampings[None, :])
         self._articulation.set_dof_max_efforts(max_efforts[None, :])

@@ -97,6 +97,7 @@ def _run() -> None:
     from isaac_sim_impl_6_0.rigid_body_api_impl import RigidBodyAPIImpl
     from isaac_sim_impl_6_0.physics_api_impl import PhysicsAPIImpl
     from isaac_sim_impl_6_0.articulation_api_impl import ArticulationAPIImpl
+    from isaac_sim_impl_6_0.ur10e_cue_slide_controller import _quintic_velocity
 
     from core.models.action import Action
     from core.models.billiard_table import BilliardTable
@@ -207,10 +208,39 @@ def _run() -> None:
     print(f"[flat] CueStick bbox 量測尖端局部座標={cue_tip_bbox_local_offset.tolist()}"
           f"（跟 CUE_STICK_GRIP_TO_TIP={CUE_STICK_GRIP_TO_TIP} 沿 +Y 的假設值比較用）")
 
+    # 2026-09-05 補充：查證 cue_pose_calculator 純數學計算完全自洽（roll_rad
+    # 從 0 到 360 度測過，桿尖預測值跟母球中心誤差都是 0），懷疑落差出在
+    # align_prim_to_target() 設好的初始 XformOp 跟 PrismaticJoint 實際物理
+    # 約束（body0/body1 各自原點對齊，見 create_prismatic_joint() 沒有
+    # 額外設 localPos/localRot）兩者之間，在 timeline.play() 之後是否真的
+    # 完全重合——直接量測 wrist_3_link（articulation_api 的 end effector）
+    # 跟 CueStick 剛好都還在 q=0（原始生成姿態，還沒被任何 retract/AIM
+    # 動過）時的世界座標位姿，看兩者是否真的一致。
+    raw_wrist_position = np.asarray(articulation_api.get_end_effector_position())
+    raw_wrist_orientation = np.asarray(articulation_api.get_end_effector_orientation())
+    raw_cue_position, raw_cue_orientation = cue_stick_rigid_prim.get_world_poses()
+    raw_cue_position = np.asarray(raw_cue_position[0], dtype=float)
+    raw_cue_orientation = np.asarray(raw_cue_orientation[0], dtype=float)
+    print(f"[flat] 【原始生成姿態，尚未 RESET/AIM】wrist_3_link 位置={raw_wrist_position.tolist()} 方向={raw_wrist_orientation.tolist()}")
+    print(f"[flat] 【原始生成姿態，尚未 RESET/AIM】CueStick    位置={raw_cue_position.tolist()} 方向={raw_cue_orientation.tolist()}")
+    print(f"[flat] 位置差={ (raw_cue_position - raw_wrist_position).tolist() } "
+          f"norm={np.linalg.norm(raw_cue_position - raw_wrist_position):.6f}m")
+    orientation_dot = float(np.clip(np.abs(np.dot(raw_wrist_orientation, raw_cue_orientation)), -1.0, 1.0))
+    print(f"[flat] 方向夾角={2.0*np.arccos(orientation_dot):.6f}rad")
+
+    # 2026-09-05 補充：直接查證球桿（包含桿身，不只桿尖）有沒有真的碰到
+    # 母球——enable_contact_reporting(cue_stick_prim_path) 涵蓋整個
+    # CueStick prim（含其 Cylinder collider），任何部位碰到球都會產生
+    # CONTACT_FOUND 事件，不是只有桿尖端點。之前只檢查 impulse>0 的事件，
+    # 這裡額外記錄「目前處於哪個階段」，並印出全部事件（含 impulse=0），
+    # 排除「衝量太小被當成雜訊濾掉」的可能性。
     contacts = []
+    current_phase_for_contacts = {"name": "SETUP"}
     physics_api.enable_contact_reporting(cue_stick_prim_path)
     physics_api.enable_contact_reporting(ball_prim_path)
-    physics_api.subscribe_contact_events(lambda e: contacts.append(e))
+    physics_api.subscribe_contact_events(
+        lambda e: contacts.append((current_phase_for_contacts["name"], e))
+    )
 
     strategy = Ur10eSwingStrategy(robot_arm, articulation_api)
     action = Action(
@@ -262,12 +292,78 @@ def _run() -> None:
     articulation_api.set_robot_base_pose(initial_base_position, [1.0, 0.0, 0.0, 0.0])
 
     print("[flat] 呼叫 articulation_api.move_to_home()（模擬 RESET 階段）...")
+    current_phase_for_contacts["name"] = "RESET"
     articulation_api.move_to_home()
     _run_until_complete("RESET(HOME)")
 
+    # 2026-09-05 補充：STRIKE 開始前母球速度非零（不是預期的 0），代表
+    # AIM 收尾過程中球被短暫碰到，即使「最終停止姿態」量起來離球有安全
+    # 距離。逐 tick 監控母球速度，抓到第一次變成非零的那個 tick，記錄
+    # 當下 RMPflow 控制器內部處於哪個階段（哪個 waypoint／joint-space
+    # 收尾／差動 IK 收尾）跟桿尖-母球距離，藉此定位是哪一段動作造成的。
+    rmp_ctrl_for_bump_diag = articulation_api._ur10e_rmpflow_controller
+
+    def _run_aim_watch_ball_bump() -> int:
+        step = 0
+        bump_reported = False
+        min_distance_during_finish = float("inf")
+        finish_tick_count = 0
+        while not articulation_api.is_motion_complete() and step < _MAX_STEPS_PER_ACTION:
+            simulation_app.update()
+            step += 1
+
+            # 2026-09-05 補充：先前只在「偵測到非零速度」那一刻量一次距離，
+            # 沒有連續追蹤 joint_finish 整段過程——如果桿尖在收尾修正的
+            # 「過程中」（不是最終停止姿態）曾經短暫掃進球體範圍，只看
+            # 起點/終點量不到。這裡改成 joint_finish_active 期間每個 tick
+            # 都量距離，找出整段收尾過程真正最接近的瞬間。
+            if rmp_ctrl_for_bump_diag._joint_finish_active:
+                finish_tick_count += 1
+                _, _, finish_distance = _measure_tip_to_ball()
+                if finish_distance < min_distance_during_finish:
+                    min_distance_during_finish = finish_distance
+
+            ball_velocity, _ = ball_rigid_prim.get_velocities()
+            ball_speed = float(np.linalg.norm(np.asarray(ball_velocity[0], dtype=float)))
+            if not bump_reported and ball_speed > 1e-4:
+                bump_reported = True
+                tip_world, ball_world, distance = _measure_tip_to_ball()
+                print(
+                    f"[flat] AIM step={step} 偵測到母球第一次非零速度={ball_speed:.6f}m/s——"
+                    f"waypoint_index={rmp_ctrl_for_bump_diag._waypoint_index}/"
+                    f"{len(rmp_ctrl_for_bump_diag._waypoints)} "
+                    f"finishing_active={rmp_ctrl_for_bump_diag._finishing_active} "
+                    f"joint_finish_active={rmp_ctrl_for_bump_diag._joint_finish_active} "
+                    f"桿尖-母球距離={distance:.5f}m"
+                )
+        print(f"[flat] AIM 完成，steps={step} did_last_motion_timeout={articulation_api.did_last_motion_timeout()}")
+        print(
+            f"[flat] joint_finish 全程（{finish_tick_count} tick）桿尖-母球最小距離="
+            f"{min_distance_during_finish:.5f}m（球半徑={ball_radius:.5f}m，距離<=球半徑代表過程中真的掃進球體範圍）"
+        )
+        return step
+
     print("[flat] 呼叫 Ur10eSwingStrategy.execute_aim() ...")
+    current_phase_for_contacts["name"] = "AIM"
     strategy.execute_aim(action, tuple(_CUE_BALL), table_z, ball_radius)
-    _run_until_complete("AIM")
+    _run_aim_watch_ball_bump()
+
+    # 2026-09-05 補充：直接印出目前為止（RESET+AIM 全程）記錄到的「所有」
+    # CueStick 相關事件，不篩選 impulse>0——查證使用者提出的假設「會不會
+    # 是桿身（不是桿尖）碰到母球」：enable_contact_reporting(cue_stick_
+    # prim_path) 涵蓋整個 CueStick prim（含 Cylinder collider），球桿
+    # 任何部位碰到球都會產生事件，不會因為衝量太小被濾掉（CONTACT_FOUND
+    # 事件本身跟 impulse 大小無關，只要有偵測到接觸就會觸發，impulse 只是
+    # 附帶資訊）。
+    cue_related_contacts_so_far = [
+        (phase_name, c) for phase_name, c in contacts
+        if cue_stick_prim_path in (c.actor_path_a, c.actor_path_b)
+    ]
+    print(f"[flat] RESET+AIM 全程，CueStick 相關事件（不篩選 impulse）共 {len(cue_related_contacts_so_far)} 筆：")
+    for phase_name, c in cue_related_contacts_so_far:
+        print(f"[flat]   phase={phase_name} a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
+    if not cue_related_contacts_so_far:
+        print("[flat]   （完全沒有記錄到任何 CueStick 相關事件——母球的擾動確認跟球桿無關）")
 
     # ⚠️ 2026-09-04 除錯記錄：之前這裡只檢查位置誤差，讓一個實際上方向
     # 沒收斂的姿態被誤判成「AIM 成功」——1.35m 長的球桿會把沒被抓到的
@@ -318,6 +414,7 @@ def _run() -> None:
           f"母球={ball_world.tolist()} 距離={distance:.5f} m（miss 向量={( tip_world - ball_world).tolist()}）")
 
     print("[flat] 呼叫 Ur10eSwingStrategy.execute_strike() ...")
+    current_phase_for_contacts["name"] = "STRIKE"
     strategy.execute_strike(action, tuple(_CUE_BALL), table_z, ball_radius)
 
     # 診斷：STRIKE 全程逐 tick 記錄桿尖(bbox量測)跟母球的距離，找出整段
@@ -356,9 +453,29 @@ def _run() -> None:
         slide_velocity = float(slide_velocities[slide_dof_index])
         ball_velocity_now, _ = ball_rigid_prim.get_velocities()
         ball_speed_now = float(np.linalg.norm(np.asarray(ball_velocity_now[0], dtype=float)))
+
+        # 2026-09-05 補充：懷疑 _step_strike() 用「經過 T 秒」（開放迴路
+        # 計時）判定揮桿完成，而不是「q 真的到 0」——quintic 邊界條件保證
+        # 的是「指令位置」q_command(T)=0，不保證 PhysX 的 velocity-mode PD
+        # 在這麼短時間內（觀察到整個 STRIKE 只有 17~24 tick）真的追上這麼
+        # 快速變化的速度指令。逐 tick 比對「這一刻應該下達的指令速度」
+        # （直接用同一組 quintic 係數重算）跟「實際量到的速度」，量化
+        # tracking lag 有多大、有沒有持續存在。
+        cue_slide_ctrl = articulation_api._ur10e_cue_slide_controller
+        if cue_slide_ctrl._phase == "strike" and cue_slide_ctrl._quintic is not None:
+            c3, c4, c5, T = cue_slide_ctrl._quintic
+            t = min((cue_slide_ctrl._elapsed_strike_steps - 1) * _PHYSICS_DT, T)
+            commanded_velocity = _quintic_velocity(c3, c4, c5, t)
+            velocity_lag = commanded_velocity - slide_velocity
+        else:
+            commanded_velocity = None
+            velocity_lag = None
+
         print(
             f"[flat] STRIKE step={strike_steps} 桿尖={tip_world.tolist()} 母球={ball_world.tolist()} "
-            f"距離={distance:.5f}m CueSlideJoint位置={slide_position:.5f} 速度={slide_velocity:.5f}m/s "
+            f"距離={distance:.5f}m CueSlideJoint位置={slide_position:.5f} 實際速度={slide_velocity:.5f}m/s "
+            f"指令速度={commanded_velocity if commanded_velocity is None else f'{commanded_velocity:.5f}'}m/s "
+            f"lag={velocity_lag if velocity_lag is None else f'{velocity_lag:.5f}'}m/s "
             f"母球速度={ball_speed_now:.5f}m/s"
         )
 
@@ -370,8 +487,8 @@ def _run() -> None:
                 f"當下速度={slide_velocity:.5f}m/s（目標桿尖速度={swing_trajectory_calculator.compute_required_tip_speed(_CUE_BALL_SPEED):.5f}m/s） "
                 f"桿尖-母球距離={distance:.5f}m"
             )
-            for c in new_events:
-                print(f"[flat]     a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
+            for phase_name, c in new_events:
+                print(f"[flat]     phase={phase_name} a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
 
     print(f"[flat] STRIKE 完成，steps={strike_steps} did_last_motion_timeout={articulation_api.did_last_motion_timeout()}")
     print(f"[flat] STRIKE 全程桿尖離母球最近的瞬間：step={min_distance_step}  距離={min_distance:.5f} m"
@@ -392,12 +509,12 @@ def _run() -> None:
     print(f"[flat] STRIKE 後母球速度={ball_speed_after:.4f} m/s  目標母球速度={_CUE_BALL_SPEED} m/s  達成率={100 * ball_speed_after / _CUE_BALL_SPEED:.1f}%")
 
     ball_contacts = [
-        c for c in contacts
+        (phase_name, c) for phase_name, c in contacts
         if ball_prim_path in (c.actor_path_a, c.actor_path_b) and c.impulse > 0.0
     ]
     print(f"[flat] 母球碰撞事件數（impulse>0）={len(ball_contacts)}")
-    for c in ball_contacts:
-        print(f"[flat]   CONTACT a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
+    for phase_name, c in ball_contacts:
+        print(f"[flat]   CONTACT phase={phase_name} a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
 
     if ball_speed_after >= 0.5 * _CUE_BALL_SPEED and len(ball_contacts) >= 1:
         print("[flat] PASS：完整 AIM->STRIKE 流程成功把母球打出去")

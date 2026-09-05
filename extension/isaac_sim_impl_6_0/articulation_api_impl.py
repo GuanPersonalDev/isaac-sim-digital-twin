@@ -477,9 +477,23 @@ class ArticulationAPIImpl(ArticulationAPI):
             self._pending_move_to_home = False
             self.move_to_home()
 
-    # AIM 移動手臂前，CueSlideJoint 先退到這個位置（跟 Ur10eSwingStrategy.
-    # execute_strike() 揮桿用的後擺距離同一個常數來源，見 move_to_pose()
-    # 說明），維持整個專案只有一份「後擺距離」的定義，不要兩處各自寫死。
+    # ⚠️ 2026-09-05 除錯記錄：查證發現真正蹭到母球的是桿身（不是桿尖），
+    # 原本試過把這裡的退桿距離從 DEFAULT_BACKSWING_DISTANCE_M（0.15m）
+    # 加大到 CUE_STICK_GRIP_TO_TIP+安全邊際（1.45m），指望讓整根 1.35m
+    # 長的桿身徹底撤出母球所在的軸向區間。**這個做法已實測證實會讓情況
+    # 更糟並回退**：手臂從 RESET(HOME) 移動到 AIM 目標的過程中，退更遠
+    # 的桿子拖著更長的尾巴（握把端變成拖在後面），跟著手臂一起掃過更大
+    # 的空間，反而撞到地板（impulse=2.34）、撞到多顆原本沒事的球——比
+    # 原本輕微蹭到一顆球（impulse=0.024）嚴重得多。也就是說「退桿完成後
+    # 靜止不動時的安全距離」跟「手臂移動過程中桿子掃過的空間大小」是互相
+    # 拉扯的兩個需求，不能只靠加大退桿距離單方面解決，兩者中間有取捨。
+    #
+    # 改回沿用 STRIKE 揮桿用的 DEFAULT_BACKSWING_DISTANCE_M，維持原本較
+    # 保守（掃過範圍較小）的退桿距離，接受桿身蹭到球這個殘留風險——真正
+    # 的修法應該是讓 RMPflow 的路徑規劃本身知道母球/球檯的存在（見
+    # add_obstacle()/add_ground_plane()，目前 production 路徑完全沒有
+    # 呼叫，是另一個獨立、範圍更大的問題），而不是在「桿子退多遠」這個
+    # 參數上打轉。
     _UR10E_AIM_RETRACT_POSITION_M = -swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M
 
     def move_to_pose(self, position: list[float], orientation: list[float], linear_velocity: list[float] = [0.0, 0.0, 0.0], angular_velocity: list[float] = [0.0, 0.0, 0.0]) -> None:

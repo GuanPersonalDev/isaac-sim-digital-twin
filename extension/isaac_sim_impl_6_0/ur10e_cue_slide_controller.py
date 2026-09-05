@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 
 
@@ -33,6 +35,22 @@ class Ur10eCueSlideController:
 
     _POSITION_TOLERANCE_M = 0.002
     _MAX_BACKSWING_STEPS = 180
+    # ⚠️ 2026-09-05 除錯記錄：STRIKE 揮桿全程通常只有 5~6 個 physics tick
+    # （T 只有 0.1 秒量級），逐 tick 直接量測發現 velocity-mode PD 追蹤
+    # 幾乎零誤差（每個 tick 量到的實際速度就是上個 tick 的指令值），排除
+    # 「阻尼追不上指令」這個假設。真正原因是取樣點數太少造成的離散積分
+    # 系統性低估：_step_strike() 原本用 t=elapsed_strike_steps*physics_dt
+    # 取「這個 tick 一開始」的瞬時速度（zero-order hold 取左端點），對一段
+    # 持續遞增的速度曲線，這是標準的左黎曼和低估——手動積分實測量到的
+    # 速度只走了 0.1386m，但 quintic 邊界條件保證的位移是 0.14855m，差了
+    # 約 1.3cm，導致 CueSlideJoint 停在 q≈-0.03~-0.04（沒有真的到 q=0），
+    # 桿尖因此沒真正碰到球心（見 test_ur10e_table_flat.py 的除錯記錄）。
+    # 改成中點法則取樣（t=(elapsed_strike_steps+0.5)*physics_dt）——這是
+    # 標準的中點黎曼和，對平滑曲線精度比左端點好一個數量級。同時完成判定
+    # 從純計時改成「等 q 真的收斂到 0 附近」（跟 _step_backswing() 用同一個
+    # _POSITION_TOLERANCE_M），中點法則修正後的殘留誤差改由這裡兜底——
+    # 純計時無法保證離散積分的殘留誤差一定能收斂進容許值。
+    _MAX_STRIKE_STEPS = 30
 
     def __init__(self, articulation, slide_dof_name: str = "CueSlideJoint") -> None:
         self._articulation = articulation
@@ -157,9 +175,25 @@ class Ur10eCueSlideController:
 
     def _step_strike(self, physics_dt: float) -> None:
         c3, c4, c5, T = self._quintic
-        t = min(self._elapsed_strike_steps * physics_dt, T)
+        # 中點法則：取這個 tick「正中間」的瞬時速度代表整個 tick 區間的
+        # zero-order-hold 命令值，比左端點（tick 一開始）更貼近這個區間
+        # 真正的平均速度，減少離散積分的系統性低估（見類別 docstring
+        # 2026-09-05 補充）。超過 T 之後 clip 在 T，讓命令值停在
+        # q̇(T)=target_velocity，繼續推進直到收斂判定通過。
+        t = min((self._elapsed_strike_steps + 0.5) * physics_dt, T)
         qdot = np.zeros(self._num_dofs)
         qdot[self._slide_dof_index] = _quintic_velocity(c3, c4, c5, t)
+
+        if os.environ.get("DEBUG_UR10E_STRIKE_LAG"):
+            current_velocity = float(
+                np.asarray(self._articulation.get_dof_velocities())[0][self._slide_dof_index]
+            )
+            print(
+                f"[cue_slide_strike] elapsed_strike_steps={self._elapsed_strike_steps} physics_dt={physics_dt:.6f} "
+                f"t={t:.6f}/{T:.6f} 指令速度={qdot[self._slide_dof_index]:.5f}m/s "
+                f"下指令前的實際速度={current_velocity:.5f}m/s",
+                flush=True,
+            )
 
         # ⚠️ 2026-09-04 除錯記錄：switch_dof_control_mode() 不帶
         # dof_indices 會套用到全部 7 個 DOF——"velocity" 模式把 stiffness
@@ -178,8 +212,37 @@ class Ur10eCueSlideController:
         self._articulation.set_dof_efforts(gravity_compensation_forces)
 
         self._elapsed_strike_steps += 1
-        if self._elapsed_strike_steps * physics_dt >= T:
-            self._motion_active = False
+
+        # 完成判定改成「q 真的收斂到 0 附近」，不是純計時——即使中點法則
+        # 修正過取樣偏差，離散積分終究不是精確解，殘留誤差可能還是偶爾
+        # 超出容許值。時間到（t>=T）之後如果還沒到，指令速度會 clip 在
+        # q̇(T)=target_velocity 繼續往前推（見上面 t 的計算），讓實際
+        # 位置有機會追上，最多等到 _MAX_STRIKE_STEPS 當安全上限。
+        #
+        # ⚠️ 2026-09-05 除錯記錄：第一版用 abs(current_position) <=
+        # _POSITION_TOLERANCE_M（雙邊 2mm 窄窗）判斷收斂，實測直接撞出
+        # 更嚴重的新問題——目標速度 1.5+ m/s、每個 physics tick 本身就會
+        # 移動約 2.5cm，遠大於 2mm 容許窗，joint 從「還沒到」一個 tick
+        # 就直接「已經衝過頭」，永遠不會有任何一個 tick 剛好落在窄窗內。
+        # 於是 timed_out 之前 converged 恆為 False，指令速度持續卡在
+        # target_velocity 硬推，實測衝出去 27cm 一路撞上球檯庫邊
+        # （impulse=28，比修正前的「差一點點沒到」嚴重多了）。改成「有沒有
+        # 抵達或超過 0」（單邊判定，不要求落在窄窗內）——揮桿方向是固定的
+        # （從負值往 0 推），只要跨過 0 就代表已經完成揮桿路徑，稍微超過
+        # 一點（follow-through）是正常、甚至是預期中的行為，不該被當成
+        # 未收斂繼續往前推。
+        current_position = float(
+            np.asarray(self._articulation.get_dof_positions())[0][self._slide_dof_index]
+        )
+        reached_time = self._elapsed_strike_steps * physics_dt >= T
+        converged = current_position >= -self._POSITION_TOLERANCE_M
+        timed_out = self._elapsed_strike_steps >= self._MAX_STRIKE_STEPS
+        if not ((reached_time and converged) or timed_out):
+            return
+
+        if timed_out and not converged:
+            self._did_last_motion_timeout = True
+        self._motion_active = False
 
 
 def _solve_quintic_coeffs(q0: float, q1: float, v1: float, T: float) -> tuple[float, float, float]:
