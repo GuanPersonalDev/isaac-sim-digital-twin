@@ -24,6 +24,9 @@ class Ur10eCueSlideController:
        （q(0)=backswing_position, q̇(0)=0, q(T)=0, q̇(T)=target_velocity,
        q̈(0)=q̈(T)=0），逐 tick 下達 q̇(t)（其餘 6 個手臂 DOF 速度固定 0），
        疊加重力補償。
+    3. 揮桿收斂後自動接一段「沿原軸縮回 backswing_position」（決策 5），
+       手臂保持靜止，縮完才算整段動作完成（見
+       _start_post_strike_retract()）。
 
     target_velocity 直接等於
     swing_trajectory_calculator.compute_required_tip_speed(cue_ball_speed)
@@ -57,8 +60,10 @@ class Ur10eCueSlideController:
             max_velocities = max_velocities[0]
         self._slide_max_velocity = float(max_velocities[self._slide_dof_index])
 
-        self._phase: str | None = None  # None / "backswing" / "strike"
+        # None / "retract_only" / "backswing" / "strike" / "post_strike_retract"
+        self._phase: str | None = None
         self._backswing_steps = 0
+        self._hold_position_targets: np.ndarray | None = None
         self._quintic: tuple[float, float, float, float] | None = None
         self._elapsed_strike_steps = 0
         self._motion_active = False
@@ -107,6 +112,10 @@ class Ur10eCueSlideController:
 
         positions = np.asarray(self._articulation.get_dof_positions())[0].copy()
         positions[self._slide_dof_index] = self._backswing_position
+        # 揮桿結束後的縮回階段要沿用同一組手臂關節位置目標（決策 5：手臂
+        # 保持靜止），不能改用「縮回當下量到的實際位置」——那等於把揮桿
+        # 反作用力造成的漂移認可成新目標，位置回復力歸零。
+        self._hold_position_targets = positions.copy()
         self._articulation.switch_dof_control_mode("position")
         self._articulation.set_dof_position_targets(positions[None, :])
 
@@ -118,6 +127,8 @@ class Ur10eCueSlideController:
             self._step_backswing(physics_dt)
         elif self._phase == "strike":
             self._step_strike(physics_dt)
+        elif self._phase == "post_strike_retract":
+            self._step_post_strike_retract()
         elif self._phase == "retract_only":
             self._step_retract_only()
 
@@ -220,6 +231,49 @@ class Ur10eCueSlideController:
         converged = current_position >= -self._POSITION_TOLERANCE_M
         timed_out = self._elapsed_strike_steps >= self._MAX_STRIKE_STEPS
         if not ((reached_time and converged) or timed_out):
+            return
+
+        if timed_out and not converged:
+            self._did_last_motion_timeout = True
+        self._start_post_strike_retract()
+
+    def _start_post_strike_retract(self) -> None:
+        """揮桿收斂後沿原本同一條軸線把球桿縮回 backswing_position，手臂
+        本身保持靜止不動（決策 5）。
+
+        不縮回的話球桿會停在 q≈0，也就是母球原本待的位置——母球撞上球堆
+        後彈回來會再撞到球桿，等同撞球規則裡的二次擊球（實測一次擊球記錄
+        到 3 筆 CueStick↔母球碰撞事件，排查過程見 docs/CHANGELOG.md）。
+        整段動作要等縮回完成才算結束（is_motion_complete()），呼叫端因此
+        不會在球桿還擋在球路上時就讓 RMPflow 開始把手臂帶回 home。
+        """
+        self._phase = "post_strike_retract"
+        self._backswing_steps = 0
+        self._articulation.switch_dof_control_mode(
+            "position", dof_indices=[self._slide_dof_index]
+        )
+        # 切回 position 模式只還原 stiffness，**速度目標會原封不動留著**
+        # ——揮桿最後一個 tick 下的 q̇=target_velocity 還在。position 模式
+        # 的 PD 是 stiffness×(位置誤差) + damping×(速度誤差)，殘留的前推
+        # 速度目標貢獻 1e4×1.51≈15116，剛好抵銷位置誤差項最大的
+        # 1e5×0.139≈13900，關節因此在 q≈-0.011 僵持不動（實測：縮回跑滿
+        # 180 步只退了 11mm，見 docs/CHANGELOG.md）。歸零才能真的縮回。
+        self._articulation.set_dof_velocity_targets(np.zeros((1, self._num_dofs)))
+        self._articulation.set_dof_position_targets(self._hold_position_targets[None, :])
+
+    def _step_post_strike_retract(self) -> None:
+        positions = np.asarray(self._articulation.get_dof_positions())[0]
+        current = float(positions[self._slide_dof_index])
+        self._backswing_steps += 1
+
+        # _step_strike() 期間下達過的 set_dof_efforts() 會一直留著，位置
+        # 模式下繼續補重力才不會讓殘留的力矩偏掉縮回中的關節。
+        gravity_compensation_forces = self._articulation.get_dof_gravity_compensation_forces()
+        self._articulation.set_dof_efforts(gravity_compensation_forces)
+
+        converged = abs(current - self._backswing_position) <= self._POSITION_TOLERANCE_M
+        timed_out = self._backswing_steps >= self._MAX_BACKSWING_STEPS
+        if not (converged or timed_out):
             return
 
         if timed_out and not converged:

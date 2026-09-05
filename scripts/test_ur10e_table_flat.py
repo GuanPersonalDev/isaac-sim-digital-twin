@@ -498,6 +498,12 @@ def _run() -> None:
     min_distance_step = -1
     min_distance_tip = None
     min_distance_ball = None
+    # STRIKE 這段迴圈現在也涵蓋「揮桿後沿原軸縮回」（Ur10eCueSlideController
+    # 的 post_strike_retract 階段，決策 5），迴圈結束時母球早就撞上球堆、
+    # 速度已經不是球桿賦予的值了。達成率改用整段 STRIKE 觀察到的**最大**
+    # 母球速度——球桿接觸結束後只會因摩擦/碰撞遞減，峰值就是球桿實際傳遞
+    # 出去的速度。
+    peak_ball_speed = 0.0
     strike_steps = 0
     contacts_seen_before_loop = len(contacts)
     while not articulation_api.is_motion_complete() and strike_steps < _MAX_STEPS_PER_ACTION:
@@ -518,6 +524,7 @@ def _run() -> None:
         slide_velocity = float(slide_velocities[slide_dof_index])
         ball_velocity_now, _ = ball_rigid_prim.get_velocities()
         ball_speed_now = float(np.linalg.norm(np.asarray(ball_velocity_now[0], dtype=float)))
+        peak_ball_speed = max(peak_ball_speed, ball_speed_now)
 
         # 2026-09-05 補充：懷疑 _step_strike() 用「經過 T 秒」（開放迴路
         # 計時）判定揮桿完成，而不是「q 真的到 0」——quintic 邊界條件保證
@@ -571,7 +578,9 @@ def _run() -> None:
     ball_velocity_after = np.asarray(ball_velocity_after[0])
     ball_speed_after = float(np.linalg.norm(ball_velocity_after))
     print(f"[flat] STRIKE 後母球速度向量={ball_velocity_after.tolist()}")
-    print(f"[flat] STRIKE 後母球速度={ball_speed_after:.4f} m/s  目標母球速度={_CUE_BALL_SPEED} m/s  達成率={100 * ball_speed_after / _CUE_BALL_SPEED:.1f}%")
+    print(f"[flat] STRIKE 後母球速度={ball_speed_after:.4f} m/s（此時母球已撞過球堆，僅供參考）")
+    achievement = peak_ball_speed / _CUE_BALL_SPEED
+    print(f"[flat] STRIKE 全程母球速度峰值={peak_ball_speed:.4f} m/s  目標母球速度={_CUE_BALL_SPEED} m/s  達成率={100 * achievement:.1f}%")
 
     ball_contacts = [
         (phase_name, c) for phase_name, c in contacts
@@ -581,10 +590,26 @@ def _run() -> None:
     for phase_name, c in ball_contacts:
         print(f"[flat]   CONTACT phase={phase_name} a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
 
-    if ball_speed_after >= 0.5 * _CUE_BALL_SPEED and len(ball_contacts) >= 1:
-        print("[flat] PASS：完整 AIM->STRIKE 流程成功把母球打出去")
+    # 決策 7 的「母球碰撞事件數恰好 1 次」指的是**球桿**碰到母球恰好一次
+    # （沒有蹭到、沒有二次擊球）；母球撞上球堆（Ball_1）是這一擊預期中的
+    # 結果，不算違規，所以只篩球桿相關的事件來判定。
+    cue_stick_ball_contacts = [
+        (phase_name, c) for phase_name, c in ball_contacts
+        if cue_stick_prim_path in (c.actor_path_a, c.actor_path_b)
+    ]
+    print(f"[flat] 其中球桿-母球碰撞事件數={len(cue_stick_ball_contacts)}（決策 7 要求恰好 1 次）")
+
+    speed_ok = achievement >= 0.9
+    contact_ok = len(cue_stick_ball_contacts) == 1
+    if speed_ok and contact_ok:
+        print("[flat] PASS：達成率 >=90% 且球桿只碰到母球一次")
     else:
-        print("[flat] FAIL：母球沒有被打到，或速度遠低於預期")
+        reasons = []
+        if not speed_ok:
+            reasons.append(f"達成率 {100 * achievement:.1f}% < 90%")
+        if not contact_ok:
+            reasons.append(f"球桿-母球碰撞 {len(cue_stick_ball_contacts)} 次（應為 1 次）")
+        print(f"[flat] FAIL：{'；'.join(reasons)}")
 
 
 if __name__ == "__main__":

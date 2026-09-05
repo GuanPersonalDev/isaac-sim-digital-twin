@@ -127,6 +127,11 @@ def _run() -> None:
     history = []
     for step in range(num_steps):
         t = min(step * _PHYSICS_DT, T)
+        # 揮桿收斂的那一 tick，控制器會在 step() 裡就切進 post_strike_retract
+        # （切回 position 模式、位置目標指向後擺位置），這一 tick 的物理是
+        # 「開始煞車」而不是揮桿，桿尖速度不能拿來當接觸速度。只採計 step()
+        # 前後都還在 strike 階段的 tick。
+        phase_before = controller._phase
         controller.step(_PHYSICS_DT)
         simulation_app.update()
 
@@ -135,7 +140,8 @@ def _run() -> None:
         tip_velocity = np.asarray(tip_velocity[0])
 
         position_error = abs(live_slide_position - 0.0)
-        history.append((position_error, tip_velocity.copy(), live_slide_position))
+        if phase_before == "strike" and controller._phase == "strike":
+            history.append((position_error, tip_velocity.copy(), live_slide_position))
 
         if step % 10 == 0 or step >= num_steps - 5:
             qdot_ref = _quintic_velocity(c3, c4, c5, t)
@@ -167,13 +173,47 @@ def _run() -> None:
           f"（負值代表推桿方向裝反）")
     print(f"[actuator] required_tip_speed={required_tip_speed:.4f} m/s  達成率={100 * forward_speed / required_tip_speed:.1f}%")
 
-    if forward_speed >= 0.9 * required_tip_speed:
+    speed_pass = forward_speed >= 0.9 * required_tip_speed
+    if speed_pass:
         print("[actuator] PASS：推桿機構單獨達成 >=90% 目標桿尖速度，且方向正確")
     elif forward_speed < 0:
         print("[actuator] FAIL：推桿方向相反——桿尖朝遠離母球的方向移動，"
               "檢查 create_prismatic_joint() 的 body0/body1 順序")
     else:
         print("[actuator] FAIL：推桿機構單獨未達 90% 目標桿尖速度")
+
+    # ---- Phase 3：揮桿後沿原軸縮回（決策 5 的 post_strike_retract 階段） ----
+    # 不縮回的話球桿會停在 q≈0（母球原本待的位置），母球撞球堆彈回來會再撞
+    # 上球桿，構成二次擊球。這裡驗證縮回本身能不能在時限內走完。
+    print("[actuator] --- Phase 3：揮桿後縮回 ---")
+    retract_steps = 0
+    while not controller.is_motion_complete() and retract_steps < 400:
+        controller.step(_PHYSICS_DT)
+        simulation_app.update()
+        retract_steps += 1
+
+        if retract_steps % 10 == 0 or retract_steps <= 3:
+            live_slide_position = float(np.asarray(articulation.get_dof_positions())[0][slide_dof_index])
+            live_target = float(np.asarray(articulation.get_dof_position_targets())[0][slide_dof_index])
+            stiffnesses, dampings = articulation.get_dof_gains()
+            live_stiffness = float(np.asarray(stiffnesses)[0][slide_dof_index])
+            live_damping = float(np.asarray(dampings)[0][slide_dof_index])
+            live_effort = float(np.asarray(articulation.get_dof_efforts())[0][slide_dof_index])
+            print(f"[actuator] retract step={retract_steps} phase={controller._phase} "
+                  f"q={live_slide_position:.5f} 位置目標={live_target:.5f} "
+                  f"stiffness={live_stiffness:.4g} damping={live_damping:.4g} effort={live_effort:.4g}")
+
+    final_slide_position = float(np.asarray(articulation.get_dof_positions())[0][slide_dof_index])
+    print(f"[actuator] 縮回 {retract_steps} 步後 CueSlideJoint 位置={final_slide_position:.5f}"
+          f"（目標 {backswing_position:.5f}）did_last_motion_timeout={controller.did_last_motion_timeout()}")
+
+    retract_pass = abs(final_slide_position - backswing_position) <= 0.005
+    if retract_pass:
+        print("[actuator] PASS：揮桿後球桿沿原軸縮回後擺位置")
+    else:
+        print("[actuator] FAIL：揮桿後球桿沒有縮回後擺位置，球桿仍擋在母球原位")
+
+    print(f"[actuator] 總結：推桿速度 {'PASS' if speed_pass else 'FAIL'}  縮回 {'PASS' if retract_pass else 'FAIL'}")
 
 
 if __name__ == "__main__":
