@@ -14,7 +14,8 @@ class TestComputeBasePosition:
             wrist_position, direction_unit, table_z
         )
 
-        assert base_position == pytest.approx((0.0, -2.093 + 0.5, 0.0))
+        standoff = ur10e_placement_calculator._BASE_STANDOFF_M
+        assert base_position == pytest.approx((0.0, -2.093 + standoff, 0.0))
 
     def test_shot_along_positive_x_places_base_behind_wrist_on_x_axis(self):
         wrist_position = (1.2, 0.3, 0.1)
@@ -25,7 +26,8 @@ class TestComputeBasePosition:
             wrist_position, direction_unit, table_z
         )
 
-        assert base_position == pytest.approx((1.2 - 0.5, 0.3, 0.0))
+        standoff = ur10e_placement_calculator._BASE_STANDOFF_M
+        assert base_position == pytest.approx((1.2 - standoff, 0.3, 0.0))
 
     def test_base_z_matches_table_z_not_wrist_z(self):
         wrist_position = (0.0, 0.0, 0.5)

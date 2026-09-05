@@ -6,7 +6,7 @@ from . import cue_pose_calculator, ur10e_analytic_ik
 
 logger = logging.getLogger(__name__)
 
-_BASE_STANDOFF_M = 0.5
+_BASE_STANDOFF_M = 0.8
 """UR10e 基座沿擊球方向水平反方向、從 wrist 目標退開的距離。
 
 決策 4 原本假設 UR10e 固定基座位置（1.3m 可達距離夠大，不需要像
@@ -21,8 +21,16 @@ UR10e 的可達距離——純幾何上到不了，不是 RMPflow 參數能調�
 像 UR3e 那樣搜尋特定關節組合，也不需要像 WAM7 那樣算 base_yaw 關節
 目標，只需要確保 wrist 目標落在舒適的可達範圍內（留一些操作餘裕，不要
 让手臂伸到接近完全打直的邊界姿態）。做法：從 wrist 目標沿擊球方向的
-水平反方向（握把那一側）退開 _BASE_STANDOFF_M，Z 維持跟桌面同高——
-UR10e 可達距離 1.3m，0.5m 標準站距對任何 tilt_rad 案例都留有充足餘裕。
+水平反方向（握把那一側）退開 _BASE_STANDOFF_M，Z 維持跟桌面同高。
+
+站距下限由 AIM 的逼近走廊決定，不是只看可達性：AIM 沿桿軸逼近的起點
+（中繼姿態／逼近緩衝點）都落在 wrist 目標往後 D 公尺處，也就是離基座
+只有 (_BASE_STANDOFF_M - D)。實測掃描（Lula 任務空間直線的可行性，見
+scripts/verify_ur10e_linear_approach_trajectory.py）顯示**逼近起點離基座
+徑向小於約 0.2m 就產不出直線軌跡**——那已經進到基座自己的奇異區，
+RMPflow 在那附近也收斂不了。0.5m 站距配 0.2m 逼近距離只剩 0.3m 餘裕，
+RMPflow 一逾時少走 0.1m 就踩線；0.8m 站距把餘裕拉到 0.6m。
+UR10e 可達距離 1.3m，0.8m 站距仍有充足餘裕。
 """
 
 

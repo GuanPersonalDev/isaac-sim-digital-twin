@@ -526,9 +526,16 @@ class ArticulationAPIImpl(ArticulationAPI):
     # STAGING 中繼姿態的偏移量：先移到方向與最終 AIM 目標相同、但沿桿軸
     # 往後退開這個距離的安全姿態（母球避障全程啟用），把「大幅重新定向」
     # 這個高風險動作留在遠離球的階段做；FINAL_APPROACH 只需沿同一軸向
-    # 直線平移，不必再解一次 6-DOF 重新定向。數值來源與試過的替代方案見
-    # docs/CHANGELOG.md。
-    _UR10E_AIM_STAGING_OFFSET_M = CUE_STICK_GRIP_TO_TIP + 0.1
+    # 直線平移，不必再解一次 6-DOF 重新定向。
+    #
+    # 這個值必須明顯小於 ur10e_placement_calculator._BASE_STANDOFF_M（0.5m）
+    # ——底座就放在最終腕部位置往後 0.5m 處，offset 一旦逼近或超過它，中繼
+    # 姿態就會落到底座上方甚至另一側，接下來沿軸平移的路徑會直接穿過底座
+    # 自己的奇異區（實測：offset=1.45m 時中繼姿態在底座座標 Y=-0.95，Lula
+    # 對這條直線根本產不出軌跡，RMPflow 也要 3528 步還逾時）。
+    # 桿身離球的安全距離跟這個值無關：AIM 期間球桿已退到後擺位置，任何
+    # offset D 下桿尖離球心都是 0.15+D，D=0 也不會碰到球。
+    _UR10E_AIM_STAGING_OFFSET_M = 0.3
 
     # FINAL_APPROACH 拆成兩段（見 move_to_pose()）：先在避障開著的情況下
     # 逼近到只剩這個緩衝距離的「逼近緩衝點」，最後才關避障直線逼近剩下

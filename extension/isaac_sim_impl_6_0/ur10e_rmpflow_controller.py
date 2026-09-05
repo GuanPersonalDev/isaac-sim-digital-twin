@@ -191,6 +191,9 @@ class Ur10eRmpflowController:
         # 收尾用 joint-space 精確目標的狀態（見 _start_finishing_phase()）。
         self._joint_finish_active = False
         self._joint_finish_target: np.ndarray | None = None
+        # 呼叫端已知的關節角收尾目標，設了就跳過解析 IK 直接用（見
+        # move_to_home()）。每次 move_to_pose() 都會清掉，不會外溢到下一段動作。
+        self._joint_finish_override: np.ndarray | None = None
         self._gains_boosted_for_finish = False
         # set_robot_base_pose() 存下來的底座世界座標，供
         # _compute_analytic_finish_joint_target() 把世界座標目標轉成
@@ -226,6 +229,7 @@ class Ur10eRmpflowController:
         # _passive_dof_hold_targets）。呼叫時機保證在退桿完成之後，擷取到的
         # 就是退桿位置本身。
         self._passive_dof_hold_targets = np.asarray(self._articulation.get_dof_positions())[0].copy()
+        self._joint_finish_override = None
 
         current_position, current_orientation = self._end_effector_rigid_prim.get_world_poses()
         current_position = np.asarray(current_position[0], dtype=float)
@@ -266,6 +270,14 @@ class Ur10eRmpflowController:
         """
         home_position, home_orientation = self._compute_home_end_effector_pose()
         self.move_to_pose(home_position, home_orientation)
+        # HOME 本來就是用關節角定義的（_HOME_JOINT_POSITIONS），收尾不需要
+        # 也不應該再從 Cartesian 姿態反解一次 IK：HOME 的 wrist_2_joint=0 正好
+        # 落在 UR 手腕奇異點上，解集合會退化，解析 IK 選不出可信的分支、差動
+        # IK 在奇異點附近也收斂不了（實測 RESET 逾時：位置誤差 0.021m、方向
+        # 誤差 0.086rad，還會讓 did_last_motion_timeout() 把整條 Demo 流程標成
+        # 錯誤）。直接把已知的關節角當收尾目標，精確且完全繞開奇異點。
+        # 必須在 move_to_pose() 之後設定——它會清掉這個覆寫值。
+        self._joint_finish_override = np.array(self._HOME_JOINT_POSITIONS, dtype=float)
 
     def _compute_home_end_effector_pose(self):
         from scipy.spatial.transform import Rotation
@@ -348,6 +360,15 @@ class Ur10eRmpflowController:
 
         if self._is_pose_converged(live_position, live_orientation, target_position, target_orientation):
             self._motion_active = False
+            return
+
+        # 呼叫端已經知道要收到哪組關節角（HOME 是用關節角定義的）就直接用，
+        # 不必從 Cartesian 姿態反解——見 move_to_home()。
+        if self._joint_finish_override is not None:
+            self._boost_gains_for_finish_once()
+            self._joint_finish_target = self._joint_finish_override
+            self._joint_finish_active = True
+            self._finish_steps = 0
             return
 
         # 優先用 ur10e_analytic_ik 的 closed-form 解算出精確關節目標，
