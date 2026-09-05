@@ -324,12 +324,22 @@ def _run() -> None:
     # 行程中最接近的瞬間跟距離／miss 向量——藉此判斷「完全沒打到球」是
     # 系統性的幾何偏移（q=0 時桿尖本來就沒有真的對準球心，miss 向量在
     # 垂直於揮桿方向上有固定分量）還是 AIM 殘留誤差造成的偶發性偏移。
+    #
+    # 2026-09-04 補充：42% 達成率（不是 0%）顯示桿子有真的碰到球，但
+    # 動量沒轉移完全——懷疑是球的實際位置比 CueSlideJoint quintic 設計的
+    # q=0（v=target_velocity）接觸點更靠近後擺起點，桿子在還沒加速到全速
+    # 前就先碰到球。額外逐 tick 記錄 CueSlideJoint 實際量到的位置/速度，
+    # 抓到碰撞事件發生的那個 tick，比對當下的實際速度 vs 目標桿尖速度，
+    # 直接驗證這個假設。
+    slide_dof_index = articulation_api._ur10e_cue_slide_controller._slide_dof_index
     min_distance = float("inf")
     min_distance_step = -1
     min_distance_tip = None
     min_distance_ball = None
     strike_steps = 0
+    contacts_seen_before_loop = len(contacts)
     while not articulation_api.is_motion_complete() and strike_steps < _MAX_STEPS_PER_ACTION:
+        contacts_before_tick = len(contacts)
         simulation_app.update()
         strike_steps += 1
 
@@ -339,6 +349,29 @@ def _run() -> None:
             min_distance_step = strike_steps
             min_distance_tip = tip_world
             min_distance_ball = ball_world
+
+        slide_positions = np.asarray(articulation_api._articulation.get_dof_positions())[0]
+        slide_velocities = np.asarray(articulation_api._articulation.get_dof_velocities())[0]
+        slide_position = float(slide_positions[slide_dof_index])
+        slide_velocity = float(slide_velocities[slide_dof_index])
+        ball_velocity_now, _ = ball_rigid_prim.get_velocities()
+        ball_speed_now = float(np.linalg.norm(np.asarray(ball_velocity_now[0], dtype=float)))
+        print(
+            f"[flat] STRIKE step={strike_steps} 桿尖={tip_world.tolist()} 母球={ball_world.tolist()} "
+            f"距離={distance:.5f}m CueSlideJoint位置={slide_position:.5f} 速度={slide_velocity:.5f}m/s "
+            f"母球速度={ball_speed_now:.5f}m/s"
+        )
+
+        if len(contacts) > contacts_before_tick:
+            new_events = contacts[contacts_before_tick:]
+            print(
+                f"[flat] STRIKE step={strike_steps} 偵測到新碰撞事件 {len(new_events)} 筆："
+                f"CueSlideJoint 當下位置={slide_position:.5f}（q=0 為設計接觸點） "
+                f"當下速度={slide_velocity:.5f}m/s（目標桿尖速度={swing_trajectory_calculator.compute_required_tip_speed(_CUE_BALL_SPEED):.5f}m/s） "
+                f"桿尖-母球距離={distance:.5f}m"
+            )
+            for c in new_events:
+                print(f"[flat]     a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
 
     print(f"[flat] STRIKE 完成，steps={strike_steps} did_last_motion_timeout={articulation_api.did_last_motion_timeout()}")
     print(f"[flat] STRIKE 全程桿尖離母球最近的瞬間：step={min_distance_step}  距離={min_distance:.5f} m"

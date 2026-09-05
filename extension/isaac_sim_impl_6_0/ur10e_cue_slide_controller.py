@@ -161,7 +161,18 @@ class Ur10eCueSlideController:
         qdot = np.zeros(self._num_dofs)
         qdot[self._slide_dof_index] = _quintic_velocity(c3, c4, c5, t)
 
-        self._articulation.switch_dof_control_mode("velocity")
+        # ⚠️ 2026-09-04 除錯記錄：switch_dof_control_mode() 不帶
+        # dof_indices 會套用到全部 7 個 DOF——"velocity" 模式把 stiffness
+        # 歸零（見該方法官方 docstring 的模式對照表），若不限定只作用在
+        # CueSlideJoint，等於連同其餘 6 個手臂關節的 stiffness 也一起歸零，
+        # 讓 AIM 收斂好的姿態在整段揮桿期間完全沒有位置回復力可以抵抗
+        # CueSlideJoint 加速的反作用力，只剩 damping／重力補償撐著，手臂
+        # 因此在推桿當下漂移（實測：STRIKE 全程桿尖 Z 座標多爬升
+        # 3.24cm，跟純沿桿軸滑動的幾何預期不符，是造成桿尖沒打中球心的
+        # 真正原因）。只限定 CueSlideJoint 這個 DOF 切換成 velocity 模式，
+        # 其餘手臂關節維持 AIM 收尾時的 position 模式（含 wrist_1/wrist_3
+        # 的增益 boost）不被打斷。
+        self._articulation.switch_dof_control_mode("velocity", dof_indices=[self._slide_dof_index])
         self._articulation.set_dof_velocity_targets(qdot[None, :])
         gravity_compensation_forces = self._articulation.get_dof_gravity_compensation_forces()
         self._articulation.set_dof_efforts(gravity_compensation_forces)

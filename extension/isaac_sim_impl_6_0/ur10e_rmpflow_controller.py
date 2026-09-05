@@ -136,6 +136,25 @@ class Ur10eRmpflowController:
     _ORIENTATION_TOLERANCE_RAD = 0.02
     _MAX_STEPS_PER_WAYPOINT = 240
 
+    # ⚠️ 2026-09-04 除錯記錄：一開始把 _ORIENTATION_TOLERANCE_RAD 整體
+    # 從 0.02 收緊到 0.005，結果 AIM 直接崩潰（3379 步逾時，位置誤差
+    # 0.408m、方向誤差 0.86rad，完全是另一個姿態）——因為這個常數同時被
+    # RMPflow waypoint chain 每一段中繼點的收斂判定（_is_current_waypoint_
+    # converged()）沿用，中繼點容許值收太緊會讓每一段都逼近 240 步逾時
+    # 上限，累積誤差整段路徑跑歪。真正需要收緊的只有「最終姿態」精度：
+    # 這裡的球桿有 1.35m 長（CUE_STICK_GRIP_TO_TIP），末端方向誤差會被
+    # 這根槓桿臂等比放大——0.02rad 換算桿尖橫向誤差最壞可達 1.35*0.02≈
+    # 2.7cm，幾乎等於母球半徑（2.857cm）。實測踩過：AIM 方向誤差
+    # 0.00933rad（在 0.02 容許值內，判定「收斂成功」）換算桿尖偏移約
+    # 1.26cm，跟 STRIKE 實測 miss 向量的橫向分量（約 1.2cm）吻合，這個
+    # 偏移小於「球桿半徑+母球半徑」，導致 STRIKE 階段球桿的圓柱形桿身
+    # （不是桿尖）貼著母球側面蹭過去，衝量沒有正面轉移，達成率只有
+    # 42%。改成只在「最終姿態是否已收斂／要不要進入收尾」
+    # （_is_pose_converged()）與「joint-space 收尾本身的收斂判定」
+    # （_step_joint_space_finish()）套用這個更緊的門檻，中繼 waypoint
+    # 跟差動 IK 保底路徑維持原本 0.02，不受影響。
+    _FINAL_ORIENTATION_TOLERANCE_RAD = 0.005
+
     # 收尾差動 IK 用的常數，數值沿用 ArticulationAPIImpl 既有 WAM7/UR3e
     # 差動 IK 的同名常數（POSITION_GAIN/ORIENTATION_GAIN/DLS_LAMBDA 等）
     # ——同一個 codebase 已經實測驗證過的收斂行為，不是另外拍腦袋調的。
@@ -193,7 +212,7 @@ class Ur10eRmpflowController:
         # 2026-09-04 補充）。
         self._joint_finish_active = False
         self._joint_finish_target: np.ndarray | None = None
-        self._wrist_gains_boosted_for_finish = False
+        self._gains_boosted_for_finish = False
         # set_robot_base_pose() 存下來的底座世界座標，供
         # _compute_analytic_finish_joint_target() 把世界座標目標轉成
         # ur10e_analytic_ik 需要的「機器人底座座標系」用——假設底座朝向
@@ -350,7 +369,7 @@ class Ur10eRmpflowController:
         # 自己收斂過的可達姿態）才退回原本的 Cartesian 差動 IK 當保底。
         joint_target = self._compute_analytic_finish_joint_target(target_position, target_orientation)
         if joint_target is not None:
-            self._boost_wrist_gains_for_finish_once()
+            self._boost_gains_for_finish_once()
             self._joint_finish_target = joint_target
             self._joint_finish_active = True
             self._finish_steps = 0
@@ -395,6 +414,34 @@ class Ur10eRmpflowController:
             return np.mod(solution - current_active_positions + np.pi, 2.0 * np.pi) - np.pi
 
         best_solution = min(solutions, key=lambda s: float(np.max(np.abs(_wrapped_diff(s)))))
+        best_solution_delta = float(np.max(np.abs(_wrapped_diff(best_solution))))
+
+        # ⚠️ 2026-09-04 除錯記錄：收緊 _FINAL_ORIENTATION_TOLERANCE_RAD 後
+        # 才踩到的新問題——move_to_home() 走的也是同一條收尾路徑，而 HOME
+        # 姿態（_HOME_JOINT_POSITIONS）的 wrist_2_joint=0 正好卡在 UR
+        # 家族手臂的手腕奇異點上（見類別 docstring 2026-09-03 補充）。在
+        # 奇異點附近，closed-form IK 的解集合會退化（實測：只解出 4 組，
+        # 不是滿額的 8 組），這時候「挑離目前姿態最近的分支」完全不可信
+        # ——實測踩過：目前關節角幾乎正好在 HOME，選出來的「最近」分支卻
+        # 離目前姿態達 2.7rad，把手臂拖去了完全錯誤的姿態。RMPflow 的
+        # waypoint chain 在呼叫這裡之前，理論上已經把手臂帶到跟目標很接近
+        # 的姿態（這個收尾機制的設計前提本來就是「走完最後一小段」），
+        # 所以合理的解不該跟目前姿態差距過大——這裡加一個寬鬆的合理性
+        # 上限（遠大於任何正常收尾correction，但遠小於「跳到完全不同分支」
+        # 的量級），一旦挑出來的最近分支仍然差距過大，就視為「這個解集合
+        # 不可信」，回傳 None 讓呼叫端退回原本的 Cartesian 差動 IK 保底
+        # 路徑（DLS 疊代逼近，即使在奇異點附近也只會產生平滑的小修正，
+        # 不會像 closed-form 分支選擇這樣整個跳到別的姿態）。
+        _MAX_REASONABLE_FINISH_DELTA_RAD = 0.5
+        if best_solution_delta > _MAX_REASONABLE_FINISH_DELTA_RAD:
+            if os.environ.get("DEBUG_UR10E_FINISH_IK"):
+                print(
+                    f"[analytic_finish] 拒絕不合理的解：best_solution_delta={best_solution_delta:.5f}rad "
+                    f"超過門檻 {_MAX_REASONABLE_FINISH_DELTA_RAD}rad（懷疑目前姿態靠近奇異點，"
+                    f"n_solutions={len(solutions)} 已退化），回傳 None 退回差動 IK",
+                    flush=True,
+                )
+            return None
 
         if os.environ.get("DEBUG_UR10E_FINISH_IK"):
             check_position, check_rotation = ur10e_analytic_ik.forward_kinematics(best_solution)
@@ -422,10 +469,10 @@ class Ur10eRmpflowController:
         # 最短路徑。
         return current_active_positions + _wrapped_diff(best_solution)
 
-    _WRIST_GAIN_BOOST_JOINT_NAME_SUBSTRINGS = ("wrist_1", "wrist_3")
-    _WRIST_GAIN_STIFFNESS = 1e6
-    _WRIST_GAIN_DAMPING = 1e4
-    _WRIST_GAIN_MAX_EFFORT_MULTIPLIER = 20.0
+    _FINISH_GAIN_BOOST_JOINT_NAME_SUBSTRINGS = ("wrist_1", "wrist_3", "elbow")
+    _FINISH_GAIN_STIFFNESS = 1e6
+    _FINISH_GAIN_DAMPING = 1e4
+    _FINISH_GAIN_MAX_EFFORT_MULTIPLIER = 20.0
     """⚠️ 2026-09-04 除錯記錄：一開始照抄 ArticulationAPIImpl.
     _boost_wrist_gains_for_cue_stick_load()（UR3e 驗證過的同一組常數，
     stiffness=1e15/damping=1e5），結果 wrist_1_joint 在 joint-space 收尾
@@ -433,18 +480,32 @@ class Ur10eRmpflowController:
     連桿 contact reporting 確認零接觸）、關節極限（差六圈以上）、drive
     type（確認是 "force"，不是 "none"）、gains 寫入沒生效（讀原始碼確認
     update_default_gains 預設 True，boost 有正確持續生效）之後，靠 A/B
-    對照測試（verify_ur10e_arm_table_collision.py 的
-    DEBUG_WRIST_GAIN_STIFFNESS/_DAMPING 環境變數覆寫）發現：wrist_1_joint
-    原始 baked stiffness 只有約 72,662，1e15 是這個值的一百多億倍，跟同一
-    條運動鏈上其他關節（例如 CueSlideJoint 的 max_effort=1e6）的量級差距
-    過大，讓 PhysX 的 TGS 迭代求解器對這個最僵硬的關節反而欠收斂——數值
-    上病態，不是真的「增益不夠」。改成 1e6/1e4（約為原始值的 14 倍，遠比
-    UR3e 那組「1e15/1e5」溫和）之後，實測 2 個 physics tick 就收斂
-    （joint_error 從 0.033rad 降到 0.0096rad，容許值 0.02rad）。UR3e 跟
-    UR10e 兩邊的下游負載結構不同，同一組「越硬越好」的增益常數不能直接
-    照搬，這是這次除錯的教訓。"""
+    對照測試（verify_ur10e_arm_table_collision.py 的環境變數覆寫）發現：
+    wrist_1_joint 原始 baked stiffness 只有約 72,662，1e15 是這個值的
+    一百多億倍，跟同一條運動鏈上其他關節（例如 CueSlideJoint 的
+    max_effort=1e6）的量級差距過大，讓 PhysX 的 TGS 迭代求解器對這個最
+    僵硬的關節反而欠收斂——數值上病態，不是真的「增益不夠」。改成
+    1e6/1e4（約為原始值的 14 倍，遠比 UR3e 那組「1e15/1e5」溫和）之後，
+    實測 2 個 physics tick 就收斂（joint_error 從 0.033rad 降到
+    0.0096rad，容許值 0.02rad）。UR3e 跟 UR10e 兩邊的下游負載結構不同，
+    同一組「越硬越好」的增益常數不能直接照搬，這是這次除錯的教訓。
 
-    def _boost_wrist_gains_for_finish_once(self) -> None:
+    2026-09-05 補充（收緊 _FINAL_ORIENTATION_TOLERANCE_RAD 到 0.005 之後
+    才浮現）：先查證網路上對這類「PD 位置控制器收斂不到目標」問題的建議
+    做法（Isaac Sim 官方 Gain Tuner 文件、PhysX 官方文件、PD+feedforward
+    控制文獻），結論一致：**應該針對個別關節依其負載分別調整增益，不是
+    對全部關節套用同一組數值**（官方原話：肩部/手肘關節承受下游全部連桿
+    的重力力矩需要較高增益，手腕關節較輕、低增益即可）。逐關節 log 證實
+    這個方向：逾時當下 elbow_joint 誤差 0.02205rad（遠高於其他關節），
+    wrist_1_joint 0.00504rad（剛好卡在門檻邊緣），其餘 4 個關節都遠低於
+    容許值——不是「全部關節都不夠力」，是 elbow_joint 這個原本沒被列入
+    boost 名單、扛著整條下游手臂重力力矩的關節不夠力。把 "elbow" 加進
+    boost 名單（沿用同一組 1e6/1e4/20x 數值，不是另外調一組——這個量級
+    已經證實對高負載關節有效，沒有先驗理由 elbow 需要不同數值，之後如果
+    實測顯示不夠再個別調整）解決，不是不分青紅皂白把全部 6 個關節一起
+    升到極端值。"""
+
+    def _boost_gains_for_finish_once(self) -> None:
         """2026-09-04 除錯記錄：joint-space 收尾（_step_joint_space_finish()）
         第一版只加了重力補償力矩前饋，逐 tick log 顯示 wrist_1_joint 幾乎
         沒有改善，仍然穩定卡在離目標 0.033rad 的地方——代表問題不只是
@@ -455,21 +516,21 @@ class Ur10eRmpflowController:
         問題／同一個修法）完全相同的增益數值。
 
         故意只在真的要進入 joint-space 收尾時才呼叫（第一次呼叫後用
-        `_wrist_gains_boosted_for_finish` 擋掉後續重複呼叫），刻意不放進
+        `_gains_boosted_for_finish` 擋掉後續重複呼叫），刻意不放進
         `__init__()` 對整個 AIM 過程常駐生效——RMPflow 自己的 waypoint
         chain 階段（`_step_rmpflow()`）已經實測驗證過用預設增益就能正常
         收斂（每 tick 重新給貼近目前值的新目標，等於變相用位置追蹤模擬
         速度追蹤，沒有這個穩態下垂問題），套用未驗證過的高增益去干擾
         那段是沒必要的新變因。
         """
-        if self._wrist_gains_boosted_for_finish:
+        if self._gains_boosted_for_finish:
             return
-        self._wrist_gains_boosted_for_finish = True
+        self._gains_boosted_for_finish = True
 
         dof_names = list(self._articulation.dof_names)
         target_indices = [
             i for i, name in enumerate(dof_names)
-            if any(sub in name.lower() for sub in self._WRIST_GAIN_BOOST_JOINT_NAME_SUBSTRINGS)
+            if any(sub in name.lower() for sub in self._FINISH_GAIN_BOOST_JOINT_NAME_SUBSTRINGS)
         ]
         if not target_indices:
             return
@@ -487,9 +548,9 @@ class Ur10eRmpflowController:
             stiffnesses, dampings, max_efforts = stiffnesses[0], dampings[0], max_efforts[0]
 
         for idx in target_indices:
-            stiffnesses[idx] = self._WRIST_GAIN_STIFFNESS
-            dampings[idx] = self._WRIST_GAIN_DAMPING
-            max_efforts[idx] = max_efforts[idx] * self._WRIST_GAIN_MAX_EFFORT_MULTIPLIER
+            stiffnesses[idx] = self._FINISH_GAIN_STIFFNESS
+            dampings[idx] = self._FINISH_GAIN_DAMPING
+            max_efforts[idx] = max_efforts[idx] * self._FINISH_GAIN_MAX_EFFORT_MULTIPLIER
 
         logger.info(
             "ur10e joint-space finish wrist gain boost: joint indices=%s new_max_efforts=%s",
@@ -503,10 +564,10 @@ class Ur10eRmpflowController:
         當 joint-space 目標，交給 PhysX 關節驅動器自己插值到位——跟
         `ArticulationAPIImpl._start_joint_space_motion()`（WAM7/UR3e 的
         joint-space 移動）同一個精神：起點離目標很近，不需要（也不適合）
-        再跑一次差動 IK。收斂判定看六個關節角度是不是都進到
-        `_POSITION_TOLERANCE_M` 換算的容許值內——這裡直接沿用弧度制
-        `_ORIENTATION_TOLERANCE_RAD` 當關節角度容許值，量級相符（都是
-        「小角度」等級的收斂判定）。"""
+        再跑一次差動 IK。收斂判定看六個關節角度是不是都進到容許值內——
+        這裡直接沿用弧度制 `_FINAL_ORIENTATION_TOLERANCE_RAD`（跟末端
+        姿態的最終精度門檻共用同一個值，見類別常數說明）當關節角度容許
+        值，量級相符（都是「小角度」等級的收斂判定）。"""
         full_position_targets = np.asarray(self._articulation.get_dof_positions())[0].copy()
         full_position_targets[self._active_dof_indices] = self._joint_finish_target
         self._articulation.switch_dof_control_mode("position")
@@ -543,7 +604,7 @@ class Ur10eRmpflowController:
         current_positions = np.asarray(self._articulation.get_dof_positions())[0]
         current_active_positions = current_positions[self._active_dof_indices]
         joint_error = float(np.max(np.abs(current_active_positions - self._joint_finish_target)))
-        converged = joint_error <= self._ORIENTATION_TOLERANCE_RAD
+        converged = joint_error <= self._FINAL_ORIENTATION_TOLERANCE_RAD
         timed_out = self._finish_steps >= self._FINISH_MAX_STEPS
 
         if os.environ.get("DEBUG_UR10E_FINISH_IK"):
@@ -557,9 +618,21 @@ class Ur10eRmpflowController:
             return
 
         if not converged:
+            per_joint_error = np.abs(current_active_positions - self._joint_finish_target)
+            per_joint_breakdown = ", ".join(
+                f"{name}={error:.5f}rad" for name, error in zip(self._active_joint_names, per_joint_error)
+            )
+            # 2026-09-04 除錯記錄：先前只印 max_abs，看不出「哪一個關節」
+            # 拖慢了收斂——wrist gain boost 只套用在 wrist_1/wrist_3（見
+            # _FINISH_GAIN_BOOST_JOINT_NAME_SUBSTRINGS），逾時代表殘留誤差
+            # 可能落在沒被 boost 到的關節上（wrist_2，或 shoulder/elbow
+            # 端），需要逐關節數據才知道該對哪個關節加處理，不能片面猜測
+            # 「全部關節一起 boost」（官方 Gain Tuner 文件建議依個別關節
+            # 負載分別調整，不建議齊頭式套用同一組增益）。
             logger.warning(
-                "joint_space_finish 逾時未收斂（%d 步）：關節角最大誤差=%.5frad（容許%.5frad）",
-                self._finish_steps, joint_error, self._ORIENTATION_TOLERANCE_RAD,
+                "joint_space_finish 逾時未收斂（%d 步）：關節角最大誤差=%.5frad（容許%.5frad）"
+                "，逐關節分解：%s",
+                self._finish_steps, joint_error, self._FINAL_ORIENTATION_TOLERANCE_RAD, per_joint_breakdown,
             )
         self._did_last_motion_timeout = not converged
         self._joint_finish_active = False
@@ -702,7 +775,7 @@ class Ur10eRmpflowController:
         )
         return (
             position_error <= self._POSITION_TOLERANCE_M
-            and orientation_error <= self._ORIENTATION_TOLERANCE_RAD
+            and orientation_error <= self._FINAL_ORIENTATION_TOLERANCE_RAD
         )
 
     def _activate_current_waypoint(self) -> None:
