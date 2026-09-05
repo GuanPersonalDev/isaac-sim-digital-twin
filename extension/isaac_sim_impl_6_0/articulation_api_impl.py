@@ -185,13 +185,26 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._ur10e_cue_slide_controller = None
         self._ur10e_active_controller = None
         self._ur10e_step_callback_id: int | None = None
-        # move_to_pose() 的「先退桿再移動手臂」兩段式序列狀態（2026-09-04
-        # 補充，見該方法說明）：_ur10e_awaiting_arm_move_after_retract=True
-        # 期間 _ur10e_active_controller 指向 cue_slide_controller，退桿完成
-        # 才切到 rmpflow_controller 移動手臂，_ur10e_pending_arm_target 存
-        # 退桿完成後要餵給 rmpflow_controller.move_to_pose() 的目標。
+        # move_to_pose() 的「先退桿→移到安全中繼姿態→平移到最終姿態」
+        # 三段式序列狀態（2026-09-05 補充，見該方法說明）：
+        # _ur10e_awaiting_arm_move_after_retract=True 期間
+        # _ur10e_active_controller 指向 cue_slide_controller，退桿完成後
+        # 先移到 _ur10e_pending_staging_target（安全中繼姿態，避障留在這
+        # 段做），到位後再切到 _ur10e_awaiting_final_approach_after_staging
+        # 狀態，平移到 _ur10e_pending_arm_target（真正的最終姿態）。
         self._ur10e_awaiting_arm_move_after_retract: bool = False
+        self._ur10e_awaiting_final_approach_after_staging: bool = False
+        self._ur10e_pending_staging_target: tuple[list[float], list[float]] | None = None
         self._ur10e_pending_arm_target: tuple[list[float], list[float]] | None = None
+        # DEBUG_UR10E_AIM_PHASES 除錯用：分段計數兩階段 AIM 各自消耗的
+        # step 數，用來判斷是 staging 那段吃光大部分預算、還是 final
+        # approach 那段本身卡住（見 2026-09-05 obstacle 註冊調查）。
+        self._ur10e_aim_phase_step_counter: int = 0
+        self._ur10e_aim_final_approach_reported: bool = False
+        # register_static_box_obstacle() 每次呼叫都要建立一個新的 USD prim
+        # 路徑（FixedCuboid 不能共用同一個 prim_path 註冊兩個不同的障礙物），
+        # 用清單長度當流水號。
+        self._ur10e_registered_obstacle_paths: list[str] = []
 
     def initialize(self) -> None:
         # 在 timeline play 之後呼叫
@@ -252,18 +265,67 @@ class ArticulationAPIImpl(ArticulationAPI):
                 self._ur10e_cue_slide_controller.step(step_dt)
                 return
             # 退桿完成（或逾時，best-effort 繼續，不擋住整段動作）——切到
-            # RMPflow 控制器移動手臂，退桿階段自己的 did_last_motion_timeout
-            # 不往外傳（見 move_to_pose() 說明：這個序列最終只回報手臂移動
-            # 那一段的完成/逾時狀態）。
+            # RMPflow 控制器先移到安全中繼姿態（見 move_to_pose() 2026-09-05
+            # 補充），退桿階段自己的 did_last_motion_timeout 不往外傳（這個
+            # 序列最終只回報「平移到最終姿態」那一段的完成/逾時狀態）。
             self._ur10e_awaiting_arm_move_after_retract = False
+            self._ur10e_awaiting_final_approach_after_staging = True
+            staging_position, staging_orientation = self._ur10e_pending_staging_target
+            self._ur10e_pending_staging_target = None
+            self._ur10e_active_controller = self._ur10e_rmpflow_controller
+            self._ur10e_aim_phase_step_counter = 0
+            self._ur10e_rmpflow_controller.move_to_pose(staging_position, staging_orientation)
+            return
+
+        if self._ur10e_awaiting_final_approach_after_staging:
+            self._ur10e_aim_phase_step_counter += 1
+            if not self._ur10e_rmpflow_controller.is_motion_complete():
+                self._ur10e_rmpflow_controller.step(step_dt)
+                return
+            # 安全中繼姿態到位（或逾時，best-effort 繼續）——平移到真正的
+            # 最終姿態，方向跟中繼姿態完全相同，只有位置沿同一個軸向逼近，
+            # 不需要再解一次複雜的重新定向。
+            #
+            # ⚠️ 2026-09-05 除錯記錄：這段平移的終點本來就緊貼在母球旁邊
+            # （AIM 的定義就是「桿尖對準球」），如果母球這時候還是啟用中的
+            # 障礙物，等於同時要求 RMPflow「靠近」又「遠離」同一個目標，
+            # 實測踩過：整段平移卡死，跑滿步數上限逾時，最終姿態離目標
+            # 超過 1m（比完全不做兩階段還糟）。這段開始前先停用動態障礙物
+            # （母球），球檯（靜態）維持避障——手臂逼近球的最後一段不該
+            # 撞到球檯，這個顧慮是分開的、需要繼續生效。
+            if os.environ.get("DEBUG_UR10E_AIM_PHASES"):
+                print(
+                    f"[aim_phases] STAGING 階段結束：耗費 step={self._ur10e_aim_phase_step_counter} "
+                    f"timeout={self._ur10e_rmpflow_controller.did_last_motion_timeout()} "
+                    f"目前 wrist 位置={self.get_end_effector_position()}",
+                    flush=True,
+                )
+            self._ur10e_awaiting_final_approach_after_staging = False
             position, orientation = self._ur10e_pending_arm_target
             self._ur10e_pending_arm_target = None
-            self._ur10e_active_controller = self._ur10e_rmpflow_controller
+            self._ur10e_rmpflow_controller.disable_dynamic_obstacles()
+            self._ur10e_aim_phase_step_counter = 0
+            self._ur10e_aim_final_approach_reported = False
             self._ur10e_rmpflow_controller.move_to_pose(position, orientation)
             return
 
         if self._ur10e_active_controller is not None:
+            debug_aim_phases = os.environ.get("DEBUG_UR10E_AIM_PHASES") and self._ur10e_active_controller is self._ur10e_rmpflow_controller
+            if debug_aim_phases and not self._ur10e_rmpflow_controller.is_motion_complete():
+                self._ur10e_aim_phase_step_counter += 1
             self._ur10e_active_controller.step(step_dt)
+            if (
+                debug_aim_phases
+                and not self._ur10e_aim_final_approach_reported
+                and self._ur10e_rmpflow_controller.is_motion_complete()
+            ):
+                self._ur10e_aim_final_approach_reported = True
+                print(
+                    f"[aim_phases] FINAL_APPROACH 階段結束：耗費 step={self._ur10e_aim_phase_step_counter} "
+                    f"timeout={self._ur10e_rmpflow_controller.did_last_motion_timeout()} "
+                    f"目前 wrist 位置={self.get_end_effector_position()}",
+                    flush=True,
+                )
 
     def set_robot_base_pose(
         self, base_position: list[float], base_orientation: list[float]
@@ -271,6 +333,45 @@ class ArticulationAPIImpl(ArticulationAPI):
         if not self._ur10e_mode:
             return
         self._ur10e_rmpflow_controller.set_robot_base_pose(base_position, base_orientation)
+
+    def register_static_box_obstacle(self, center: list[float], size: list[float]) -> None:
+        if not self._ur10e_mode:
+            return
+        # ⚠️ 2026-09-05 除錯記錄：一開始用 FixedCuboid——那是「靜態剛體＋
+        # 真實 PhysX 碰撞」（見 isaacsim.core.api.objects.cuboid 的類別
+        # 階層：FixedCuboid 繼承 VisualCuboid 並加上 RigidBodyAPI/
+        # CollisionAPI），不是純粹給 RMPflow 內部避障邏輯參考用的幾何
+        # 標記。實測踩過：這個障礙物箱體跟真正的球檯位置重疊，變成真的會
+        # 撞的東西，CueStick 反覆跟它產生接觸事件。改用 VisualCuboid——
+        # 純幾何+世界座標，沒有 RigidBodyAPI/CollisionAPI，不會參與真實
+        # PhysX 碰撞反應，只提供 RMPflow 需要的形狀/位置資訊。
+        from isaacsim.core.api.objects import VisualCuboid
+
+        obstacle_path = f"/World/_RmpflowStaticObstacle_{len(self._ur10e_registered_obstacle_paths)}"
+        self._ur10e_registered_obstacle_paths.append(obstacle_path)
+        obstacle = VisualCuboid(
+            prim_path=obstacle_path,
+            position=np.asarray(center, dtype=float),
+            scale=np.asarray(size, dtype=float),
+            size=1.0,
+            visible=False,
+        )
+        self._ur10e_rmpflow_controller.add_obstacle(obstacle, static=True)
+
+    def register_dynamic_sphere_obstacle(self, prim_path: str, radius: float) -> None:
+        if not self._ur10e_mode:
+            return
+        # ⚠️ 2026-09-05 除錯記錄：一開始直接 DynamicSphere(prim_path=
+        # 母球路徑) 想直接包一層現有的母球 prim，實測噴例外——
+        # 「cannot be parsed as a Sphere object」。母球實際的 USD 結構
+        # 不是頂層就是一個 UsdGeom.Sphere（真正的 Sphere geometry 在更深的
+        # 子節點），DynamicSphere 的建構子對「包既有 prim」這個用法會嚴格
+        # 檢查 prim type，包不了。改成建立一個全新、獨立的 DynamicSphere
+        # 障礙物 proxy，每個 tick 從母球真正的 RigidPrim 讀取最新世界座標
+        # 手動同步過去（見 Ur10eRmpflowController.add_dynamic_sphere_
+        # obstacle()／_step_rmpflow() 的同步邏輯），不依賴「wrapper 直接
+        # 讀到原始 prim」這個做不到的假設。
+        self._ur10e_rmpflow_controller.add_dynamic_sphere_obstacle(prim_path, radius)
 
     def move_cue_slide_stroke(
         self, backswing_position: float, target_velocity: float
@@ -496,6 +597,25 @@ class ArticulationAPIImpl(ArticulationAPI):
     # 參數上打轉。
     _UR10E_AIM_RETRACT_POSITION_M = -swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M
 
+    # ⚠️ 2026-09-05 除錯記錄：註冊母球/球檯為 RMPflow 障礙物
+    # （register_static_box_obstacle()/register_dynamic_sphere_obstacle()）
+    # 後，直接接觸問題解決了（CueStick-母球 impulse 從 0.024 降到 0），
+    # 但單一長距離、大幅重新定向的 waypoint chain（從 HOME 直接規劃到
+    # 貼近母球的最終 AIM 姿態）反而更容易在避障的複雜决策空間裡卡進
+    # 錯誤的姿態分支（實測：方向誤差從 0.02rad 惡化到 0.86rad 等級，
+    # wxyz 符號幾乎完全相反）。改成兩階段：
+    # 1. 先移動到「安全中繼姿態」——方向跟最終 AIM 目標完全相同（避開
+    #    奇異點的 roll 已經算好），位置沿桿軸方向往後退開
+    #    _UR10E_AIM_STAGING_OFFSET_M，讓即使桿子退桿距離只有 0.15m，
+    #    連同整根桿身在內都離母球夠遠——這段大幅移動＋避障留在方向還沒
+    #    貼近球、犯錯本錢比較大的階段做。
+    # 2. 從安全中繼姿態出發，只需要沿同一個軸向做一段直線平移到真正的
+    #    最終位置，方向全程不變——這段動作 RMPflow 不需要再解一次複雜的
+    #    6-DOF 重新定向，只是單純延同一個已知安全的方向逼近，穩定性遠
+    #    高於「從 HOME 出發直接規劃到貼近球的姿態」這種大幅度＋高風險
+    #    的單一移動。
+    _UR10E_AIM_STAGING_OFFSET_M = CUE_STICK_GRIP_TO_TIP + 0.1
+
     def move_to_pose(self, position: list[float], orientation: list[float], linear_velocity: list[float] = [0.0, 0.0, 0.0], angular_velocity: list[float] = [0.0, 0.0, 0.0]) -> None:
         if self._ur10e_mode:
             # linear_velocity/angular_velocity 沒有對應語意（RMPflow 是
@@ -512,9 +632,22 @@ class ArticulationAPIImpl(ArticulationAPI):
             # 退到位才開始移動手臂——手臂定位全程桿尖都在安全距離外，STRIKE
             # 開始時桿子已經在後擺位置，move_cue_slide_stroke() 的退桿子
             # 階段會直接判定已收斂，接著才真正加速揮桿。實際序列由
-            # _step_ur10e_motion() 的 _ur10e_awaiting_arm_move_after_retract
-            # 狀態機驅動（先跑 cue_slide_controller.retract()，收斂後才切到
-            # rmpflow_controller.move_to_pose()），這裡只負責啟動。
+            # _step_ur10e_motion() 的狀態機驅動（先跑 cue_slide_controller.
+            # retract()，收斂後移到安全中繼姿態，再平移到真正的最終姿態，
+            # 見類別 docstring 2026-09-05 補充），這裡只負責啟動＋算好中繼
+            # 目標存起來。
+            # 確保每次新的 move_to_pose() 呼叫都從「動態障礙物啟用」的狀態
+            # 開始——上一次呼叫的最終逼近階段可能停用過（見下方
+            # disable_dynamic_obstacles() 呼叫處的說明），重新啟用之後
+            # 安全中繼姿態這段大幅移動才會真的避開母球。
+            self._ur10e_rmpflow_controller.enable_dynamic_obstacles()
+            approach_direction = self._rotate_vector_by_quat(
+                np.asarray(orientation, dtype=float), np.array([0.0, 1.0, 0.0])
+            )
+            staging_position = (
+                np.asarray(position, dtype=float) - approach_direction * self._UR10E_AIM_STAGING_OFFSET_M
+            ).tolist()
+            self._ur10e_pending_staging_target = (staging_position, orientation)
             self._ur10e_pending_arm_target = (position, orientation)
             self._ur10e_awaiting_arm_move_after_retract = True
             self._ur10e_active_controller = self._ur10e_cue_slide_controller
@@ -1135,6 +1268,12 @@ class ArticulationAPIImpl(ArticulationAPI):
 
     def move_to_home(self) -> None:
         if self._ur10e_mode:
+            # 上一次 move_to_pose() 的「最終逼近」階段可能停用過動態障礙物
+            # （見該方法 2026-09-05 補充），RESET 回 HOME 這段大幅移動要
+            # 重新啟用避障——重複呼叫 enable_dynamic_obstacles() 在已啟用
+            # 的障礙物上是安全的 no-op，不需要額外判斷「上次是不是真的
+            # 停用過」。
+            self._ur10e_rmpflow_controller.enable_dynamic_obstacles()
             self._ur10e_active_controller = self._ur10e_rmpflow_controller
             self._ur10e_rmpflow_controller.move_to_home()
             return
@@ -1215,6 +1354,12 @@ class ArticulationAPIImpl(ArticulationAPI):
             # True 這段期間，不管 cue_slide_controller 內部狀態如何，一律
             # 回報「尚未完成」，讓 _step_ur10e_motion() 有機會真正做完交接。
             if self._ur10e_awaiting_arm_move_after_retract:
+                return False
+            # 同一個道理套用在「安全中繼姿態→最終姿態」這次交接：中繼姿態
+            # 到位的那個 tick，_ur10e_rmpflow_controller.is_motion_complete()
+            # 已經是 True，但平移到最終姿態的指令要等 _step_ur10e_motion()
+            # 下一次呼叫才會真的送出去，這裡也要擋住提早判定完成。
+            if self._ur10e_awaiting_final_approach_after_staging:
                 return False
             if self._ur10e_active_controller is None:
                 return True

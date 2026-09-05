@@ -84,6 +84,17 @@ _SHOT_ANGLE_DEG = 0.0
 _CUE_BALL_SPEED = 1.995
 _PHYSICS_DT = 1.0 / 60.0
 _MAX_STEPS_PER_ACTION = 4000
+# 2026-09-05 補充：兩階段 AIM（先到安全中繼姿態，再平移到最終姿態，見
+# ArticulationAPIImpl.move_to_pose()）等於把 AIM 移動距離跟 waypoint
+# 數量大致加倍，4000 步的舊上限不夠讓整段流程真的跑完（實測踩過：AIM
+# 卡在剛好 4000 步逾時，量到的姿態離目標 1m+，但那其實是「還沒跑完」，
+# 不是真的收斂失敗）。AIM 專用一個更寬裕的上限，RESET／STRIKE 不需要
+# 這麼多，維持原本的 _MAX_STEPS_PER_ACTION。
+# 2026-09-05 補充：solver iteration count 從預設拉高到 128（見
+# ur10e_rmpflow_controller.py 同日補充，修正 wrist_2_joint 耦合動力學
+# 殘留誤差）之後，每個 waypoint 收斂明顯變慢（STAGING 單一階段就要
+# 4000+ 步），8000 步的上限不夠讓兩階段 AIM 真的跑完 FINAL_APPROACH。
+_MAX_STEPS_PER_AIM_ACTION = 20000
 
 
 def _run() -> None:
@@ -105,6 +116,7 @@ def _run() -> None:
     from core.models.ur10e_robot import UR10eRobot
     from core.services import cue_pose_calculator, swing_trajectory_calculator
     from core.services.base_placement_calculator import CUE_STICK_GRIP_TO_TIP
+    from core.services.spread_score_calculator import TABLE_LENGTH, TABLE_WIDTH
     from core.services.ur10e_swing_strategy import Ur10eSwingStrategy
     from isaacsim.core.experimental.prims import RigidPrim
 
@@ -202,6 +214,31 @@ def _run() -> None:
     print("[flat] initialize() 完成")
     sys.stdout.flush()
 
+    # 2026-09-05 補充：把球檯跟母球註冊為 RMPflow 障礙物——今天稍早查證
+    # 過 production 路徑從未呼叫過 add_obstacle()/add_ground_plane()，
+    # 也直接證實 AIM 收尾過程中桿身（不是桿尖）真的蹭到母球。球檯用固定
+    # 方塊（跟 scripts/verify_ur10e_home_pose.py 同一套尺寸慣例：
+    # spread_score_calculator.TABLE_WIDTH/TABLE_LENGTH，不是整個
+    # billiard_env 參照的 bbox——那個含整個房間，量到 10x10x10m 會把手臂
+    # 吞進去），母球用會持續追蹤最新世界座標的動態球體（不是註冊當下的
+    # 固定快照，球會被打去別的地方）。
+    # 2026-09-05 除錯記錄：原本把方塊放在 table_z 之上（[table_z,
+    # table_z+0.15]），逐 waypoint 診斷（DEBUG_UR10E_AIM_WAYPOINTS）顯示
+    # FINAL_APPROACH 階段全部 19 個 waypoint 無一收斂、方向誤差從 0.04rad
+    # 一路發散到 1.31rad——桿尖擊球所在高度正是 table_z+ball_radius
+    # （約 table_z+0.03m），完全落在這個「障礙物」範圍內，等於整段最終
+    # 逼近都在跟自己要抵達的高度打架。改成放在 table_z 之下（代表球檯桌面
+    # 以下的實體結構：石板/桌腳/桌框），讓桌面正上方（球桿實際需要操作的
+    # 空間）保持淨空。
+    _TABLE_OBSTACLE_HEIGHT_M = 0.15
+    table_center = table.get_table_center()
+    table_obstacle_center = [table_center[0], table_center[1], table_z - _TABLE_OBSTACLE_HEIGHT_M / 2.0]
+    articulation_api.register_static_box_obstacle(
+        table_obstacle_center, [TABLE_WIDTH, TABLE_LENGTH, _TABLE_OBSTACLE_HEIGHT_M]
+    )
+    articulation_api.register_dynamic_sphere_obstacle(ball_prim_path, ball_radius)
+    print(f"[flat] 已註冊 RMPflow 障礙物：球檯 center={table_obstacle_center} size=({TABLE_WIDTH},{TABLE_LENGTH},{_TABLE_OBSTACLE_HEIGHT_M})  母球 prim={ball_prim_path} radius={ball_radius}")
+
     ball_rigid_prim = RigidPrim(paths=ball_prim_path)
     cue_stick_rigid_prim = RigidPrim(paths=cue_stick_prim_path)
     cue_tip_bbox_local_offset = _compute_bbox_tip_local_offset(stage, cue_stick_prim_path)
@@ -238,6 +275,20 @@ def _run() -> None:
     current_phase_for_contacts = {"name": "SETUP"}
     physics_api.enable_contact_reporting(cue_stick_prim_path)
     physics_api.enable_contact_reporting(ball_prim_path)
+    # 2026-09-05 補充：先前只對 CueStick／母球啟用碰撞回報，手臂本體
+    # （forearm/wrist_1~3_link）完全沒有可見度——使用者提出的假設「AIM
+    # 過程中會不會是手臂本體（不是球桿）撞到庫邊」在這之前根本測不出來。
+    # 移動障礙方塊到 table_z 之下之後（見前面 register_static_box_obstacle
+    # 的說明），球檯庫邊（真實高於桌面的實體結構）已經不在避障範圍內，
+    # 需要直接用碰撞回報驗證手臂本體有沒有真的撞上去，不能只憑理論推測。
+    arm_link_prim_paths = [
+        f"{robot_prim_path}/forearm_link",
+        f"{robot_prim_path}/wrist_1_link",
+        f"{robot_prim_path}/wrist_2_link",
+        f"{robot_prim_path}/wrist_3_link",
+    ]
+    for arm_link_prim_path in arm_link_prim_paths:
+        physics_api.enable_contact_reporting(arm_link_prim_path)
     physics_api.subscribe_contact_events(
         lambda e: contacts.append((current_phase_for_contacts["name"], e))
     )
@@ -308,7 +359,7 @@ def _run() -> None:
         bump_reported = False
         min_distance_during_finish = float("inf")
         finish_tick_count = 0
-        while not articulation_api.is_motion_complete() and step < _MAX_STEPS_PER_ACTION:
+        while not articulation_api.is_motion_complete() and step < _MAX_STEPS_PER_AIM_ACTION:
             simulation_app.update()
             step += 1
 
@@ -364,6 +415,20 @@ def _run() -> None:
         print(f"[flat]   phase={phase_name} a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
     if not cue_related_contacts_so_far:
         print("[flat]   （完全沒有記錄到任何 CueStick 相關事件——母球的擾動確認跟球桿無關）")
+
+    # 2026-09-05 補充：查證「手臂本體（不是球桿）撞到庫邊」的假設——
+    # 手臂避障方塊移到 table_z 之下之後，真實庫邊（高於桌面的實體結構）
+    # 不再被 RMPflow 避障涵蓋，需要直接看 forearm/wrist_1~3_link 有沒有
+    # 真的撞上球檯任何部位（不篩選 impulse，理由同上）。
+    arm_related_contacts_so_far = [
+        (phase_name, c) for phase_name, c in contacts
+        if any(p in (c.actor_path_a, c.actor_path_b) for p in arm_link_prim_paths)
+    ]
+    print(f"[flat] RESET+AIM 全程，手臂本體（forearm/wrist_1~3_link）相關事件（不篩選 impulse）共 {len(arm_related_contacts_so_far)} 筆：")
+    for phase_name, c in arm_related_contacts_so_far:
+        print(f"[flat]   phase={phase_name} a={c.actor_path_a} b={c.actor_path_b} impulse={c.impulse}")
+    if not arm_related_contacts_so_far:
+        print("[flat]   （完全沒有記錄到任何手臂本體相關事件）")
 
     # ⚠️ 2026-09-04 除錯記錄：之前這裡只檢查位置誤差，讓一個實際上方向
     # 沒收斂的姿態被誤判成「AIM 成功」——1.35m 長的球桿會把沒被抓到的

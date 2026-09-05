@@ -188,6 +188,38 @@ class ArticulationAPI(ABC):
         ...
 
     @abstractmethod
+    def register_static_box_obstacle(self, center: list[float], size: list[float]) -> None:
+        """
+        向路徑規劃器註冊一個固定方塊障礙物（例如球檯本體），讓手臂移動時
+        主動避開，不是等真的碰撞才被動反應。
+
+        center: 方塊中心世界座標 [x, y, z]。
+        size: 方塊在 x/y/z 三軸的全長（不是半長）[dx, dy, dz]。
+
+        只有支援路徑規劃避障的實作（目前只有 UR10e／RMPflow）會真的生效；
+        不支援避障機制的實作應該是安全的 no-op，不能拋例外——這個方法會
+        從 orchestrator 對所有手臂型號無條件呼叫一次，見
+        `core/services/table_orchestrator.py`。
+        """
+        ...
+
+    @abstractmethod
+    def register_dynamic_sphere_obstacle(self, prim_path: str, radius: float) -> None:
+        """
+        向路徑規劃器註冊一個會持續追蹤指定 prim 世界座標的球形障礙物
+        （例如母球），球移動時障礙物位置也會跟著更新，不是註冊當下的固定
+        快照。
+
+        prim_path: 要追蹤的 prim 路徑（通常是母球）。
+        radius: 球半徑（公尺）。
+
+        只有支援路徑規劃避障的實作（目前只有 UR10e／RMPflow）會真的生效；
+        不支援避障機制的實作應該是安全的 no-op，不能拋例外，理由同
+        `register_static_box_obstacle()`。
+        """
+        ...
+
+    @abstractmethod
     def move_to_joint_position(self, joint_positions: list[float], target_end_effector_position: list[float]) -> None:
         """
         joint_positions: 各關節角度[

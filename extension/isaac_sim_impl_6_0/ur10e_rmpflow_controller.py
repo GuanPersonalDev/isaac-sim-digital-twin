@@ -189,6 +189,31 @@ class Ur10eRmpflowController:
         self._end_effector_rigid_prim = RigidPrim(paths=end_effector_prim_path)
         self._rmp_flow = _load_rmp_flow()
 
+        # 2026-09-05 補充：joint_space_finish 逾時當下 wrist_2_joint 卡在
+        # 一個離目標固定的殘留角度（0.089rad），對 stiffness/damping 加倍、
+        # max_effort 加倍、_FINISH_MAX_STEPS 加倍全部無感——逐 tick log
+        # 顯示這個關節一開始其實已經很接近目標，是之後 240 步內平滑地被
+        # 拉往另一個平衡點，不是追不上也不是卡死不動。這正是本專案更早期
+        # WAM7 除錯（scripts/probe_first_case_residual_error.py）記錄過的
+        # 同一種「典型 solver 迭代太少假影特徵」：7-DOF 耦合鏈裡各關節
+        # stiffness 量級差異很大（shoulder ~187k vs wrist/elbow boost 後
+        # 1e6），預設 solver iteration count（Isaac Sim 常見預設 4/1）
+        # 不足以讓 TGS 求解器在耦合系統裡正確收斂，會穩定收斂到一個數值上
+        # 自洽但錯誤的解，且對單一關節的 gain 大小不敏感。
+        #
+        # 拉高 iteration count 有明顯的門檻效應，不是線性漸進：255（WAM7
+        # 探針腳本驗證假設用的極端值）能把殘留誤差壓到 0.002rad，但代價是
+        # 每個 waypoint 收斂明顯變慢（RESET 905→2407 步、STAGING
+        # 1999→4164 步仍逾時），把 AIM 的步數預算榨乾；降到 32 幾乎沒有
+        # 效果（殘留誤差 0.0902，等於沒調）。128 跟 255 效果相同（殘留
+        # 誤差同樣壓到 0.002~0.005rad），代價也一樣（跟 255 同等級的
+        # waypoint 變慢）——門檻落在 32~128 之間，且修正效果與變慢代價
+        # 綁在一起，無法只取其一。選 128（不用 255）純粹是「先取一個明確
+        # 跨過門檻、且非必要不用極端值」的保守選擇；變慢的代價已經在呼叫端
+        # （scripts/test_ur10e_table_flat.py 的 _MAX_STEPS_PER_AIM_ACTION）
+        # 加大步數預算來吸收。
+        self._articulation.set_solver_iteration_counts(128, 128)
+
         dof_names = list(self._articulation.dof_names)
         self._num_dofs = len(dof_names)
         self._active_joint_names = list(self._rmp_flow.get_active_joints())
@@ -219,6 +244,14 @@ class Ur10eRmpflowController:
         # 固定是單位四元數（見 Ur10eSwingStrategy._BASE_ORIENTATION），
         # 只需要平移，不需要旋轉。
         self._base_position: np.ndarray | None = None
+        # add_dynamic_sphere_obstacle() 註冊的 (來源 RigidPrim, 障礙物
+        # proxy) 配對清單，_step_rmpflow() 每個 tick 都會用來同步位置。
+        self._dynamic_obstacle_sources: list[tuple] = []
+        # Lula 的 enable_obstacle()/disable_obstacle() 對「已經是目標
+        # 狀態」會直接拋例外，不是安全的 no-op——自己追蹤目前狀態，見
+        # enable_dynamic_obstacles()/disable_dynamic_obstacles()。新加入
+        # 的障礙物預設是啟用狀態（Lula 的預設行為），初始值對應這個假設。
+        self._dynamic_obstacles_enabled = True
 
     def set_robot_base_pose(self, base_position, base_orientation) -> None:
         """告訴 RMPflow 手臂底座目前在世界座標系的實際位姿。"""
@@ -322,6 +355,21 @@ class Ur10eRmpflowController:
 
         if timed_out and not converged:
             self._did_last_motion_timeout = True
+
+        if os.environ.get("DEBUG_UR10E_AIM_WAYPOINTS"):
+            target_position, target_orientation = self._waypoints[self._waypoint_index]
+            live_position, live_orientation = self._end_effector_rigid_prim.get_world_poses()
+            live_position = np.asarray(live_position[0], dtype=float)
+            live_orientation = np.asarray(live_orientation[0], dtype=float)
+            position_error = float(np.linalg.norm(live_position - target_position))
+            dot = float(np.clip(np.abs(np.dot(live_orientation, target_orientation)), -1.0, 1.0))
+            orientation_error = 2.0 * np.arccos(dot)
+            print(
+                f"[aim_waypoints] waypoint={self._waypoint_index + 1}/{len(self._waypoints)} "
+                f"steps={self._steps_on_current_waypoint} converged={converged} timed_out={timed_out} "
+                f"position_error={position_error:.5f}m orientation_error={orientation_error:.5f}rad",
+                flush=True,
+            )
 
         self._waypoint_index += 1
         if self._waypoint_index >= len(self._waypoints):
@@ -487,6 +535,24 @@ class Ur10eRmpflowController:
         # 阻尼，這是實測後的第一輪调整值，不是精確算出來的，之後如果還有
         # 殘留震盪要再往上調。
         "elbow": (1e6, 5e4, 20.0),
+        # 2026-09-05 補充：加入 RMPflow 障礙物避讓（AIM 兩階段分期）後才
+        # 浮現——逐關節 log 顯示 joint_space_finish 逾時當下 wrist_2_joint
+        # 誤差 0.089~0.138rad（其餘 5 個關節都在 0.01rad 以內），一開始
+        # 誤判成跟 elbow_joint 同一類「增益不夠」問題，沿用 wrist_1/wrist_3
+        # 同一組數值（1e6/1e4）——殘留誤差降到 0.089rad 但沒有完全收斂。
+        # ⚠️ 排除過程：把 stiffness/damping 加倍成 2e6/2e4、把
+        # max_effort_multiplier 從 20x 加到 40x（2240N·m），殘留誤差
+        # 都幾乎沒變（三次都落在 0.0887~0.0890rad）——不是 PD 穩態誤差
+        # （那樣加倍 stiffness 應該讓誤差大致減半），也不是 max_effort
+        # 飽和（那樣加倍上限應該有反應）。逐 tick log 進一步顯示這個關節
+        # 一開始其實已經很接近目標（誤差 0.0065rad），是之後 240 步內
+        # 平滑地被拉往另一個平衡點，典型「多關節耦合系統 solver 迭代次數
+        # 不足」的假影特徵——跟本專案更早期 WAM7 除錯
+        # （scripts/probe_first_case_residual_error.py）記錄過的案例
+        # 同一類，真正的修法是建構時呼叫 set_solver_iteration_counts()
+        # （見 __init__），不是這裡的 gain override。這裡維持跟
+        # wrist_1/wrist_3 一致的數值，不需要為 wrist_2 特別加大。
+        "wrist_2": (1e6, 1e4, 20.0),
     }
     """⚠️ 2026-09-04 除錯記錄：一開始照抄 ArticulationAPIImpl.
     _boost_wrist_gains_for_cue_stick_load()（UR3e 驗證過的同一組常數，
@@ -829,7 +895,92 @@ class Ur10eRmpflowController:
     def add_obstacle(self, obstacle, static: bool = True) -> None:
         self._rmp_flow.add_obstacle(obstacle, static=static)
 
+    def disable_dynamic_obstacles(self) -> None:
+        """暫時停用所有動態障礙物（目前只有追蹤母球的 proxy，見
+        `add_dynamic_sphere_obstacle()`）的避障效果——2026-09-05 除錯
+        記錄：兩階段 AIM（見 ArticulationAPIImpl.move_to_pose()）的「最後
+        平移到最終姿態」這一段，目的地本來就緊貼在母球旁邊，這時候還讓
+        RMPflow 主動避開母球，等於同時要求「靠近」跟「遠離」同一個目標，
+        實測踩過：這段平移完全卡死，跑滿 4000 步逾時，最終姿態離目標
+        超過 1m。球檯（靜態障礙物）不受影響，繼續生效——手臂靠近球的最後
+        一段本來就不該撞到球檯，這個顧慮跟母球是分開的。呼叫端負責在
+        安全時機（下一次 AIM 開始前）呼叫 `enable_dynamic_obstacles()`
+        重新啟用。
+
+        ⚠️ Lula 的 `enable_obstacle()`/`disable_obstacle()` 對「已經是
+        目標狀態」的障礙物會直接拋例外（"Attempted to enable an
+        already-enabled obstacle"），不是安全的 no-op——必須自己追蹤目前
+        狀態，只在真的要切換時才呼叫底層 API，見 `_dynamic_obstacles_
+        enabled`。"""
+        if not self._dynamic_obstacles_enabled:
+            return
+        self._dynamic_obstacles_enabled = False
+        for _source_rigid_prim, obstacle in self._dynamic_obstacle_sources:
+            self._rmp_flow.disable_obstacle(obstacle)
+
+    def enable_dynamic_obstacles(self) -> None:
+        if self._dynamic_obstacles_enabled:
+            return
+        self._dynamic_obstacles_enabled = True
+        for _source_rigid_prim, obstacle in self._dynamic_obstacle_sources:
+            self._rmp_flow.enable_obstacle(obstacle)
+
+    def add_dynamic_sphere_obstacle(self, prim_path: str, radius: float) -> None:
+        """建立一個獨立的 VisualSphere 障礙物 proxy，每個 physics tick
+        （見 `_step_rmpflow()`）從 `prim_path` 對應的真實 RigidPrim 讀取
+        最新世界座標同步過去，讓 RMPflow 看到的障礙物位置跟蹤真實物體
+        （例如母球）目前所在的位置，不是註冊當下的固定快照。
+
+        ⚠️ 2026-09-05 除錯記錄，兩個問題：
+        1. 不能直接 `DynamicSphere(prim_path=prim_path)` 包既有 prim——
+           母球的 USD 結構頂層不是 `UsdGeom.Sphere`（真正的球體 geometry
+           在子節點），`DynamicSphere` 建構子包既有 prim 時會嚴格檢查
+           prim type，直接噴例外（"cannot be parsed as a Sphere
+           object"）。改成建一個全新、獨立的障礙物 prim，透過每個 tick
+           手動讀取＋寫入世界座標的方式同步。
+        2. `DynamicSphere` 本身是「動態剛體＋真實 PhysX 碰撞」（繼承
+           `SingleRigidPrim`），不是純幾何標記——實測踩過：這個 proxy
+           跟真正的母球位置完全重疊（故意同步成一樣），兩個都有真實碰撞
+           形狀，直接互撞，母球被撞出 impulse 31 等級的力道，整顆彈飛去
+           撞牆撞地板。改用 `VisualSphere`——純幾何+世界座標，沒有
+           RigidBodyAPI/CollisionAPI，不會參與真實 PhysX 碰撞反應，只
+           提供 RMPflow 需要的形狀/位置資訊，可以放心跟真正的母球完全
+           重疊也不會產生任何物理作用力。
+        """
+        from isaacsim.core.api.objects import VisualSphere
+        from isaacsim.core.experimental.prims import RigidPrim as _RigidPrim
+
+        source_rigid_prim = _RigidPrim(paths=prim_path)
+        position, _orientation = source_rigid_prim.get_world_poses()
+        obstacle_path = f"/World/_RmpflowDynamicObstacle_{len(self._dynamic_obstacle_sources)}"
+        obstacle = VisualSphere(
+            prim_path=obstacle_path,
+            position=np.asarray(position[0], dtype=float),
+            radius=radius,
+            visible=False,
+        )
+        self._dynamic_obstacle_sources.append((source_rigid_prim, obstacle))
+        self.add_obstacle(obstacle, static=False)
+
+    def _sync_dynamic_obstacles(self) -> None:
+        for source_rigid_prim, obstacle in self._dynamic_obstacle_sources:
+            position, _orientation = source_rigid_prim.get_world_poses()
+            obstacle.set_world_pose(position=np.asarray(position[0], dtype=float))
+
     def _step_rmpflow(self, frame_duration: float) -> None:
+        # 2026-09-05 補充：每個 tick 先同步動態障礙物（見
+        # add_dynamic_sphere_obstacle()，目前用來追蹤母球）的最新世界
+        # 座標，再呼叫 update_world() 讓 RMPflow 內部快取讀到這次更新。
+        # 靜態障礙物（球檯）理論上不需要每 tick 更新，但呼叫本身無害，
+        # 一起做掉比額外維護「這個 tick 要不要 update」的條件邏輯簡單。
+        #
+        # ⚠️ 已知限制：這裡只覆蓋 RMPflow waypoint chain 本身
+        # （compute_joint_targets()）。AIM 收尾階段（_step_joint_space_
+        # finish()／_step_finish_ik()）完全不呼叫 RMPflow，這裡註冊的
+        # 障礙物對收尾那一小段的避障沒有作用，見兩個方法各自的說明。
+        self._sync_dynamic_obstacles()
+        self._rmp_flow.update_world()
+
         positions = np.asarray(self._articulation.get_dof_positions())[0]
         velocities = np.asarray(self._articulation.get_dof_velocities())[0]
         active_positions = positions[self._active_dof_indices]
