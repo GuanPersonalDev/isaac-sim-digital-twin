@@ -214,6 +214,22 @@ class Ur10eRmpflowController:
         # 加大步數預算來吸收。
         self._articulation.set_solver_iteration_counts(128, 128)
 
+        # 2026-09-05 補充：Articulation.switch_dof_control_mode() 把
+        # 「default gains」快取成 instance 級別的狀態，只在第一次呼叫時
+        # （`_default_dof_stiffnesses is None`）才去讀取當下的實際增益值
+        # 存起來，之後每次「切到 velocity 模式」都固定套用這份快取的
+        # damping（見該方法原始碼的模式對照表：velocity → stiffness=0、
+        # damping=default）。`_boost_gains_for_finish_once()` 的
+        # `set_dof_gains(update_default_gains=False)` 已經確保 boost 本身
+        # 不會覆寫這份快取（見該方法說明），但如果整個 session 第一次呼叫
+        # `switch_dof_control_mode()` 剛好發生在 boost 之後（那時候增益
+        # 已經被暫時改成 boost 過的數值），快取到的「default」還是會是
+        # 錯的。這裡在任何 boost 有機會發生之前，主動呼叫一次
+        # `switch_dof_control_mode("position")`（此時增益必然還是 USD
+        # 資產原始烘焙值），強制用真正的原始預設值把快取填好，關掉這個
+        # 呼叫順序的競態風險。
+        self._articulation.switch_dof_control_mode("position")
+
         dof_names = list(self._articulation.dof_names)
         self._num_dofs = len(dof_names)
         self._active_joint_names = list(self._rmp_flow.get_active_joints())
@@ -639,7 +655,27 @@ class Ur10eRmpflowController:
             "ur10e joint-space finish gain boost: joint indices=%s new_max_efforts=%s",
             list(target_overrides.keys()), [max_efforts[i] for i in target_overrides],
         )
-        self._articulation.set_dof_gains(stiffnesses[None, :], dampings[None, :])
+        # ⚠️ 2026-09-05 除錯記錄：set_dof_gains() 的 update_default_gains
+        # 預設是 True——沒有明確傳 False 的話，這裡的 boost 會「順便」把
+        # Articulation.switch_dof_control_mode() 內部快取的
+        # _default_dof_stiffnesses/_default_dof_dampings 也永久覆寫成這組
+        # boost 過的數值（見 articulation.py set_dof_gains() L3179-3181：
+        # `if update_default_gains: self._default_dof_stiffnesses,
+        # self._default_dof_dampings = self.get_dof_gains()`）。差動 IK
+        # 收尾（_step_finish_ik()）稍後呼叫 switch_dof_control_mode(
+        # "velocity") 時，velocity 模式的 damping 就是這個「default
+        # dampings」（見同檔案 switch_dof_control_mode() 的模式對照表：
+        # velocity → stiffness=0、damping=default），等於把 joint-space
+        # 收尾专用的 boost 值（1e4~5e4）錯誤帶進差動 IK 的 velocity-mode
+        # 阻尼，跟同一條鏈上其他關節（shoulder ~700~800）量級差異懸殊，
+        # 造成跟本次除錯開頭 wrist_1 1e15 stiffness 同一類的耦合病態——
+        # 實測踩過：差動 IK 收尾方向誤差穩定卡在 0.073rad 不再收斂。
+        # 加 update_default_gains=False，讓這個 boost 只影響「這一次
+        # set_dof_gains() 呼叫當下」的實際增益，不污染 velocity 模式引用
+        # 的預設值快取。
+        self._articulation.set_dof_gains(
+            stiffnesses[None, :], dampings[None, :], update_default_gains=False
+        )
         self._articulation.set_dof_max_efforts(max_efforts[None, :])
 
     def _step_joint_space_finish(self) -> None:
@@ -823,6 +859,18 @@ class Ur10eRmpflowController:
         jacobian_active = jacobian_full[:, self._active_dof_indices]
         jjt = jacobian_active @ jacobian_active.T + (self._FINISH_DLS_LAMBDA ** 2) * np.eye(6)
         qdot_active = jacobian_active.T @ np.linalg.solve(jjt, twist)
+
+        # 2026-09-05 補充：懷疑殘留誤差長時間卡在固定值不動，是這個姿態
+        # 附近的運動學奇異點讓 DLS 在某個方向上把修正量壓到幾乎為零——
+        # 直接印出 Jacobian 奇異值，最小奇異值遠小於 _FINISH_DLS_LAMBDA
+        # 就是奇異點的直接證據（不是猜測）。
+        if os.environ.get("DEBUG_UR10E_FINISH_IK") and self._finish_steps % 20 == 0:
+            singular_values = np.linalg.svd(jacobian_active, compute_uv=False)
+            print(
+                f"[finish_ik SVD] step={self._finish_steps} singular_values={np.round(singular_values, 5).tolist()} "
+                f"twist={np.round(twist, 5).tolist()} qdot_active={np.round(qdot_active, 5).tolist()}",
+                flush=True,
+            )
 
         full_velocity_targets = np.zeros(jacobian_full.shape[1])
         full_velocity_targets[self._active_dof_indices] = qdot_active

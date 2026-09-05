@@ -185,16 +185,31 @@ class ArticulationAPIImpl(ArticulationAPI):
         self._ur10e_cue_slide_controller = None
         self._ur10e_active_controller = None
         self._ur10e_step_callback_id: int | None = None
-        # move_to_pose() 的「先退桿→移到安全中繼姿態→平移到最終姿態」
-        # 三段式序列狀態（2026-09-05 補充，見該方法說明）：
-        # _ur10e_awaiting_arm_move_after_retract=True 期間
-        # _ur10e_active_controller 指向 cue_slide_controller，退桿完成後
-        # 先移到 _ur10e_pending_staging_target（安全中繼姿態，避障留在這
-        # 段做），到位後再切到 _ur10e_awaiting_final_approach_after_staging
-        # 狀態，平移到 _ur10e_pending_arm_target（真正的最終姿態）。
+        # move_to_pose() 的「先退桿→移到安全中繼姿態→（避障開）平移到
+        # 逼近緩衝點→（避障關）平移到最終姿態」四段式序列狀態（2026-09-05
+        # 補充，見該方法說明）：_ur10e_awaiting_arm_move_after_retract=True
+        # 期間 _ur10e_active_controller 指向 cue_slide_controller，退桿
+        # 完成後先移到 _ur10e_pending_staging_target（安全中繼姿態，避障
+        # 留在這段做），到位後切到 _ur10e_awaiting_final_approach_after_
+        # staging 狀態，平移到 _ur10e_pending_near_final_target（逼近緩衝
+        # 點，避障仍然開著），到位後再切到 _ur10e_awaiting_final_short_
+        # leg_after_near_final 狀態，關掉母球避障、平移剩下一小段到
+        # _ur10e_pending_arm_target（真正的最終姿態）。
+        #
+        # ⚠️ 2026-09-05 除錯記錄：原本只有「STAGING→最終姿態」兩段，最終
+        # 逼近整段都停用母球避障（終點本來就緊貼母球，避障開著會卡死），
+        # 但這代表整段（~1.45m）都沒有防護——實測踩過：桿身在抵達終點前
+        # 的倒數第二個 waypoint（桿尖離球心僅 0.054m）擦到母球，把球撞出
+        # 殘留速度，STRIKE 開始前球已經不在瞄準時的位置，命中率變成 0%。
+        # 拆成兩段：先在避障開著的情況下逼近到只剩
+        # _UR10E_FINAL_APPROACH_SAFE_MARGIN_M 的緩衝點，這段還有避障防護；
+        # 只有最後這一小段才關避障直線逼近，大幅縮小「零防護」路徑的長度，
+        # 且不影響已驗證能完全收斂的 STAGING 距離本身。
         self._ur10e_awaiting_arm_move_after_retract: bool = False
         self._ur10e_awaiting_final_approach_after_staging: bool = False
+        self._ur10e_awaiting_final_short_leg_after_near_final: bool = False
         self._ur10e_pending_staging_target: tuple[list[float], list[float]] | None = None
+        self._ur10e_pending_near_final_target: tuple[list[float], list[float]] | None = None
         self._ur10e_pending_arm_target: tuple[list[float], list[float]] | None = None
         # DEBUG_UR10E_AIM_PHASES 除錯用：分段計數兩階段 AIM 各自消耗的
         # step 數，用來判斷是 staging 那段吃光大部分預算、還是 final
@@ -282,17 +297,10 @@ class ArticulationAPIImpl(ArticulationAPI):
             if not self._ur10e_rmpflow_controller.is_motion_complete():
                 self._ur10e_rmpflow_controller.step(step_dt)
                 return
-            # 安全中繼姿態到位（或逾時，best-effort 繼續）——平移到真正的
-            # 最終姿態，方向跟中繼姿態完全相同，只有位置沿同一個軸向逼近，
-            # 不需要再解一次複雜的重新定向。
-            #
-            # ⚠️ 2026-09-05 除錯記錄：這段平移的終點本來就緊貼在母球旁邊
-            # （AIM 的定義就是「桿尖對準球」），如果母球這時候還是啟用中的
-            # 障礙物，等於同時要求 RMPflow「靠近」又「遠離」同一個目標，
-            # 實測踩過：整段平移卡死，跑滿步數上限逾時，最終姿態離目標
-            # 超過 1m（比完全不做兩階段還糟）。這段開始前先停用動態障礙物
-            # （母球），球檯（靜態）維持避障——手臂逼近球的最後一段不該
-            # 撞到球檯，這個顧慮是分開的、需要繼續生效。
+            # 安全中繼姿態到位（或逾時，best-effort 繼續）——平移到逼近
+            # 緩衝點，方向跟中繼姿態完全相同，只有位置沿同一個軸向逼近，
+            # 不需要再解一次複雜的重新定向。母球避障這段仍然開著（見類別
+            # 屬性區塊 2026-09-05 補充），只有再下一段才關閉。
             if os.environ.get("DEBUG_UR10E_AIM_PHASES"):
                 print(
                     f"[aim_phases] STAGING 階段結束：耗費 step={self._ur10e_aim_phase_step_counter} "
@@ -301,6 +309,33 @@ class ArticulationAPIImpl(ArticulationAPI):
                     flush=True,
                 )
             self._ur10e_awaiting_final_approach_after_staging = False
+            self._ur10e_awaiting_final_short_leg_after_near_final = True
+            near_final_position, near_final_orientation = self._ur10e_pending_near_final_target
+            self._ur10e_pending_near_final_target = None
+            self._ur10e_aim_phase_step_counter = 0
+            self._ur10e_rmpflow_controller.move_to_pose(near_final_position, near_final_orientation)
+            return
+
+        if self._ur10e_awaiting_final_short_leg_after_near_final:
+            self._ur10e_aim_phase_step_counter += 1
+            if not self._ur10e_rmpflow_controller.is_motion_complete():
+                self._ur10e_rmpflow_controller.step(step_dt)
+                return
+            # 逼近緩衝點到位（或逾時，best-effort 繼續）——關掉母球避障，
+            # 平移剩下一小段（_UR10E_FINAL_APPROACH_SAFE_MARGIN_M）到真正
+            # 的最終姿態。這段終點本來就緊貼母球（AIM 的定義就是「桿尖
+            # 對準球」），如果母球這時候還是啟用中的障礙物，等於同時要求
+            # RMPflow「靠近」又「遠離」同一個目標，實測踩過：整段平移
+            # 卡死，跑滿步數上限逾時。球檯（靜態）維持避障——手臂逼近球的
+            # 最後一段不該撞到球檯，這個顧慮是分開的、需要繼續生效。
+            if os.environ.get("DEBUG_UR10E_AIM_PHASES"):
+                print(
+                    f"[aim_phases] NEAR_FINAL 階段結束：耗費 step={self._ur10e_aim_phase_step_counter} "
+                    f"timeout={self._ur10e_rmpflow_controller.did_last_motion_timeout()} "
+                    f"目前 wrist 位置={self.get_end_effector_position()}",
+                    flush=True,
+                )
+            self._ur10e_awaiting_final_short_leg_after_near_final = False
             position, orientation = self._ur10e_pending_arm_target
             self._ur10e_pending_arm_target = None
             self._ur10e_rmpflow_controller.disable_dynamic_obstacles()
@@ -606,15 +641,46 @@ class ArticulationAPIImpl(ArticulationAPI):
     # wxyz 符號幾乎完全相反）。改成兩階段：
     # 1. 先移動到「安全中繼姿態」——方向跟最終 AIM 目標完全相同（避開
     #    奇異點的 roll 已經算好），位置沿桿軸方向往後退開
-    #    _UR10E_AIM_STAGING_OFFSET_M，讓即使桿子退桿距離只有 0.15m，
-    #    連同整根桿身在內都離母球夠遠——這段大幅移動＋避障留在方向還沒
-    #    貼近球、犯錯本錢比較大的階段做。
+    #    _UR10E_AIM_STAGING_OFFSET_M——這段大幅移動＋避障留在方向還沒
+    #    貼近球、犯錯本錢比較大的階段做，母球避障全程啟用。
     # 2. 從安全中繼姿態出發，只需要沿同一個軸向做一段直線平移到真正的
     #    最終位置，方向全程不變——這段動作 RMPflow 不需要再解一次複雜的
     #    6-DOF 重新定向，只是單純延同一個已知安全的方向逼近，穩定性遠
     #    高於「從 HOME 出發直接規劃到貼近球的姿態」這種大幅度＋高風險
     #    的單一移動。
+    #
+    # ⚠️ 2026-09-05 除錯記錄（第二輪）：這段最終逼近（第 2 步）的終點
+    # 本來就緊貼母球，母球避障全程停用（見 move_to_pose() 下方的呼叫端
+    # 說明），等於整段路徑都沒有防護。當時把 offset 設成
+    # CUE_STICK_GRIP_TO_TIP+0.1（~1.45m）是為了在「安全中繼姿態」保證
+    # 整根 1.35m 球桿都離球夠遠，但這個距離現在已經由 STAGING 階段主動
+    # 的母球避障負責，不再需要靠這個 offset 本身撐住——offset 越大，
+    # FINAL_APPROACH 這段「零防護」的直線逼近就越長，暴露在中途因
+    # waypoint 收斂誤差（見 _MAX_WAYPOINT_STEP_M/_ORIENTATION_TOLERANCE_
+    # RAD）被 1.35m 長桿身槓桿放大成擦碰的風險視窗也越大——實測踩過：
+    # 桿尖在抵達終點前的第 18/19 段（距離終點僅一小段）擦到母球，把球
+    # 撞出 0.1185m/s 殘留速度，STRIKE 開始前球已經不在瞄準時的位置，
+    # 命中率變成 0%。
+    #
+    # ⚠️ 2026-09-05 除錯記錄（第三輪）：嘗試縮短這個距離想降低
+    # FINAL_APPROACH 無防護直線的暴露長度，改成 0.3m 跟 0.6m 都讓 AIM
+    # 整個收斂變差（0.3m：位置誤差 0.306m，比整段 FINAL_APPROACH 的
+    # 移動距離本身還長；0.6m：結果數值幾乎跟 0.3m 一樣，對這個參數不
+    # 敏感）——研判 STAGING 階段本身的避障規劃在終點離母球太近時會被
+    # 過度擠壓，不是單純調小這個數字就能解決，需要更精細的方案（例如
+    # 只在最後一小段才停用母球避障，而不是整段 FINAL_APPROACH 都停用）。
+    # 目前先退回已驗證能完全收斂的原始值（1.45m，見上方 2026-09-05 第一輪
+    # 記錄），中途擦碰問題留待後續用「分段停用避障」處理，不要犧牲已經
+    # 驗證有效的 AIM 收斂去換一個還沒驗證足夠次數的縮短值。
     _UR10E_AIM_STAGING_OFFSET_M = CUE_STICK_GRIP_TO_TIP + 0.1
+
+    # 2026-09-05 補充（第四輪，分段停用避障）：FINAL_APPROACH 拆成兩段——
+    # 先在避障開著的情況下逼近到只剩這個緩衝距離的「逼近緩衝點」，最後
+    # 才關避障直線逼近剩下的一小段。數值只需要大於退桿距離
+    # DEFAULT_BACKSWING_DISTANCE_M（0.15m）留一點餘裕即可，不需要跟
+    # _UR10E_AIM_STAGING_OFFSET_M 一樣大——那個是為了「大幅重新定向」
+    # 保留犯錯空間，這裡只是單純直線平移的最後一小段。
+    _UR10E_FINAL_APPROACH_SAFE_MARGIN_M = 0.2
 
     def move_to_pose(self, position: list[float], orientation: list[float], linear_velocity: list[float] = [0.0, 0.0, 0.0], angular_velocity: list[float] = [0.0, 0.0, 0.0]) -> None:
         if self._ur10e_mode:
@@ -647,7 +713,11 @@ class ArticulationAPIImpl(ArticulationAPI):
             staging_position = (
                 np.asarray(position, dtype=float) - approach_direction * self._UR10E_AIM_STAGING_OFFSET_M
             ).tolist()
+            near_final_position = (
+                np.asarray(position, dtype=float) - approach_direction * self._UR10E_FINAL_APPROACH_SAFE_MARGIN_M
+            ).tolist()
             self._ur10e_pending_staging_target = (staging_position, orientation)
+            self._ur10e_pending_near_final_target = (near_final_position, orientation)
             self._ur10e_pending_arm_target = (position, orientation)
             self._ur10e_awaiting_arm_move_after_retract = True
             self._ur10e_active_controller = self._ur10e_cue_slide_controller
@@ -1355,11 +1425,14 @@ class ArticulationAPIImpl(ArticulationAPI):
             # 回報「尚未完成」，讓 _step_ur10e_motion() 有機會真正做完交接。
             if self._ur10e_awaiting_arm_move_after_retract:
                 return False
-            # 同一個道理套用在「安全中繼姿態→最終姿態」這次交接：中繼姿態
-            # 到位的那個 tick，_ur10e_rmpflow_controller.is_motion_complete()
-            # 已經是 True，但平移到最終姿態的指令要等 _step_ur10e_motion()
-            # 下一次呼叫才會真的送出去，這裡也要擋住提早判定完成。
+            # 同一個道理套用在「安全中繼姿態→逼近緩衝點」跟「逼近緩衝點→
+            # 最終姿態」這兩次交接：中繼姿態／緩衝點到位的那個 tick，
+            # _ur10e_rmpflow_controller.is_motion_complete() 已經是 True，
+            # 但下一段移動的指令要等 _step_ur10e_motion() 下一次呼叫才會
+            # 真的送出去，這裡也要擋住提早判定完成。
             if self._ur10e_awaiting_final_approach_after_staging:
+                return False
+            if self._ur10e_awaiting_final_short_leg_after_near_final:
                 return False
             if self._ur10e_active_controller is None:
                 return True
