@@ -10,13 +10,41 @@
 
 用固定時間跑一段、不需要人在旁邊即時盯畫面，跑完再讀 log：
 
-```bash
-BILLIARD_DEBUG_LOG_PATH=/tmp/billiard_gui.log BILLIARD_AUTO_PLAY_DELAY_SEC=3 \
-  isaacsim.exe --exec "<啟動 billiard_digital_twin extension 的方式>"
+PowerShell：
+
+```powershell
+$env:ACCEPT_EULA="Y"
+$env:PRIVACY_CONSENT="Y"
+$env:OMNI_KIT_ACCEPT_EULA="YES"
+$env:ISAACSIM_ACCEPT_EULA="YES"
+$env:BILLIARD_DEBUG_LOG_PATH="C:\Users\Kuan\isaac-project\isaac-sim-digital-twin\billiard_gui.log"
+$env:BILLIARD_AUTO_PLAY_DELAY_SEC="3"
+
+& "C:\Users\Kuan\isaac-project\venv\Scripts\isaacsim.exe" isaacsim.exp.full.kit `
+  --ext-folder "C:\Users\Kuan\isaac-project\isaac-sim-digital-twin\extension" `
+  --enable billiard_digital_twin
 ```
 
-（實際啟動方式視你平常怎麼開這個 extension 的 GUI 為準——這兩個環境變數
-只是套進去，`billiard_digital_twin.py` 開頭有讀取它們的程式碼可以對照。）
+Git Bash：
+
+```bash
+ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \
+BILLIARD_DEBUG_LOG_PATH="/c/Users/Kuan/isaac-project/isaac-sim-digital-twin/billiard_gui.log" \
+BILLIARD_AUTO_PLAY_DELAY_SEC=3 \
+"/c/Users/Kuan/isaac-project/venv/Scripts/isaacsim.exe" isaacsim.exp.full.kit \
+  --ext-folder "/c/Users/Kuan/isaac-project/isaac-sim-digital-twin/extension" \
+  --enable billiard_digital_twin
+```
+
+`isaacsim.exe` 是 pip 安裝的 Isaac Sim 套件本身的 console-script
+（`isaacsim = isaacsim:main`），第一個參數是要載入的 Kit experience 檔，
+`isaacsim.exp.full.kit` 是完整 GUI 版本（有 viewport／選單列，不是
+headless）。`--ext-folder` 指到 `extension/`（其下的 `billiard_digital_twin/`
+才是實際的 extension root，含 `config/extension.toml`），`--enable
+billiard_digital_twin` 對應該檔案 `[[python.module]] name =
+"billiard_digital_twin"`。`BILLIARD_AUTO_PLAY_DELAY_SEC=3` 會在開啟 3 秒後
+自動按 Play；不想自動播放就拿掉這行、自己按 Play。不需要 log 就把
+`BILLIARD_DEBUG_LOG_PATH` 那行拿掉。
 
 `BILLIARD_AUTO_PLAY_DELAY_SEC` 讓 timeline 在延遲後自動 Play，不用手動點；
 `BILLIARD_DEBUG_LOG_PATH` 逐 tick 寫狀態機狀態／母球座標／桿尖世界座標朝向／
