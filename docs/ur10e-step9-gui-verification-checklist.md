@@ -22,7 +22,8 @@ $env:BILLIARD_AUTO_PLAY_DELAY_SEC="3"
 
 & "C:\Users\Kuan\isaac-project\venv\Scripts\isaacsim.exe" isaacsim.exp.full.kit `
   --ext-folder "C:\Users\Kuan\isaac-project\isaac-sim-digital-twin\extension" `
-  --enable billiard_digital_twin
+  --enable billiard_digital_twin `
+  --/app/asyncRendering=true --/app/asyncRenderingLowLatency=true
 ```
 
 Git Bash：
@@ -33,8 +34,14 @@ BILLIARD_DEBUG_LOG_PATH="/c/Users/Kuan/isaac-project/isaac-sim-digital-twin/bill
 BILLIARD_AUTO_PLAY_DELAY_SEC=3 \
 "/c/Users/Kuan/isaac-project/venv/Scripts/isaacsim.exe" isaacsim.exp.full.kit \
   --ext-folder "/c/Users/Kuan/isaac-project/isaac-sim-digital-twin/extension" \
-  --enable billiard_digital_twin
+  --enable billiard_digital_twin \
+  --/app/asyncRendering=true --/app/asyncRenderingLowLatency=true
 ```
+
+`--/app/asyncRendering=true` 讓算圖跟模擬在不同執行緒重疊，實測 FPS 36.3 → 40.6
+（見 `docs/CHANGELOG.md` 的「GUI FPS 調校」）。這是 app 層級的啟動選項，不放在
+extension 程式碼裡覆寫——extension 不該擅自改 app 的算圖設定。不加也能跑，只是
+慢一點。
 
 `isaacsim.exe` 是 pip 安裝的 Isaac Sim 套件本身的 console-script
 （`isaacsim = isaacsim:main`），第一個參數是要載入的 Kit experience 檔，

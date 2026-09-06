@@ -105,6 +105,9 @@ def _run() -> None:
     from pxr import UsdPhysics, Sdf, Usd, UsdGeom
 
     from isaac_sim_impl_6_0.stage_api_impl import StageAPIImpl
+    from isaac_sim_impl_6_0.physics_scene_tuning import (
+        configure_physics_scene_for_demo_scale,
+    )
     from isaac_sim_impl_6_0.material_api_impl import MaterialAPIImpl
     from isaac_sim_impl_6_0.rigid_body_api_impl import RigidBodyAPIImpl
     from isaac_sim_impl_6_0.physics_api_impl import PhysicsAPIImpl
@@ -152,6 +155,9 @@ def _run() -> None:
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath("/PhysicsScene").IsValid():
         UsdPhysics.Scene.Define(stage, Sdf.Path("/PhysicsScene"))
+    # 必須跟 GUI extension 用完全相同的物理設定，否則這裡「驗收通過」不能
+    # 代表 GUI 的實際行為（見 isaac_sim_impl_6_0/physics_scene_tuning.py）
+    configure_physics_scene_for_demo_scale(stage)
 
     stage_api = StageAPIImpl()
     material_api = MaterialAPIImpl()

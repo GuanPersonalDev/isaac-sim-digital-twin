@@ -37,6 +37,7 @@ from isaac_sim_impl_6_0.material_api_impl import MaterialAPIImpl
 from isaac_sim_impl_6_0.rigid_body_api_impl import RigidBodyAPIImpl
 from isaac_sim_impl_6_0.articulation_api_impl import ArticulationAPIImpl
 from isaac_sim_impl_6_0.physics_api_impl import PhysicsAPIImpl
+from isaac_sim_impl_6_0.physics_scene_tuning import configure_physics_scene_for_demo_scale
 from isaac_sim_impl_6_0.torch_script_policy_impl import TorchScriptPolicyImpl
 from ui.debug_menu import DebugMenu
 from ui.tool_menu_registry import discover_and_register, unregister
@@ -139,6 +140,9 @@ class BilliardExtension(omni.ext.IExt):
 
     def _billiard_init(self):
         SimulationManager.setup_simulation(dt=1/60)
+        # setup_simulation() 建出來的 PhysicsScene 預設開 GPU dynamics，對這個
+        # 只有十幾個剛體的場景是純虧損（每 frame 約 11ms）。詳見該函式說明。
+        configure_physics_scene_for_demo_scale(omni.usd.get_context().get_stage())
 
         self._asset_env_init()
 

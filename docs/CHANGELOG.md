@@ -526,3 +526,45 @@ API 呼叫成本 11.74ms/frame → **1.08ms/frame**。
 一起）。`TRAINING_TABLE_PATH`（`billiard_table_only.usda`，26KB，去掉 SimpleRoom 的版本）
 只有 RL 訓練環境 `rl_task/billiard_rl/` 在用，GUI 這條路徑從來沒用到。Training 路徑在
 GUI Demo 情境下沒有畫面用途，預設關閉；Debug Menu 的 Training toggle 仍可隨時開回來。
+
+### 第二輪：關掉 GPU dynamics 與開啟 async rendering
+
+批次讀取修完後 `_on_tick` 只剩 3.4ms，"PhysX Update" 剩下的部分才真的是 PhysX 在解算。
+這時再測 GPU dynamics 就看得很清楚（600 frame，單張 Demo 桌）：
+
+| 設定 | FPS | PhysX Update | 其中 `_on_tick` |
+|---|---|---|---|
+| async render，GPU dynamics **開** | 30.59 | 20.25ms | 2.85ms |
+| async render，GPU dynamics **關** | **40.56** | 9.33ms | 2.86ms |
+
+也就是 GPU 物理管線在這個場景每 frame 白花約 **11ms**。18 個剛體＋1 個 articulation
+的規模，GPU 的固定開銷（kernel launch、GPU 記憶體同步、以及每次 tensor 讀取都要
+GPU→CPU 搬一次）遠大於它平行化能省下來的。broadphase 一併從 GPU 改成 MBP。
+
+⚠️ 這個結論**只對 Demo 規模成立**。RL 訓練環境（`rl_task/billiard_rl/`）是 1024 個平行
+env、上萬個剛體，那個量級 GPU 物理才會贏。設定收斂在
+`extension/isaac_sim_impl_6_0/physics_scene_tuning.py`，函式 docstring 裡寫明這個界線。
+
+`SimulationManager.setup_simulation()` 建出來的 PhysicsScene 預設就是開 GPU dynamics，
+所以這是覆寫它的預設值，不是「打開某個開關」。
+
+兩支真實球檯驗收腳本也一起套用同一個設定——驗收腳本原本是自己 `UsdPhysics.Scene.
+Define()` 一個裸的 scene，跟 GUI 走的不是同一條建立路徑；如果兩邊物理設定不同，
+「驗收通過」就不能代表 GUI 的行為。這是把設定抽成共用函式（而不是在三個地方各寫一次）
+的理由。
+
+async rendering 則是 app 層級的啟動選項（`--/app/asyncRendering=true`），寫在
+`docs/ur10e-step9-gui-verification-checklist.md` 的啟動指令裡，不放進 extension 程式碼
+——extension 不該擅自覆寫 app 的算圖設定。
+
+### 剩下沒解決的：週期性卡頓
+
+最佳設定下 App_Update 的 **median 是 17.3ms（≈57.7 FPS）**，但 mean 是 24.7ms
+（40.6 FPS）、p95 高達 77ms。也就是穩態其實已經很接近 60 FPS 的完美目標，是少數幾個
+特別長的 frame 把平均拉下來（600 frame 裡約 5% 超過 77ms，暖機 240 frame 已排除，
+所以不是啟動期的一次性成本）。
+
+還沒查出這些長 frame 的成因。已知不是：物理 substep 疊加（實測固定 1.00 個/frame）、
+不是算圖（headless 完全不開視窗也只有 39.09 FPS，跟開視窗的 40.56 差不多）。下一步
+應該用 Tracy（`capture.exe`，headless 可用，見本節開頭的表格）抓一段含卡頓的 trace，
+看那幾個 frame 的 zone 樹跟正常 frame 差在哪。
