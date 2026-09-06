@@ -325,3 +325,23 @@ flat 驗收的達成率過了（92.3%），但決策 7 的「母球碰撞事件�
 達成率 109.2% 比 flat 的 93.3~93.6% 高約 9 個百分點，方向可解釋：球桿傾斜 5.34° 之後重力沿滑軌軸有分量，而 `CUE_SLIDE_MEASURED_SPEED_RATIO` 是在 flat（軸接近水平）量的。兩者都在決策 7 的 ≥90% 內，暫不為傾斜角另外建模——真要收斂得先處理那個 ±5% 的 tick 內接觸位置散布（見該常數說明），傾斜造成的偏差還沒有大到蓋過那個雜訊底。
 
 ---
+
+## extension/isaac_sim_impl_6_0/articulation_api_impl.py（續）
+
+### `did_last_motion_timeout()` 對 UR10e 提早誤判逾時（2026-09-06，步驟 9 GUI 首測）
+
+步驟 9 切到生產路徑後第一次真的用 headful GUI（含 `ModelController` 真實 policy 選球）跑，手臂完全靜止不動，主控台跟 `BILLIARD_DEBUG_LOG_PATH` 都沒有任何 Python traceback（連 tick=0 的 state log 都沒有，只有球落地的碰撞事件）。
+
+排查過程：`docs/CHANGELOG.md` 之前所有驗收（`test_ur10e_table_flat.py`／`test_ur10e_table_bridge.py`／`verify_ur10e_production_wiring.py`）全部直接呼叫 `Ur10eSwingStrategy.execute_aim()`／`execute_strike()`，**完整正式路徑（`ModelController` 真實 policy → `DemoTableOrchestrator.step()` → `TableRuntime.tick()`）從來沒有被真實跑過**。寫 `scripts/diagnose_production_tick.py` 忠實複製 production 的物件圖（含 Training 桌，跟 `_enable_training()`／`_build_demo_session()` 完全一樣的呼叫順序），自己呼叫 `session.tick()`（不透過 `SimulationManager.register_callback()`，因為那條路徑會把 `TableOrchestrator.step()` 內部 try/except 吞掉的例外整個藏起來，`ErrorState.mark_error()` 用標準 `logging.exception()` 記錄，在這個 Kit 環境的主控台完全看不到），改直接讀 `ErrorState.get_last_exception()`。
+
+抓到的例外：`RuntimeError: 手臂動作逾時未收斂`，在 AIM 開始後僅 276 個 physics tick（不到 5 秒）就出現，狀態機卡在 `ERROR` 永遠不再往前走。
+
+根因：`Ur10eRmpflowController._did_last_motion_timeout` 是「這條 waypoint chain 裡任何一個 waypoint 逾時過」的**累積旗標**，只有換到下一個大階段（STAGING→NEAR_FINAL 等）呼叫新的 `move_to_pose()` 才會重置——中途某個 waypoint 卡頓超過 `_MAX_STEPS_PER_WAYPOINT=240` 步，不代表整段動作最終會失敗（AIM 的多階段設計本來就是 best-effort 繼續，後續階段常常還是收斂得了）。但 `ArticulationAPIImpl.did_last_motion_timeout()` 對 UR10e 完全沒有用 `is_motion_complete()` 把關，直接原樣轉發這個旗標；`DemoTableOrchestrator._check_downstream_failure()` 卻是**每個 tick**都在查它，動作進行到一半、旗標曾經翻過一次 True，就會被誤判成「已經逾時失敗」提早標記 ERROR。
+
+用 `scripts/diagnose_aim_failure_case.py` 拿真實 GUI 跑出來的失敗參數（`cue_ball=(-0.0364, -0.7523)`、`shot_angle=-0.0435`、`position_offset=[0.2882, 0.0833]`——**第一次**測試非零 `position_offset`）繞過 orchestrator 直接跑到底，證實同一組參數其實在 1453 步後正常收斂（`did_last_motion_timeout=False`，位置誤差 0.00092m），中間 STAGING 階段雖然回報過 `timeout=True` 但只是單一 waypoint 的暫時卡頓，NEAR_FINAL/FINAL_APPROACH 接手後照樣收斂——證實了「累積旗標中途讀到 True」跟「整段動作最終失敗」是兩回事。
+
+修法：`did_last_motion_timeout()` 只有在 `is_motion_complete()==True` 時才回報底層旗標，動作還在進行中一律回傳 False。對 WAM7/UR3e 完全不影響行為——那邊 `self._did_last_motion_timeout = True` 本來就跟 `self._stop_motion()` 同一行程式碼、同一時刻發生，兩者從來就是同一個事件，不像 UR10e 的多階段 waypoint chain 會有「中途翻過一次 True、之後又靠新階段重置」這種暫態。
+
+**次要發現，尚未解決**：修好上面的 bug 後用同一組參數重跑，AIM 不再卡死，但收斂明顯比驗收過的 flat／bridge 案例慢很多——STAGING／NEAR_FINAL 階段大多數 waypoint 都逼近 240 步上限才過，推算整個 AIM 可能要跑 8000~10000+ tick（2~3 分鐘）才會走完，不是幾秒內看得出進展的速度。研判是這組從未測過的大幅 `position_offset` 把逼近走廊推到接近母球避障力場的區域，RMPflow 反應式規劃在那附近收斂變慢（不是卡死，是慢），呼應本專案稍早就記錄過的已知限制：「RMPflow：反應式、每 tick 加速度場、收斂不確定」。真人在 GUI 前觀察的時間如果不夠長，這個「動得很慢」很容易被誤認成「完全不動」。這個問題留給下次 GUI 復測後視情況決定是否要處理（例如收窄 `POSITION_OFFSET_VERTICAL/HORIZONTAL` 的訓練/評估上限，或改善 STAGING/NEAR_FINAL 附近的避障参数）。
+
+---

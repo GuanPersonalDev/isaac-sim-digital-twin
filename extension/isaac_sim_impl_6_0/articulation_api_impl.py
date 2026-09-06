@@ -1190,6 +1190,27 @@ class ArticulationAPIImpl(ArticulationAPI):
 
     def did_last_motion_timeout(self) -> bool:
         if self._ur10e_mode:
+            # Ur10eRmpflowController._did_last_motion_timeout 是「這條
+            # waypoint chain 裡任何一個 waypoint 逾時過」的累積旗標，只有
+            # 換到下一個大階段（STAGING→NEAR_FINAL 等）呼叫新的
+            # move_to_pose() 才會重置——中途某個 waypoint 卡頓超過
+            # _MAX_STEPS_PER_WAYPOINT 不代表整段動作最終會失敗（best-effort
+            # 繼續，後續階段常常還是收斂得了，見
+            # scripts/diagnose_aim_failure_case.py 的實測：STAGING
+            # timeout=True 但整段 AIM 最後 did_last_motion_timeout=False）。
+            #
+            # DemoTableOrchestrator._check_downstream_failure() 每個 tick
+            # 都在查這個值，若不擋在這裡，動作進行到一半、旗標曾經翻過一次
+            # True，就會被誤判成「已經逾時失敗」提早標記 ERROR——即使動作
+            # 根本還沒結束、後面接著就收斂了（實測踩過：真實 GUI 完整流程
+            # AIM 才走 276 步就被判定失敗，同一組參數繞過 orchestrator 直接
+            # 跑到底卻在 1453 步後正常收斂，見 docs/CHANGELOG.md）。動作還在
+            # 進行中就回傳 False，只有真的結束時才回報這次動作最終有沒有
+            # 逾時，跟 WAM7/UR3e 的語意一致（那邊 `_did_last_motion_timeout
+            # = True` 本來就跟 `_stop_motion()` 同時發生，兩者本來就是
+            # 同一個事件，這裡的把關不影響它們的行為）。
+            if not self.is_motion_complete():
+                return False
             if self._ur10e_active_controller is None:
                 return False
             return self._ur10e_active_controller.did_last_motion_timeout()

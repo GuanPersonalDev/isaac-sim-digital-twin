@@ -34,3 +34,9 @@ training/outputs/
 secrets/
 
 *.egg-info/
+
+# 本機除錯用 log（BILLIARD_DEBUG_LOG_PATH／GUI 主控台重導向輸出），
+# 內容因人因次而異，不是可重現的產物
+billiard_gui.log
+gui_console.log
+gui_console_utf8.log
