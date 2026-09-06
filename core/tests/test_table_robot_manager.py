@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, call
 import pytest
 
 from core.models.ur10e_robot import UR10eRobot
-from core.services.asset_utility import CUE_STICK_PATH
+from core.services.asset_utility import CUE_ACTUATOR_PATH, CUE_STICK_PATH
 
 
 def _table_robot_manager_class():
@@ -354,3 +354,65 @@ class TestTableRobotManagerUr10ePrismaticJoint:
 
         fixed_joint_stage_api.create_prismatic_joint.assert_not_called()
         fixed_joint_stage_api.create_fixed_joint.assert_called_once()
+
+
+class TestTableRobotManagerCueActuator:
+    """UR10e 額外掛一個出力機構的外觀件，讓球桿沿滑軌的平移在 Demo 畫面上
+    看得懂（球桿當活塞桿從缸體前端伸縮）。"""
+
+    def test_creates_actuator_reference_prim_under_end_effector(
+        self, fixed_joint_paths: dict[str, str], fixed_joint_stage_api: MagicMock, articulation_api: MagicMock
+    ):
+        """必須掛在末端連桿**底下**：靠 USD transform 繼承跟著手腕走，
+        不需要額外關節。掛到 base_path 底下就不會跟著手臂動。"""
+        _table_robot_manager_class()(
+            table_center=(2.0, 3.0, 0.0),
+            base_path=fixed_joint_paths["base"],
+            stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
+            robot_arm_class=UR10eRobot,
+        )
+
+        end_effector_path = fixed_joint_paths["base"] + "/Robot/wrist_3_link"
+        assert (
+            call(end_effector_path + "/CueActuator", CUE_ACTUATOR_PATH)
+            in fixed_joint_stage_api.create_reference_prim.call_args_list
+        )
+
+    def test_get_cue_actuator_prim_path_returns_the_created_path(
+        self, fixed_joint_paths: dict[str, str], fixed_joint_stage_api: MagicMock, articulation_api: MagicMock
+    ):
+        manager = _table_robot_manager_class()(
+            table_center=(2.0, 3.0, 0.0),
+            base_path=fixed_joint_paths["base"],
+            stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
+            robot_arm_class=UR10eRobot,
+        )
+
+        assert manager.get_cue_actuator_prim_path() == (
+            fixed_joint_paths["base"] + "/Robot/wrist_3_link/CueActuator"
+        )
+
+    def test_other_robot_arm_classes_get_no_actuator(
+        self,
+        fixed_joint_paths: dict[str, str],
+        fixed_joint_stage_api: MagicMock,
+        fixed_joint_robot_arm_class: MagicMock,
+        articulation_api: MagicMock,
+    ):
+        """WAM7／UR3e 的球桿是 fixed joint 固定的，沒有滑軌機構可以展示，
+        掛一個致動器外觀件反而是在畫面上說謊。"""
+        manager = _table_robot_manager_class()(
+            table_center=(2.0, 3.0, 0.0),
+            base_path=fixed_joint_paths["base"],
+            stage_api=fixed_joint_stage_api,
+            articulation_api=articulation_api,
+            robot_arm_class=fixed_joint_robot_arm_class,
+        )
+
+        assert manager.get_cue_actuator_prim_path() is None
+        referenced_assets = [
+            c.args[1] for c in fixed_joint_stage_api.create_reference_prim.call_args_list
+        ]
+        assert CUE_ACTUATOR_PATH not in referenced_assets

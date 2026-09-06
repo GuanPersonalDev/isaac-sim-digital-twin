@@ -2,7 +2,7 @@ from ..ports.stage_api import StageAPI
 from ..ports.articulation_api import ArticulationAPI
 from .robot_arm import RobotArm
 from .ur10e_robot import UR10eRobot
-from ..services.asset_utility import CUE_STICK_PATH
+from ..services.asset_utility import CUE_ACTUATOR_PATH, CUE_STICK_PATH
 
 
 class TableRobotManager:
@@ -12,7 +12,9 @@ class TableRobotManager:
     特定手臂的具體實作——唯一例外是 UR10eRobot：球桿跟末端執行器之間改用
     `create_prismatic_joint()`（線性滑軌，見 UR10e 重新設計計畫決策 2/3），
     取代其餘手臂共用的 `create_fixed_joint()`，因為 UR10e 靠這個滑軌關節
-    本身的線速度出力，不是手臂關節角速度。
+    本身的線速度出力，不是手臂關節角速度。UR10e 另外會在手腕上掛一個
+    出力機構的**外觀件**（`assets/cue_actuator.usda`），讓球桿的平移在
+    Demo 畫面上看得懂，見建構子內的說明。
     """
 
     # 球桿沿自身軸向（= end effector 的 local Y，見 ball_stick.usda 的
@@ -52,6 +54,7 @@ class TableRobotManager:
         self._stage_api = stage_api
         self._robot = robot_arm_class(base_path, stage_api, articulation_api, world_position)
         self._cue_stick_prim_path = base_path + "/CueStick"
+        self._cue_actuator_prim_path: str | None = None
         stage_api.create_reference_prim(self._cue_stick_prim_path, CUE_STICK_PATH)
         end_effector_path = robot_arm_class.get_end_effector_prim_path(base_path)
 
@@ -70,6 +73,19 @@ class TableRobotManager:
                 drive_damping=self._CUE_SLIDE_JOINT_DRIVE_DAMPING,
                 drive_max_force=self._CUE_SLIDE_JOINT_DRIVE_MAX_FORCE,
             )
+            # 專用出力機構的外觀件：球桿沿滑軌平移在物理上完全正確，但畫面上
+            # 球桿是憑空從手腕伸出來、中間沒有看得見的機構，Demo 時看不出來
+            # 為什麼它可以平移。掛一個致動器缸體讓球桿看起來是從缸體前端伸縮
+            # 的活塞桿。
+            #
+            # 掛在 end effector **底下**（不是 base_path 底下）：靠 USD
+            # transform 繼承跟著手腕走，不需要額外的關節。資產本身刻意不帶
+            # 任何 physics schema（純外觀），所以不會多出剛體質量、碰撞對或
+            # articulation 連桿——`dof_names` 仍然是 7 個，
+            # `Ur10eCueSlideController` 的 `dof_names.index("CueSlideJoint")`
+            # 不受影響。
+            self._cue_actuator_prim_path = end_effector_path + "/CueActuator"
+            stage_api.create_reference_prim(self._cue_actuator_prim_path, CUE_ACTUATOR_PATH)
         else:
             joint_path = self._cue_stick_prim_path + "/FixedJointToRobot"
             stage_api.create_fixed_joint(
@@ -78,6 +94,11 @@ class TableRobotManager:
 
     def get_cue_stick_prim_path(self) -> str:
         return self._cue_stick_prim_path
+
+    def get_cue_actuator_prim_path(self) -> str | None:
+        """專用出力機構外觀件的 prim path；只有 UR10e 有，其餘手臂回傳
+        None（它們的球桿是用 fixed joint 固定的，沒有滑軌機構可展示）。"""
+        return self._cue_actuator_prim_path
 
     def get_robot_prim_path(self) -> str:
         return self._robot_arm_class.get_prim_path(self._robot_base_path)

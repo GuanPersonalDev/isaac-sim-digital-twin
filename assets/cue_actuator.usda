@@ -1,0 +1,137 @@
+#usda 1.0
+(
+    defaultPrim = "CueActuator"
+    upAxis = "Z"
+)
+
+# 專用出力機構（線性致動器）的外觀件。
+#
+# 為什麼需要：球桿跟手臂末端之間是一個 PrismaticJoint（見
+# core/models/table_robot_manager.py），推桿時球桿沿自身軸向滑動。物理上
+# 完全正確，但畫面上球桿是憑空從手腕伸出來、中間沒有任何看得見的機構，
+# Demo 時看不出來「為什麼它可以平移」。這個資產就是那個看得見的機構：
+# 一個固定在手腕法蘭上的致動器缸體，球桿當作活塞桿從前端伸縮。
+#
+# ⚠️ 刻意**不加** PhysicsRigidBodyAPI／PhysicsCollisionAPI —— 純外觀件：
+#   - 機構的物理行為已經由 PrismaticJoint 正確模擬，不需要第二套
+#   - 加了剛體會多出質量、碰撞對、articulation 拓樸的變化，等於去動
+#     已經通過 flat／bridge 驗收的行為，風險完全不對等
+#   - 掛在 wrist_3_link 底下靠 USD transform 繼承跟著手臂走，不需要
+#     任何關節
+#
+# 座標慣例：局部 +Y 就是球桿軸向（球桿資產 ball_stick.usda 用同一個慣例，
+# 且 align_prim_to_target() 讓球桿與 wrist_3_link 座標系重合）。原點在
+# 手腕法蘭面，+Y 往球桿尖端方向。滑軌行程是 0 ~ -0.15m（見
+# swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M），所以球桿
+# 從前端導桿套伸出的長度會看得出 15cm 的變化。
+
+def Xform "CueActuator"
+{
+    token ui:displayName = "CueActuator"
+    float3 xformOp:rotateXYZ = (0, 0, 0)
+    float3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+    # 鎖在手腕法蘭上的安裝座
+    def Cylinder "MountFlange"
+    {
+        uniform token axis = "Y"
+        float3[] extent = [(-0.05, -0.012, -0.05), (0.05, 0.012, 0.05)]
+        double height = 0.024
+        double radius = 0.05
+        color3f[] primvars:displayColor = [(0.12, 0.12, 0.13)]
+        custom bool refinementEnableOverride = 1
+        custom int refinementLevel = 2
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0.032, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    # 缸體本體：球桿縮回時多出來的那 15cm 就收在這裡面
+    def Cylinder "Barrel"
+    {
+        uniform token axis = "Y"
+        float3[] extent = [(-0.033, -0.11, -0.033), (0.033, 0.11, 0.033)]
+        double height = 0.22
+        double radius = 0.033
+        color3f[] primvars:displayColor = [(0.28, 0.29, 0.32)]
+        custom bool refinementEnableOverride = 1
+        custom int refinementLevel = 2
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0.154, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    # 前端導桿套：橘色是為了讓「球桿從這裡伸出來」這件事在畫面上一眼看懂，
+    # 推桿時球桿相對這個套筒進出 15cm
+    def Cylinder "RodGuide"
+    {
+        uniform token axis = "Y"
+        float3[] extent = [(-0.019, -0.025, -0.019), (0.019, 0.025, 0.019)]
+        double height = 0.05
+        double radius = 0.019
+        color3f[] primvars:displayColor = [(0.85, 0.42, 0.08)]
+        custom bool refinementEnableOverride = 1
+        custom int refinementLevel = 2
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0.289, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    # 四根拉桿：氣壓／電動線性致動器最好認的外觀特徵，從安裝座拉到前端
+    def Cylinder "TieRodXPlus"
+    {
+        uniform token axis = "Y"
+        float3[] extent = [(-0.005, -0.135, -0.005), (0.005, 0.135, 0.005)]
+        double height = 0.27
+        double radius = 0.005
+        color3f[] primvars:displayColor = [(0.62, 0.64, 0.68)]
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.039, 0.15, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def Cylinder "TieRodXMinus"
+    {
+        uniform token axis = "Y"
+        float3[] extent = [(-0.005, -0.135, -0.005), (0.005, 0.135, 0.005)]
+        double height = 0.27
+        double radius = 0.005
+        color3f[] primvars:displayColor = [(0.62, 0.64, 0.68)]
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.039, 0.15, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def Cylinder "TieRodZPlus"
+    {
+        uniform token axis = "Y"
+        float3[] extent = [(-0.005, -0.135, -0.005), (0.005, 0.135, 0.005)]
+        double height = 0.27
+        double radius = 0.005
+        color3f[] primvars:displayColor = [(0.62, 0.64, 0.68)]
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0.15, 0.039)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def Cylinder "TieRodZMinus"
+    {
+        uniform token axis = "Y"
+        float3[] extent = [(-0.005, -0.135, -0.005), (0.005, 0.135, 0.005)]
+        double height = 0.27
+        double radius = 0.005
+        color3f[] primvars:displayColor = [(0.62, 0.64, 0.68)]
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0.15, -0.039)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+}

@@ -40,3 +40,6 @@ secrets/
 billiard_gui.log
 gui_console.log
 gui_console_utf8.log
+
+# scripts/verify_ur10e_cue_actuator.py 的算圖產出（隨時可重跑產生）
+_actuator_preview/

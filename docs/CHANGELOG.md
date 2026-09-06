@@ -326,6 +326,31 @@ flat 驗收的達成率過了（92.3%），但決策 7 的「母球碰撞事件�
 
 ---
 
+## assets/cue_actuator.usda
+
+### 專用出力機構的外觀件（2026-09-06）
+
+GUI Demo 時球桿是憑空從手腕伸出來、中間沒有任何看得見的機構，看不出來「為什麼它可以平移」。物理上完全正確（`TableRobotManager` 建的 `PrismaticJoint`），缺的是視覺上的解釋。
+
+新增 `assets/cue_actuator.usda`：一個線性致動器造型（安裝座＋缸體＋橘色前端導桿套＋四根拉桿），掛在 `wrist_3_link` **底下**，球桿當活塞桿從缸體前端伸縮。
+
+**刻意不帶任何 physics schema（純外觀）**——機構的物理已經由 PrismaticJoint 正確模擬，再加一個實體剛體只會多出質量、碰撞對、articulation 拓樸的變化，等於去動已經通過 flat／bridge 驗收的行為，風險完全不對等。掛在末端連桿底下靠 USD transform 繼承跟著手臂走，不需要任何額外關節。座標慣例沿用球桿資產：局部 +Y 就是球桿軸向（`align_prim_to_target()` 讓球桿與 `wrist_3_link` 座標系重合）。
+
+`scripts/verify_ur10e_cue_actuator.py` 驗證結果：
+
+| 項目 | 結果 |
+|---|---|
+| prim 路徑 | `.../Robot/wrist_3_link/CueActuator` |
+| 帶 physics schema 的子 prim | 無 |
+| `dof_names` | 仍是 7 個且含 `CueSlideJoint` |
+| 伸出（q=0）球桿露出導桿套 | 1.0387 m |
+| 縮回（q=-0.15）球桿露出導桿套 | 0.8880 m |
+| 兩者差 | **0.1507 m**（＝滑軌行程 0.15 m）|
+
+寫這支驗證腳本踩到兩個坑：(1) 第一版沒補光源，算出來的機構整個是黑的；(2) 用 `rep.orchestrator.step()`＋`BasicWriter` 取圖會接管並暫停 timeline，導致之後的 `simulation_app.update()` 不再推進物理——縮回指令下了 180 個 tick，關節位置卻完全沒變，量到的兩個狀態一模一樣。改用 annotator 直接取畫面（不碰 timeline）才正常。
+
+---
+
 ## extension/isaac_sim_impl_6_0/ur10e_rmpflow_controller.py（續）
 
 ### 中繼 waypoint 容許值太緊 —— 「手臂轉動非常慢」的主因（2026-09-06）

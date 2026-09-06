@@ -3,6 +3,10 @@ import os
 ASSET_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
 BALL_TEMPLATE_PATH = os.path.join(ASSET_DIR, "ball_template.usda")
 CUE_STICK_PATH = os.path.join(ASSET_DIR, "ball_stick.usda")
+# 專用出力機構（線性致動器）的外觀件，掛在 UR10e 手腕上讓球桿的平移在畫面上
+# 看得懂（球桿當活塞桿從缸體前端伸縮）。純外觀、不帶任何 physics schema——
+# 機構的物理由 TableRobotManager 建的 PrismaticJoint 負責，見該資產內的說明。
+CUE_ACTUATOR_PATH = os.path.join(ASSET_DIR, "cue_actuator.usda")
 STRIPE_MDL_PATH = os.path.join(ASSET_DIR, "materials", "stripe_ball.mdl")
 TABLE_PATH = os.path.join(ASSET_DIR, "billiard_env.usda")
 # 訓練專用：billiard_env.usda 去掉 SimpleRoom（地板、四面牆、Towel_Room01_* 裝飾件）
