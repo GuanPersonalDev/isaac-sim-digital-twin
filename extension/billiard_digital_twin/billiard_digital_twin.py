@@ -21,6 +21,7 @@ from core.models.table_ball_set import TableBallSet
 from core.models.robot_arm import RobotArm
 from core.models.barrett_wam_robot import BarrettWamRobot
 from core.models.ur3e_robot import UR3eRobot
+from core.models.ur10e_robot import UR10eRobot
 from core.ports import RigidBodyAPI
 from core.ports.policy_port import PolicyPort
 from core.services.asset_utility import TABLE_PATH
@@ -49,11 +50,16 @@ from core.services.rolling_resistance_service import RollingResistanceService
 _TABLE_COUNT = 1
 _TOOL_MENU_NAME = "Tools"
 # Demo 桌實際掛載的手臂類別，換手臂只需要改這一行（見 core/models/robot_arm.py）。
+# 2026-09-06（UR10e 重新設計計畫步驟 9）：UR10e＋線性滑軌推桿機構通過 flat
+# 與高架橋兩個案例的真實球檯驗收（scripts/test_ur10e_table_flat.py／
+# test_ur10e_table_bridge.py：達成率 93.5%／109.2%、球桿-母球碰撞各恰好
+# 1 次、手臂本體碰撞 0 筆），從 UR3e 切換過來。
+#
 # UR3e 這條路徑（core/services/ur3e_placement_calculator.py／
-# ArticulationAPIImpl.move_swing_elbow_pivot()）目前只有 tilt≈5.34° 高架橋
-# 案例做過真實球檯執行驗證，其餘案例的已知風險見
-# ur3e_placement_calculator.py 模組說明。
-_ROBOT_ARM_CLASS: type[RobotArm] = UR3eRobot
+# ArticulationAPIImpl.move_swing_elbow_pivot()）保留但不再被生產路徑呼叫，
+# 原因見 core/services/ur3e_swing_strategy.py 開頭的說明（加權多關節驅動
+# 在 UR3e 幾何下有 manipulability ellipsoid 的結構性限制）。
+_ROBOT_ARM_CLASS: type[RobotArm] = UR10eRobot
 _TABLE_SIZE_PROBE_PATH = "/World/_TableSizeProbe"
 _POLICY_PATH = os.path.join(_PROJECT_ROOT, "models", "rl", "billiard", "policy.pt")
 _EVAL_MAX_OFFSET = 0.6

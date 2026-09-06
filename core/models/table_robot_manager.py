@@ -47,6 +47,7 @@ class TableRobotManager:
             table_center[2] + self._ROBOT_OFFSET_FROM_TABLE_CENTER[2],
         )
         self._robot_base_path = base_path
+        self._initial_robot_base_position = world_position
         self._robot_arm_class = robot_arm_class
         self._stage_api = stage_api
         self._robot = robot_arm_class(base_path, stage_api, articulation_api, world_position)
@@ -80,6 +81,19 @@ class TableRobotManager:
 
     def get_robot_prim_path(self) -> str:
         return self._robot_arm_class.get_prim_path(self._robot_base_path)
+
+    def get_initial_robot_base_position(self) -> tuple[float, float, float]:
+        """建構時擺放手臂底座的世界座標（`_ROBOT_OFFSET_FROM_TABLE_CENTER`
+        相對球檯中心的固定偏移）。
+
+        刻意叫 initial 而不是 current：UR10e 每次瞄準都會用
+        `RobotArm.reposition()` per-shot 重新擺放底座（見
+        `core/services/ur10e_placement_calculator.py`），之後這個值就不再是
+        目前位置。用途只有一個——第一次 RESET 之前，要先讓 RMPflow 知道
+        底座在哪（`ArticulationAPI.set_robot_base_pose()`），那時還沒有任何
+        `reposition()` 發生過。
+        """
+        return self._initial_robot_base_position
 
     def get_robot(self) -> RobotArm | None:
         return self._robot

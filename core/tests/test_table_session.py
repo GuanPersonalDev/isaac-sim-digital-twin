@@ -172,6 +172,62 @@ class TestDemoTableSession:
         articulation_api.initialize.assert_called_once_with()
         assert demo_table_session.is_articulation_initialized() is True
 
+    def test_initialize_articulation_registers_rmpflow_obstacles(
+        self, demo_table_session: DemoTableSession, articulation_api: MagicMock, table: MagicMock
+    ):
+        """決策 6 的第一層防護：球檯與母球要註冊成 RMPflow 避障物。"""
+        table_ball_set = table.get_table_ball_set.return_value
+        table_ball_set.get_table_z.return_value = 0.8
+        table_ball_set.get_ball_prim_paths.return_value = ["/World/T/Balls/Ball_0"]
+        table_ball_set.get_ball_radius.return_value = 0.028575
+        table.get_table_center.return_value = (1.0, 2.0, 0.0)
+
+        demo_table_session.initialize_articulation()
+
+        articulation_api.register_dynamic_sphere_obstacle.assert_called_once_with(
+            "/World/T/Balls/Ball_0", 0.028575
+        )
+        center, size = articulation_api.register_static_box_obstacle.call_args.args
+        assert center[0] == 1.0 and center[1] == 2.0
+        # 方塊要整個落在桌面之下：中心低於 table_z、上緣剛好貼齊 table_z，
+        # 桌面正上方（球桿實際操作空間）保持淨空。
+        assert center[2] < 0.8
+        assert center[2] + size[2] / 2.0 == pytest.approx(0.8)
+
+    def test_initialize_articulation_syncs_initial_robot_base_pose(
+        self,
+        demo_table_session: DemoTableSession,
+        articulation_api: MagicMock,
+        robot_manager: MagicMock,
+    ):
+        """第一個動作 RESET 會用 RMPflow 把 HOME 關節角換算成世界座標目標，
+        沒先同步底座位姿的話 RMPflow 會當底座在原點。"""
+        robot_manager.get_initial_robot_base_position.return_value = (1.5, 0.0, 0.0)
+
+        demo_table_session.initialize_articulation()
+
+        articulation_api.set_robot_base_pose.assert_called_once_with(
+            [1.5, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
+        )
+
+    def test_registers_obstacles_and_base_pose_only_after_initialize(
+        self, demo_table_session: DemoTableSession, articulation_api: MagicMock
+    ):
+        """UR10e 的 RMPflow 控制器是在 initialize() 裡才建立的，先呼叫這兩個
+        方法會被當成 no-op 丟掉。"""
+        call_order = []
+        articulation_api.initialize.side_effect = lambda: call_order.append("initialize")
+        articulation_api.set_robot_base_pose.side_effect = (
+            lambda *_args: call_order.append("base_pose")
+        )
+        articulation_api.register_static_box_obstacle.side_effect = (
+            lambda *_args: call_order.append("box")
+        )
+
+        demo_table_session.initialize_articulation()
+
+        assert call_order == ["initialize", "base_pose", "box"]
+
     def test_destroy_calls_shutdown_when_initialized(
         self, demo_table_session: DemoTableSession, articulation_api: MagicMock
     ):

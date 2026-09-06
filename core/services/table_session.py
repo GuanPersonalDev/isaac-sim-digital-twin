@@ -5,7 +5,16 @@ from ..models.table_robot_manager import TableRobotManager
 from ..ports.articulation_api import ArticulationAPI
 from ..ports.rigid_body_api import RigidBodyAPI
 from .pocket_event_handler import PocketEventHandler
+from .spread_score_calculator import TABLE_LENGTH, TABLE_WIDTH
 from .table_runtime import TableRuntime
+
+_TABLE_OBSTACLE_HEIGHT_M = 0.15
+"""註冊給 RMPflow 的球檯障礙物厚度（見 `DemoTableSession.
+_register_rmpflow_obstacles()`）。"""
+
+_ROBOT_BASE_ORIENTATION = [1.0, 0.0, 0.0, 0.0]
+"""手臂底座的世界朝向固定是單位四元數——`RobotArm.reposition()` 只設
+translate，從來不旋轉底座。"""
 
 
 class TableSession:
@@ -94,7 +103,56 @@ class DemoTableSession(TableSession):
     def initialize_articulation(self) -> None:
         """Timeline PLAY 事件觸發時呼叫（僅在尚未 initialize 時）"""
         self._articulation_api.initialize()
+        self._sync_initial_robot_base_pose()
+        self._register_rmpflow_obstacles()
         self._articulation_initialized = True
+
+    def _sync_initial_robot_base_pose(self) -> None:
+        """讓 RMPflow 知道手臂底座目前在世界座標的哪裡。
+
+        第一個動作是 RESET（`RobotArm.reset()` → `move_to_home()`），而
+        `move_to_home()` 會用 RMPflow 的運動學模型把 HOME 關節角換算成世界
+        座標的末端目標，再從**實際量到的**末端世界位姿內插出 waypoint。若
+        沒有先同步底座位姿，RMPflow 內部會當底座在原點，起點與目標分屬兩個
+        座標系。`Ur10eSwingStrategy.execute_aim()` 每次瞄準都會重新同步，但
+        那是第一次 RESET **之後**的事，補不上這一段。
+
+        WAM7／UR3e 走差動 IK，沒有這個概念，`ArticulationAPI` 對它們是
+        no-op（見該介面的 docstring）。
+        """
+        self._articulation_api.set_robot_base_pose(
+            list(self._robot_manager.get_initial_robot_base_position()),
+            list(_ROBOT_BASE_ORIENTATION),
+        )
+
+    def _register_rmpflow_obstacles(self) -> None:
+        """把球檯與母球註冊成 RMPflow 的避障物（UR10e 重新設計計畫決策 6
+        的第一層防護）。必須在 `initialize()` 之後——UR10e 的控制器是在那裡
+        才建立的；對 WAM7／UR3e 這兩款手臂，`ArticulationAPI` 的這兩個方法
+        本來就是 no-op（它們走差動 IK，沒有 RMPflow）。
+
+        ⚠️ 球檯方塊刻意放在桌面**之下**（`table_z` 往下延伸），代表桌面
+        以下的實體結構（石板／桌腳／桌框），讓桌面正上方保持淨空。放在桌面
+        之上會把桿尖擊球高度（約 `table_z + ball_radius`）本身涵蓋進障礙物
+        範圍，最終逼近等於在跟自己要抵達的位置打架——實測踩過，見
+        docs/CHANGELOG.md。
+
+        母球用會持續追蹤最新世界座標的動態球體，不是註冊當下的固定快照
+        （球會被打去別的地方）。
+        """
+        table_ball_set = self._table.get_table_ball_set()
+        if table_ball_set is None:
+            return
+
+        table_center = self._table.get_table_center()
+        table_z = table_ball_set.get_table_z()
+        self._articulation_api.register_static_box_obstacle(
+            [table_center[0], table_center[1], table_z - _TABLE_OBSTACLE_HEIGHT_M / 2.0],
+            [TABLE_WIDTH, TABLE_LENGTH, _TABLE_OBSTACLE_HEIGHT_M],
+        )
+        self._articulation_api.register_dynamic_sphere_obstacle(
+            table_ball_set.get_ball_prim_paths()[0], table_ball_set.get_ball_radius()
+        )
 
     def is_articulation_initialized(self) -> bool:
         return self._articulation_initialized
