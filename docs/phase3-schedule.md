@@ -154,9 +154,9 @@
 | 10-merge | Block 10 | 雲端多環境並行：直接設定高環境數（1024+）+ 一次性穩定性檢查【驗收標準已由 #124 三輪雲端訓練滿足：`num_envs=1024` 為 `billiard_rl_env_cfg.py` 現行預設值（#123 直接設定，非漸進放大），RunPod RTX 4090 上三輪訓練皆以此值全程跑完，第三輪跑到 it 224 收斂成功，未見穩定性問題，見 `docs/issue-124-training-runs.md`。64/256/2048 的 it/s 飽和點掃描為選配（cfg 內註解留待），未阻塞 A-CP】 | 1h | M5: RL 訓練與多環境 | TRUE | 2026-08-11 | 2026-08-15 | #223 |
 | A-CP | Block 10 | Milestone A 收斂判定點（未收斂 → 直接帶不完美 policy 進 B，不為 A 犧牲 B 的時間）【判定：spread ×20 0.749〜0.842（門檻 >0.15）、foul ×20 −0.492（門檻 >−1.2），三項門檻中兩項大幅超標 → 明確上升趨勢成立，進入 Milestone B，帶 `models/rl/billiard/policy.pt`】 | 0.5h | M5: RL 訓練與多環境 | TRUE | 2026-08-15 | 2026-08-15 | #179 |
 | B-1 | Block 13 | 可達性掃描與可行性地圖（orientation-constrained IK + 後擺走廊）→ 量出手臂實際偏移能力填入 max_offset | 4h | M7: Milestone B 手臂執行 | TRUE | 2026-08-17 | 2026-08-16 | #180 |
-| B-2 | Block 13 | 關節空間揮桿軌跡生成（後擺 → 加速 → 擊球點，joint target 播放） | 12h | M7: Milestone B 手臂執行 | FALSE |  | 2026-08-29 | #181 |
-| B-3 | Block 13 | 真實接觸物理校正（physics dt 1e-4 + CCD + spin_efficiency） | 14h | M7: Milestone B 手臂執行 | FALSE |  | 2026-09-06 | #182 |
-| B-CP | Block 13 | Fallback 檔位決策點總覽（B-CP1 8/16、B-CP2 8/29、B-CP3 9/06） | 0.5h | M7: Milestone B 手臂執行 | FALSE |  | 2026-09-06 | #183 |
+| B-2 | Block 13 | 關節空間揮桿軌跡生成（後擺 → 加速 → 擊球點，joint target 播放）【superseded：UR3e 多關節聯合驅動卡在 manipulability ellipsoid 結構性限制，改為 UR10e＋專用線性出力機構，見 docs/issue-181-strike-status-summary.md「結案：架構轉向」】 | 12h | M7: Milestone B 手臂執行 | TRUE | 2026-09-06 | 2026-08-29 | #181 |
+| B-3 | Block 13 | 真實接觸物理校正（physics dt 1e-4 + CCD + spin_efficiency）【superseded：改用 UR10e 線性致動器直接出力，dt=1/60 已達成 flat 93.1%／bridge 109.1% 達成率，不需要列出的補償手段】 | 14h | M7: Milestone B 手臂執行 | TRUE | 2026-09-06 | 2026-09-06 | #182 |
+| B-CP | Block 13 | Fallback 檔位決策點總覽（B-CP1 8/16、B-CP2 8/29、B-CP3 9/06）【B-CP3 已驗證：flat／bridge 各同參數重跑 3 次，達成率與碰撞事件數逐位元一致，落在 fallback (b) 檔位，未降級 (c)】 | 0.5h | M7: Milestone B 手臂執行 | TRUE | 2026-09-06 | 2026-09-06 | #183 |
 | 8-2 | Block 8 | HUD 新增參數控制面板（可即時調整擊球參數） | 1h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #115 |
 | 8-3 | Block 8 | HUD 新增 ShotResult 顯示（散開分數白球狀態9號球狀態） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #116 |
 | 6-6 | Block 6 | Debug Menu 新增「顯示當前 ShotResult」按鈕手動驗證計算正確性 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-09-06 | #107 |

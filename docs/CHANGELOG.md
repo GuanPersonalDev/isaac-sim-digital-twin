@@ -7,6 +7,12 @@
 9 個步驟全數完成。步驟 9 的 GUI 人工肉眼＋log 雙重確認已由使用者執行並確認通過，
 清單見 `docs/ur10e-step9-gui-verification-checklist.md`。生產路徑
 （`billiard_digital_twin.py` 的 `_ROBOT_ARM_CLASS`）已切換為 `UR10eRobot`。
+
+這個架構轉向是 `#181`（關節空間揮桿軌跡生成，UR3e 多關節聯合驅動）卡在
+manipulability ellipsoid 結構性限制後的直接後繼方案。`#181`／`#182`（真實
+接觸物理校正）／`#183`（Fallback 決策點總覽）三個 issue 已 superseded 結案，
+完整轉向理由、驗收數據、B-CP3 重複性驗證見
+`docs/issue-181-strike-status-summary.md`「結案：架構轉向」一節。
 **用途**：集中收納原本散落在程式碼註解裡的除錯過程、日期、根因追蹤細節。程式碼內只保留「來源＋用意」，完整的推導過程、試過但失敗的方案、量測數據都記在這裡。各 `docs/issue-*.md` 已有完整分析的項目不重複貼，只在此留一行指標。
 
 條目格式：`### <檔案路徑> — <主題>`，內文含日期（若已知）與推導脈絡。
