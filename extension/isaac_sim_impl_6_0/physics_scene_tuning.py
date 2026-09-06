@@ -12,22 +12,12 @@ from pxr import PhysxSchema, Usd, UsdPhysics
 
 
 def configure_physics_scene_for_demo_scale(stage: Usd.Stage) -> None:
-    """把場上所有 PhysicsScene 調成適合 Demo 規模（十幾個剛體）的設定。
+    """把場上所有 PhysicsScene 調成適合 Demo 規模（十幾個剛體）的設定：關閉
+    GPU dynamics、broadphase 改用 MBP。數據與量測方法見 docs/CHANGELOG.md
+    「GUI FPS 調校」一節。
 
-    這個場景只有 18 個剛體（10 顆球＋球桿＋手臂連桿）跟 1 個 articulation，
-    GPU 物理管線的固定開銷（kernel launch、GPU 記憶體同步，以及每次
-    tensor 讀取都要 GPU→CPU 搬一次）在這個量級是純虧損：
-
-        scripts/benchmark_gui_frametime.py，單張 Demo 桌、RTX 4090、600 frame
-        GPU dynamics 開：PhysX Update 20.25ms → 30.59 FPS
-        GPU dynamics 關：PhysX Update  9.33ms → 40.56 FPS
-
-    也就是每 frame 白花約 11ms。broadphase 一併從 GPU 改成 MBP，GPU
-    broadphase 在沒有 GPU dynamics 的情況下沒有意義。
-
-    ⚠️ 這個判斷**只對 Demo 規模成立**。RL 訓練環境（`rl_task/billiard_rl/`）
-    是 1024 個平行 env、上萬個剛體，那個量級 GPU 物理才會贏，訓練端不該套用
-    本函式。
+    ⚠️ 只對 Demo 規模成立。RL 訓練環境（`rl_task/billiard_rl/`）是上萬個
+    剛體的量級，GPU 物理在那裡才會贏，訓練端不該套用本函式。
     """
     for prim in stage.Traverse():
         if not prim.IsA(UsdPhysics.Scene):

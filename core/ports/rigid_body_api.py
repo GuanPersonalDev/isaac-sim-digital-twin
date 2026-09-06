@@ -33,13 +33,8 @@ class RigidBodyAPI(ABC):
         """
         一次回傳多個 prim 的世界座標 (x, y, z) (m)，順序與 prim_paths 相同。
 
-        ⚠️ 每個 tick 要讀整桌 10 顆球時**必須用這個方法**，不要用迴圈逐顆呼叫
-        get_position()。實測（scripts/benchmark_gui_frametime.py，GUI 場景、
-        只開 Demo 桌）：單顆讀取一次固定成本 0.38ms，那是 tensor API 一次
-        GPU→CPU 同步的代價，跟一次讀 1 顆還是 10 顆幾乎無關，所以逐顆讀 10 次
-        就是 3.8ms/frame。三個呼叫端（ObservationBuilder、BallMotionMonitor、
-        RollingResistanceService）合計每 frame 約 40 次讀取＝11.7ms，佔整個
-        tick 的 83%，是 GUI 掉到 12 FPS 的主因。見 docs/CHANGELOG.md
+        ⚠️ 讀多顆球時務必用這個方法，不要迴圈呼叫 get_position()——每次呼叫
+        都是一次獨立的 GPU→CPU 同步。效能數據見 docs/CHANGELOG.md
         「GUI FPS 調校」一節。
         """
         ...
@@ -58,10 +53,8 @@ class RigidBodyAPI(ABC):
         """
         一次回傳多個 prim 的 (線速度清單, 角速度清單)，順序與 prim_paths 相同。
 
-        效能理由同 get_positions()，而且逐顆版本在這裡更糟：
-        get_linear_velocity() 與 get_angular_velocity() 底下各自呼叫一次
-        RigidPrim.get_velocities()，同一顆球要同時拿線速度與角速度就是兩次
-        獨立同步。
+        ⚠️ 效能理由同 get_positions()：讀多顆球務必用這個方法，不要迴圈呼叫
+        get_linear_velocity()／get_angular_velocity()。
         """
         ...
 

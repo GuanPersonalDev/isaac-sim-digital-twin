@@ -110,9 +110,8 @@ class TestBallMotionMonitor:
 
 
 class TestBallMotionMonitorBatchesReads:
-    """效能契約（見 core/ports/rigid_body_api.py）：每次判斷只能做一次批次
-    讀取。改回逐顆呼叫 get_linear_velocity() 會讓 GUI 每 frame 多出 10 次
-    GPU→CPU 同步，實測是 FPS 從 12 掉下來的主因之一。"""
+    """效能契約（見 docs/CHANGELOG.md「GUI FPS 調校」）：每次判斷只能做一次
+    批次讀取，不可退化成逐顆呼叫 get_linear_velocity()。"""
 
     def test_reads_all_ball_velocities_in_a_single_batched_call(self):
         # Arrange

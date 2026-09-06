@@ -86,14 +86,8 @@ class BilliardExtension(omni.ext.IExt):
         self._training_sessions: list[TableSession] = []
         self._demo_sessions: list[DemoTableSession] = []
         self._demo_articulation_apis: dict[str, ArticulationAPIImpl] = {}
-        # Training 球檯預設關閉（效能）：Demo 與 Training 的 BilliardTable 都
-        # 參照同一份 assets/billiard_env.usda，那份資產含整個 SimpleRoom
-        # （60 個 mesh、一盞 DomeLight＋一盞 RectLight、貼圖全部從 S3 串流），
-        # 兩張桌子等於把整個房間連同環境光載入兩次。Training 路徑在 GUI Demo
-        # 情境下沒有任何畫面用途（RL 訓練走 rl_task/ 的獨立環境，見
-        # billiard_rl_env_cfg.py，那邊用的是去掉 SimpleRoom 的
-        # TRAINING_TABLE_PATH）。需要時仍可從 Debug Menu 的 Training toggle
-        # 開回來。量測數據見 docs/CHANGELOG.md 的「GUI FPS 調校」一節。
+        # Training 球檯預設關閉（效能，見 docs/CHANGELOG.md「GUI FPS 調校」）：
+        # 在 GUI Demo 情境下沒有畫面用途，需要時可從 Debug Menu 的 toggle 開回來。
         self._training_enabled = False
         self._demo_enabled = True
         self._timeline_playing = False
@@ -140,8 +134,7 @@ class BilliardExtension(omni.ext.IExt):
 
     def _billiard_init(self):
         SimulationManager.setup_simulation(dt=1/60)
-        # setup_simulation() 建出來的 PhysicsScene 預設開 GPU dynamics，對這個
-        # 只有十幾個剛體的場景是純虧損（每 frame 約 11ms）。詳見該函式說明。
+        # 覆寫預設的 GPU dynamics（見 configure_physics_scene_for_demo_scale 說明）
         configure_physics_scene_for_demo_scale(omni.usd.get_context().get_stage())
 
         self._asset_env_init()
