@@ -1,6 +1,18 @@
+import logging
 import os
 
 import numpy as np
+
+from core.services import ur10e_analytic_ik
+
+logger = logging.getLogger(__name__)
+
+_ARM_JOINT_NAMES = (
+    "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+    "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
+)
+"""UR10e 六個手臂關節，順序就是 `ur10e_analytic_ik` 的 DH 鏈順序——不能
+直接拿 `dof_names` 的前六個，那只是碰巧同序。"""
 
 
 class Ur10eCueSlideController:
@@ -25,8 +37,8 @@ class Ur10eCueSlideController:
        q̈(0)=q̈(T)=0），逐 tick 下達 q̇(t)（其餘 6 個手臂 DOF 速度固定 0），
        疊加重力補償。
     3. 揮桿收斂後自動接一段「沿原軸縮回 backswing_position」（決策 5），
-       手臂保持靜止，縮完才算整段動作完成（見
-       _start_post_strike_retract()）。
+       同時把手臂上抬 _POST_STRIKE_LIFT_M 讓球桿離開母球的回程路徑，
+       縮回＋上抬都完成才算整段動作結束（見 _start_post_strike_retract()）。
 
     target_velocity 直接等於
     swing_trajectory_calculator.compute_required_tip_speed(cue_ball_speed)
@@ -45,11 +57,22 @@ class Ur10eCueSlideController:
     # 兜底，不是純計時。
     _MAX_STRIKE_STEPS = 30
 
+    _POST_STRIKE_LIFT_M = 0.10
+    """揮桿後手臂上抬的高度（沿世界 +Z，末端姿態不變，整支球桿平移上去）。
+
+    只靠沿軸縮回擋不住母球：母球正面撞進緊密球堆後會以約 1.4~1.7 m/s 彈回，
+    而縮回是位置驅動的指數收斂（τ=damping/stiffness=0.1s），速度一路衰減，
+    追不過等速回來的母球——球桿的軸線就是母球的回程路徑，加大縮回距離只能
+    延後、不能避免（實測見 docs/CHANGELOG.md）。上抬則是直接離開那條路徑。
+    球桿原本停在母球球心高度，要清掉球頂只需要一個球半徑（0.0286m），
+    0.10m 留了三倍餘裕，同時夠小、不會讓解析 IK 跳到別的分支。"""
+
     def __init__(self, articulation, slide_dof_name: str = "CueSlideJoint") -> None:
         self._articulation = articulation
 
         dof_names = list(self._articulation.dof_names)
         self._slide_dof_index = dof_names.index(slide_dof_name)
+        self._arm_dof_indices = [dof_names.index(name) for name in _ARM_JOINT_NAMES]
         self._num_dofs = len(dof_names)
 
         max_velocities = self._articulation.get_dof_max_velocities()
@@ -237,18 +260,68 @@ class Ur10eCueSlideController:
             self._did_last_motion_timeout = True
         self._start_post_strike_retract()
 
+    def _compute_lifted_arm_joint_targets(self, arm_joint_positions: np.ndarray) -> np.ndarray | None:
+        """把 arm_joint_positions 對應的末端位姿沿世界 +Z 抬高
+        _POST_STRIKE_LIFT_M（姿態不變），用 `ur10e_analytic_ik` 解出對應的
+        關節角。全程在關節空間裡算完——FK 拿到底座座標系的位姿、平移、再
+        IK 回去——所以不需要知道底座在世界的位置（底座朝向固定是單位四元
+        數，見 `Ur10eSwingStrategy._BASE_ORIENTATION`，底座 +Z 就是世界 +Z）。
+
+        解不出來時回傳 None，呼叫端維持手臂不動（只縮回）。
+        """
+        dh_position, dh_rotation = ur10e_analytic_ik.forward_kinematics(arm_joint_positions)
+        position_in_base, rotation_in_base = ur10e_analytic_ik.dh_to_isaac_frame(dh_position, dh_rotation)
+
+        lifted_position = np.asarray(position_in_base, dtype=float) + np.array(
+            [0.0, 0.0, self._POST_STRIKE_LIFT_M]
+        )
+        lifted_dh_position, lifted_dh_rotation = ur10e_analytic_ik.isaac_to_dh_frame(
+            lifted_position, rotation_in_base
+        )
+        solutions = ur10e_analytic_ik.inverse_kinematics(lifted_dh_position, lifted_dh_rotation)
+        if not solutions:
+            return None
+
+        def _wrapped_diff(solution: np.ndarray) -> np.ndarray:
+            return np.mod(solution - arm_joint_positions + np.pi, 2.0 * np.pi) - np.pi
+
+        best_solution = min(solutions, key=lambda s: float(np.max(np.abs(_wrapped_diff(s)))))
+        # UR 關節值域是 ±2π，解析解的原始數值可能跟目前角度差一整圈但等效
+        # 角度很近；position-mode drive 只照原始數值追，不會自己抄近路。
+        # 平移成「離目前角度最近的等效角度」再回傳（跟
+        # Ur10eRmpflowController._compute_analytic_finish_joint_target()
+        # 同一個處理）。
+        return arm_joint_positions + _wrapped_diff(best_solution)
+
     def _start_post_strike_retract(self) -> None:
-        """揮桿收斂後沿原本同一條軸線把球桿縮回 backswing_position，手臂
-        本身保持靜止不動（決策 5）。
+        """揮桿收斂後沿原本同一條軸線把球桿縮回 backswing_position，**同時**
+        把手臂上抬 _POST_STRIKE_LIFT_M 讓球桿離開母球的回程路徑。
 
         不縮回的話球桿會停在 q≈0，也就是母球原本待的位置——母球撞上球堆
         後彈回來會再撞到球桿，等同撞球規則裡的二次擊球（實測一次擊球記錄
-        到 3 筆 CueStick↔母球碰撞事件，排查過程見 docs/CHANGELOG.md）。
-        整段動作要等縮回完成才算結束（is_motion_complete()），呼叫端因此
-        不會在球桿還擋在球路上時就讓 RMPflow 開始把手臂帶回 home。
+        到 3 筆 CueStick-母球碰撞事件，排查過程見 docs/CHANGELOG.md）。只
+        縮回還不夠：母球回來的速度比縮回快，所以決策 5 的「手臂保持靜止、
+        縮完才由 RMPflow 帶回 home」改成縮回與上抬同時進行。
+
+        兩件事都是同一組關節位置目標（上抬寫手臂 6 個 DOF、縮回寫
+        CueSlideJoint），一次 set_dof_position_targets() 下完，不需要兩個
+        控制器並行搶同一個 articulation。整段動作要等縮回完成才算結束
+        （is_motion_complete()），呼叫端因此不會在球桿還擋在球路上時就讓
+        RMPflow 開始把手臂帶回 home。
         """
         self._phase = "post_strike_retract"
         self._backswing_steps = 0
+
+        arm_joint_positions = self._hold_position_targets[self._arm_dof_indices]
+        lifted_arm_targets = self._compute_lifted_arm_joint_targets(arm_joint_positions)
+        if lifted_arm_targets is None:
+            logger.warning(
+                "揮桿後上抬 %.3fm 的解析 IK 無解，這一擊只做沿軸縮回、手臂不動——"
+                "母球從球堆彈回時可能再撞到球桿（見 _POST_STRIKE_LIFT_M 說明）",
+                self._POST_STRIKE_LIFT_M,
+            )
+        else:
+            self._hold_position_targets[self._arm_dof_indices] = lifted_arm_targets
         self._articulation.switch_dof_control_mode(
             "position", dof_indices=[self._slide_dof_index]
         )

@@ -98,5 +98,10 @@ class Ur10eSwingStrategy(RobotSwingStrategy):
         # 雅可比矩陣／槓桿臂換算，也不需要像 WAM7 高架橋案例那樣查表找
         # roll_rad／backswing_distance（那些都是為了閃避手臂本體撞庫邊
         # 才需要的自由度，UR10e 推桿時手臂本身不動，不會有這個問題）。
-        required_tip_speed = swing_trajectory_calculator.compute_required_tip_speed(action.cue_ball_speed)
+        # 用滑軌機構專用的實測校準版本，不是動量傳遞理論值——理論公式假設
+        # 球桿是自由的 0.5kg 物體，但滑軌關節在撞擊瞬間是被 drive 硬撐住的
+        # （見 compute_required_tip_speed_for_cue_slide() 說明）。
+        required_tip_speed = swing_trajectory_calculator.compute_required_tip_speed_for_cue_slide(
+            action.cue_ball_speed
+        )
         self._articulation_api.move_cue_slide_stroke(-self._BACKSWING_DISTANCE_M, required_tip_speed)

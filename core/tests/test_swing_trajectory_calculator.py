@@ -34,6 +34,36 @@ class TestComputeRequiredTipSpeed:
         assert low < high
 
 
+class TestComputeRequiredTipSpeedForCueSlide:
+    def test_round_trips_with_measured_ratio(self):
+        """實測比值的反函式：算出來的桿尖速度乘回比值要還原目標母球初速。"""
+        cue_ball_speed = 1.995
+
+        tip_speed = calc.compute_required_tip_speed_for_cue_slide(cue_ball_speed)
+
+        assert tip_speed * calc.CUE_SLIDE_MEASURED_SPEED_RATIO == pytest.approx(cue_ball_speed)
+
+    def test_reproduces_the_flat_case_measurement(self):
+        """實測數據（scripts/test_ur10e_table_flat.py）：指令桿尖速度
+        1.5116 m/s 打出母球 2.6200 m/s。反過來要打出 2.6200 m/s，
+        這個函式就該回報 1.5116 m/s。"""
+        assert calc.compute_required_tip_speed_for_cue_slide(2.6200) == pytest.approx(1.5116, abs=0.001)
+
+    def test_commands_lower_speed_than_momentum_theory(self):
+        """理論公式把球桿當自由的 0.5kg 物體，低估了被 drive 硬撐住的等效
+        質量，所以理論值一定偏高——校準版本必須比它低。"""
+        cue_ball_speed = 1.995
+
+        assert calc.compute_required_tip_speed_for_cue_slide(cue_ball_speed) < calc.compute_required_tip_speed(
+            cue_ball_speed
+        )
+
+    def test_scales_linearly_with_target_speed(self):
+        assert calc.compute_required_tip_speed_for_cue_slide(2.0) == pytest.approx(
+            2.0 * calc.compute_required_tip_speed_for_cue_slide(1.0)
+        )
+
+
 class TestComputeFollowThroughDistance:
     def test_monotonically_increasing_with_speed(self):
         low_speed_distance = calc.compute_follow_through_distance(0.5)

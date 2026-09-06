@@ -113,15 +113,35 @@ class TestUr10eSwingStrategyExecuteStrike:
         cue_ball = (0.0, -0.752)
 
         with patch(
-            "core.services.ur10e_swing_strategy.swing_trajectory_calculator.compute_required_tip_speed",
-            return_value=1.5116,
+            "core.services.ur10e_swing_strategy.swing_trajectory_calculator."
+            "compute_required_tip_speed_for_cue_slide",
+            return_value=1.1509,
         ) as mock_required_speed:
             strategy.execute_strike(action, cue_ball, TABLE_Z, BALL_RADIUS)
 
         mock_required_speed.assert_called_once_with(1.995)
         articulation_api.move_cue_slide_stroke.assert_called_once_with(
-            -swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M, 1.5116
+            -swing_trajectory_calculator.DEFAULT_BACKSWING_DISTANCE_M, 1.1509
         )
+
+    def test_uses_cue_slide_calibrated_speed_not_momentum_theory(
+        self,
+        strategy: Ur10eSwingStrategy,
+        articulation_api: MagicMock,
+    ):
+        """滑軌機構的桿尖速度要走實測校準版本：理論動量公式假設球桿是自由的
+        0.5kg 物體，但撞擊瞬間球桿被 drive 硬撐住，用理論值會把母球打快 31%
+        （見 compute_required_tip_speed_for_cue_slide() 說明）。"""
+        action = _action()
+        action.cue_ball_speed = 1.995
+
+        strategy.execute_strike(action, (0.0, -0.752), TABLE_Z, BALL_RADIUS)
+
+        _, target_velocity = articulation_api.move_cue_slide_stroke.call_args.args
+        assert target_velocity == pytest.approx(
+            swing_trajectory_calculator.compute_required_tip_speed_for_cue_slide(1.995)
+        )
+        assert target_velocity < swing_trajectory_calculator.compute_required_tip_speed(1.995)
 
     def test_does_not_recompute_wrist_geometry(
         self,

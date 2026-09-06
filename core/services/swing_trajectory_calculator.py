@@ -45,6 +45,37 @@ def compute_required_tip_speed(cue_ball_speed: float) -> float:
     return cue_ball_speed / momentum_ratio
 
 
+CUE_SLIDE_MEASURED_SPEED_RATIO = 1.7333
+"""UR10e 線性滑軌推桿機構實測的「母球初速 ÷ 指令桿尖速度」端到端比值。
+
+`compute_required_tip_speed()` 那套 `(1+e)·M/(M+m)`＝1.3197 的理論比值
+**不適用於這個機構**，實測（`scripts/test_ur10e_table_flat.py`：指令桿尖
+速度 1.5116 m/s → 母球初速 2.6200 m/s）差了 31%，兩個原因疊加：
+
+1. 公式假設球桿是質量 0.5kg 的自由物體，但滑軌關節的 drive stiffness
+   是 1e5，撞擊瞬間球桿是被驅動器硬撐住的，等效質量遠大於 0.5kg
+   （M→∞ 時比值上限就是 1+e=1.75）。
+2. `Ur10eCueSlideController` 的 quintic 邊界條件是「固定後擺距離、終點
+   速度＝指令速度」，行程中段速度必然高於終點速度（平均速度要等於終點
+   速度，中段就得超過），而母球實際是在 q≈0 前一點就被打到，吃到的是
+   還沒降回終點值的中段速度。
+
+兩者都跟指令速度成正比（quintic 的正規化剖面與 v1 無關，見
+`Ur10eCueSlideController._step_backswing()` 的 `T=|q0|/v1`），所以用單一
+線性比值校準即可，不需要拆開建模。這是端到端量測結果，改動後擺距離、
+drive 增益或 quintic 邊界條件之後都要重新量。"""
+
+
+def compute_required_tip_speed_for_cue_slide(cue_ball_speed: float) -> float:
+    """UR10e 線性滑軌推桿專用：由目標母球初速反推該下達的桿尖速度指令。
+
+    跟 `compute_required_tip_speed()` 的差別只在改用實測的端到端比值
+    `CUE_SLIDE_MEASURED_SPEED_RATIO`（見該常數說明），不是動量傳遞理論
+    值——WAM7／UR3e 兩套揮桿機構不適用這個比值，仍走原本的函式。
+    """
+    return cue_ball_speed / CUE_SLIDE_MEASURED_SPEED_RATIO
+
+
 def compute_follow_through_distance(required_tip_speed: float) -> float:
     """隨揮距離不能是常數：`_compute_pose_tracking_twist()` 的 P 控制器項
     會疊加在 feedforward 速度之上（不是位置誤差趨近 0 才生效），固定距離
