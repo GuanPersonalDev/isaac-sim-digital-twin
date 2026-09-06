@@ -228,6 +228,34 @@ def _instrument_extension_tick() -> bool:
     return True
 
 
+_GC_EVENTS: list[tuple[int, int]] = []
+
+
+def _instrument_gc() -> None:
+    """記錄每一次 Python GC 的世代與耗時。
+
+    卡頓的特徵是：80ms 量級、間隔不規則（median 12-18 frame 但 stdev 17-22）、
+    偶爾連續兩個 frame，而且**拿掉算圖之後反而更多**（headless 26.2% vs
+    完整算圖 18.2%）。這排除了算圖／資產串流，指向主執行緒上的 CPU 事件，
+    GC 是最符合這個形狀的嫌疑犯——Isaac Sim 的 Python 物件圖非常龐大，
+    一次 gen2 collection 要掃過全部物件。
+    """
+    import gc
+
+    pending: dict[str, int] = {}
+
+    def _on_gc(phase: str, info: dict) -> None:
+        if phase == "start":
+            pending["started"] = time.perf_counter_ns()
+        elif "started" in pending:
+            _GC_EVENTS.append(
+                (int(info.get("generation", -1)), time.perf_counter_ns() - pending.pop("started"))
+            )
+
+    gc.callbacks.append(_on_gc)
+    print("[bench] 已掛上 GC 計時器")
+
+
 _API_NS: dict[str, list[int]] = {}
 
 
@@ -336,6 +364,17 @@ def _apply_ablations() -> list[str]:
         settings.set("/persistent/simulation/minFrameRate", int(min_frame_rate))
         applied.append(f"minFrameRate={min_frame_rate}")
 
+    if os.environ.get("BENCH_FABRIC", "") == "1":
+        # Chrome Trace 顯示卡頓的 frame 有 44ms 卡在 "Lock USD"／
+        # "UsdContext hydraRender"：physics 每步把 transform 回寫進 USD
+        # （updateToUsd）要拿寫鎖，hydra 算圖要拿讀鎖，兩邊互相等。Fabric 是
+        # GPU-resident 的 scene delegate，把「物理→算圖」這條資料流整個移出
+        # USD，正是為了消除這種爭用。
+        settings.set("/app/useFabricSceneDelegate", True)
+        settings.set("/physics/fabricUpdateTransformations", True)
+        settings.set("/app/usdrt/scene_delegate/enableProxyCubes", False)
+        applied.append("Fabric scene delegate=True")
+
     if os.environ.get("BENCH_ASYNC_RENDER", "") == "1":
         settings.set("/app/asyncRendering", True)
         settings.set("/app/asyncRenderingLowLatency", True)
@@ -441,6 +480,7 @@ def _run(simulation_app) -> None:
 
     _instrument_extension_tick()
     _instrument_rigid_body_api()
+    _instrument_gc()
     ablations = _apply_ablations()
     physics_info = _dump_physics_scene()
     physics_info["ablations"] = ablations
@@ -457,6 +497,7 @@ def _run(simulation_app) -> None:
 
     _TICK_NS.clear()
     _API_NS.clear()
+    _GC_EVENTS.clear()
     collector.set_collecting(True)
     wall_start = time.perf_counter()
     for _ in range(_FRAMES):
@@ -500,6 +541,41 @@ def _run(simulation_app) -> None:
             if s.get("n"):
                 ratio = s["mean"] / app_mean * 100
                 print(f"[bench] {label} 佔 App_Update 的 {ratio:.1f}%")
+
+    # 卡頓分析：p95 一直遠高於 median（例如 median 17ms／p95 55-77ms），代表
+    # 有少數 frame 特別長。先看它們是不是週期性出現——如果間隔固定，多半是某個
+    # 定期任務（資產串流、shader 編譯、GC、RTX 累積重置）；如果散亂，才需要
+    # 動用 Tracy 抓 trace。
+    if app_stats.get("n"):
+        threshold = app_stats["median"] * 2.0
+        slow_indices = [i for i, v in enumerate(collector.app_samples) if v > threshold]
+        print("-" * 78)
+        print(f"[bench] 慢 frame 分析（門檻＝median×2＝{threshold:.1f}ms）："
+              f"{len(slow_indices)} / {len(collector.app_samples)} frame")
+        if len(slow_indices) >= 2:
+            gaps = [b - a for a, b in zip(slow_indices, slow_indices[1:])]
+            print(f"    出現間隔：median={statistics.median(gaps):.0f} frame  "
+                  f"min={min(gaps)}  max={max(gaps)}  "
+                  f"stdev={statistics.pstdev(gaps):.1f}")
+            print(f"    前 20 個 index：{slow_indices[:20]}")
+            slow_values = [collector.app_samples[i] for i in slow_indices]
+            print(f"    這些 frame 的耗時：mean={statistics.fmean(slow_values):.1f}ms  "
+                  f"max={max(slow_values):.1f}ms  "
+                  f"合計佔全部時間的 {sum(slow_values) / sum(collector.app_samples) * 100:.1f}%")
+
+    if _GC_EVENTS:
+        total_ms = sum(ns for _, ns in _GC_EVENTS) / 1_000_000
+        wall_ms = sum(collector.app_samples)
+        print(f"[bench] Python GC：{len(_GC_EVENTS)} 次，合計 {total_ms:.1f}ms"
+              f"（佔量測期間的 {total_ms / wall_ms * 100:.1f}%）")
+        by_generation: dict[int, list[int]] = {}
+        for generation, ns in _GC_EVENTS:
+            by_generation.setdefault(generation, []).append(ns)
+        for generation in sorted(by_generation):
+            samples = [ns / 1_000_000 for ns in by_generation[generation]]
+            print(f"    gen{generation}: {len(samples):>4} 次  "
+                  f"mean={statistics.fmean(samples):>7.2f}ms  "
+                  f"max={max(samples):>8.2f}ms  合計={sum(samples):>8.1f}ms")
 
     if _API_NS:
         print("-" * 78)
@@ -566,6 +642,22 @@ if __name__ == "__main__":
     config = {"headless": _HEADLESS}
     if _RENDERER:
         config["renderer"] = _RENDERER
+
+    # Chrome Trace（carb 的 "cpu" 後端）：單一程序寫一個 .gz 檔，不需要視窗、
+    # 不需要第二個程序，而且輸出是 JSON——可以直接程式解析找出長 frame 裡
+    # 哪個 zone 在吃時間，不像 Tracy 要開 GUI 看。
+    # ⚠️ 只能走 extra_args：SimulationApp 的 profiler_backend 參數只認
+    #    ["tracy", "nvtx"]（simulation_app.py L518-549），傳 "cpu" 會被靜默忽略。
+    _trace_path = os.environ.get("BENCH_CHROME_TRACE", "")
+    if _trace_path:
+        config["extra_args"] = [
+            "--/app/profilerBackend=cpu",
+            "--/app/profileFromStart=1",
+            "--/profiler/enabled=true",
+            "--/plugins/carb.profiler-cpu.plugin/saveProfile=1",
+            "--/plugins/carb.profiler-cpu.plugin/compressProfile=1",
+            f"--/plugins/carb.profiler-cpu.plugin/filePath={_trace_path}",
+        ]
 
     simulation_app = SimulationApp(config)
     try:

@@ -568,3 +568,96 @@ async rendering 則是 app 層級的啟動選項（`--/app/asyncRendering=true`�
 不是算圖（headless 完全不開視窗也只有 39.09 FPS，跟開視窗的 40.56 差不多）。下一步
 應該用 Tracy（`capture.exe`，headless 可用，見本節開頭的表格）抓一段含卡頓的 trace，
 看那幾個 frame 的 zone 樹跟正常 frame 差在哪。
+
+### 試過但不採用：關掉 USD 回寫
+
+`updateToUsd`／`updateVelocitiesToUsd` 兩個回寫開關都測過（600 frame，其餘設定為最終
+production 設定）：
+
+| 設定 | FPS | App_Update median | App_Update p95 | Physics Update Transforms |
+|---|---|---|---|---|
+| 最終 production 設定 | 46.62 | 17.4ms | 29.6ms | 2.98ms |
+| ＋`updateToUsd=False` | 47.79 | 14.9ms | **75.0ms** | 1.41ms |
+| ＋`updateVelocitiesToUsd=False` | 48.43 | 16.4ms | 38.5ms | 2.35ms |
+
+`Physics Update Transforms` 確實從 2.98ms 掉到 1.41ms，但整體只有 +2~4%，而 p95 在各次
+執行之間本來就會在 29–77ms 之間大幅擺動（同一組設定重跑就會變），這個量級的差異分辨
+不出來。`updateToUsd=False` 另外還有風險：任何直接讀 USD transform 的地方（例如
+`StageAPIImpl`）會拿到不再更新的舊值。**收益不明確、風險明確，不採用。**
+
+### 卡頓的追查進度（未結案）
+
+最終設定下 1500 frame × 多輪的穩定數字：mean 48–50 FPS、**median 約 17ms（≈58 FPS）**、
+p95 55–77ms。也就是穩態已經很接近 60 FPS 的完美目標，是少數幾個特別長的 frame 把平均
+拉下來。`scripts/benchmark_gui_frametime.py` 加了慢 frame 分析（門檻＝median×2）：
+
+| 設定 | 慢 frame | 平均耗時 | 佔總時間 | 出現間隔 |
+|---|---|---|---|---|
+| 完整算圖 | 59/1500 | 88.4ms | 18.2% | median 18 frame，stdev 22.5 |
+| 完全不開視窗（headless） | 91/1500 | 79.5ms | **26.2%** | median 12，stdev 16.6 |
+| `renderer=Minimal` | 87/1500 | 80.5ms | 24.8% | median 10，stdev 17.4 |
+
+**已排除的成因**：
+
+1. **算圖／資產串流**——拿掉視窗跟改用 Minimal renderer，卡頓不但沒消失，佔比反而更高。
+   （原本很懷疑資產的 16 張貼圖與 4K HDR 天空都是從 S3 遠端串流。）
+2. **物理 substep 疊加**——實測固定 1.00 個 substep/frame。
+3. **我們自己的 tick**——`_on_tick` 的 p95 只有 3.3–3.6ms，解釋不了 App_Update 的 p95 55–77ms。
+4. **Python GC**——用 `gc.callbacks` 掛上計時器實測，1500 frame 的量測窗內**一次 collection
+   都沒有發生**。80ms 量級、間隔不規則、偶爾連續兩 frame 的形狀很像 GC，但實測直接否定。
+
+消除這些長 frame 可以把 mean 從約 20ms 降到約 16.5ms，剛好就是 60 FPS，所以這是通往完美
+目標的唯一一條路。下一步：用 Chrome Trace 後端（`--/app/profilerBackend=cpu`，輸出是可以
+程式解析的 JSON，不像 Tracy 要開 GUI）抓一段含卡頓的 trace，比對長 frame 與正常 frame 的
+zone 樹差異。`scripts/benchmark_gui_frametime.py` 的 `BENCH_CHROME_TRACE` 環境變數已經接好
+這條路徑。
+
+### 卡頓的根因：USD stage 鎖爭用（已定位，修法待目視確認）
+
+用 Chrome Trace 後端抓了一段 trace 之後定位出來。做法（`scripts/benchmark_gui_frametime.py`
+的 `BENCH_CHROME_TRACE` 環境變數）：
+
+```
+--/app/profilerBackend=cpu --/app/profileFromStart=1 --/profiler/enabled=true
+--/plugins/carb.profiler-cpu.plugin/saveProfile=1
+--/plugins/carb.profiler-cpu.plugin/compressProfile=1
+--/plugins/carb.profiler-cpu.plugin/filePath=<path>.gz
+```
+
+輸出是 NDJSON 包在一個 array 裡，可以 streaming 逐行解析，不需要開 Tracy GUI。分析方式：
+取主執行緒（`App Main loop` 所在的 tid）的所有 zone，把落在「慢 frame」時間區間內的
+zone 跟落在正常 frame 內的分別加總比對。
+
+⚠️ 這份 trace 本身被 profiler 污染了——`ScopedGzJsonFile.writeFile` 43ms × 313 次是
+profiler 自己在寫檔。但比對「慢 frame vs 正常 frame」的相對差異仍然有效。
+
+結果（每 frame 平均）：
+
+| zone | 慢 frame | 正常 frame | 倍數 |
+|---|---|---|---|
+| `UsdContext hydraRender` | 45.9ms | 1.8ms | 25× |
+| `Lock USD` | 44.4ms | 未進前 14 名 | — |
+
+也就是主執行緒**卡在等 USD stage 的鎖**。physics 每步把 transform 回寫進 USD
+（`/physics/updateToUsd`）要拿寫鎖，hydra 算圖要拿讀鎖，兩邊互相等。這也回頭解釋了為什麼
+關掉算圖反而更多慢 frame（沒有算圖排隊，物理寫入更密集）、以及為什麼
+`updateToUsd=False` 那次 median 掉到 14.9ms。
+
+**修法候選：Fabric scene delegate**（GPU-resident，把「物理→算圖」這條資料流整個移出
+USD，正是為了消除這種爭用）。實測（1500 frame，其餘同最終 production 設定）：
+
+| 設定 | FPS | median | **p95** | 慢 frame 佔時間 |
+|---|---|---|---|---|
+| 最終 production 設定 | 48–50 | 17.0–17.3ms | **55–77ms** | 25.1% |
+| ＋Fabric | **51.25** | 17.0ms | **29.6ms** | 20.6% |
+
+```
+--/app/useFabricSceneDelegate=true
+--/physics/fabricUpdateTransformations=true
+--/app/usdrt/scene_delegate/enableProxyCubes=false
+```
+
+p95 砍半，佐證了鎖爭用的診斷。**但沒有採用**：Fabric 換掉整條算圖資料路徑，畫面是否
+完全正確（材質、可見性切換、`TableBallSet.hide_ball()` 的進袋隱藏）必須肉眼確認，而且
+`useFabricSceneDelegate` 一般是啟動期設定，在 runtime 才設不保證完全生效。要採用的話應該
+走啟動參數並實際看畫面。
