@@ -63,10 +63,16 @@ class RollingResistanceService:
         delta_v = self._rolling_friction_coeff * GRAVITY * PHYSICS_DT
         delta_w = self._spin_decay_rate * PHYSICS_DT
 
-        for prim_path in ball_prim_paths:
-            vx, vy, vz = self._rigid_body_api.get_linear_velocity(prim_path)
-            wx, wy, wz = self._rigid_body_api.get_angular_velocity(prim_path)
+        # 整批一次讀完再逐顆算：逐顆版本每顆球要兩次同步（get_linear_velocity
+        # 與 get_angular_velocity 底下各自呼叫一次 RigidPrim.get_velocities()），
+        # 10 顆就是 20 次。見 core/ports/rigid_body_api.py 的效能說明。
+        linear_velocities, angular_velocities = self._rigid_body_api.get_velocities(
+            ball_prim_paths
+        )
 
+        for prim_path, (vx, vy, vz), (wx, wy, wz) in zip(
+            ball_prim_paths, linear_velocities, angular_velocities
+        ):
             v_h = math.sqrt(vx**2 + vy**2)
 
             # n̂ × v（n̂=(0,0,1)）＝ (-vy, vx, 0)：由目前線速度反推出的滾動角速度分量

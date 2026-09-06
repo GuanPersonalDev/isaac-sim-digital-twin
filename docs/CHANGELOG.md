@@ -417,3 +417,112 @@ RESET+AIM 合計 3002 → 1169 tick，60Hz 下從 50 秒縮到 19.5 秒。要再
 **次要發現，尚未解決**：修好上面的 bug 後用同一組參數重跑，AIM 不再卡死，但收斂明顯比驗收過的 flat／bridge 案例慢很多——STAGING／NEAR_FINAL 階段大多數 waypoint 都逼近 240 步上限才過，推算整個 AIM 可能要跑 8000~10000+ tick（2~3 分鐘）才會走完，不是幾秒內看得出進展的速度。研判是這組從未測過的大幅 `position_offset` 把逼近走廊推到接近母球避障力場的區域，RMPflow 反應式規劃在那附近收斂變慢（不是卡死，是慢），呼應本專案稍早就記錄過的已知限制：「RMPflow：反應式、每 tick 加速度場、收斂不確定」。真人在 GUI 前觀察的時間如果不夠長，這個「動得很慢」很容易被誤認成「完全不動」。這個問題留給下次 GUI 復測後視情況決定是否要處理（例如收窄 `POSITION_OFFSET_VERTICAL/HORIZONTAL` 的訓練/評估上限，或改善 STAGING/NEAR_FINAL 附近的避障参数）。
 
 ---
+
+---
+
+## GUI FPS 調校（2026-09-06）
+
+使用者回報 GUI 只有 ~15 FPS、手臂關節轉動看起來很慢。這一節記錄整個量測→定位→修正的過程，含所有走進死路的假設。
+
+相關檔案：`scripts/benchmark_gui_frametime.py`（本次新增的量測工具）、
+`core/ports/rigid_body_api.py`、`extension/isaac_sim_impl_6_0/rigid_body_api_impl.py`、
+`core/services/observation_builder.py`、`core/services/ball_motion_monitor.py`、
+`core/services/rolling_resistance_service.py`、
+`extension/billiard_digital_twin/billiard_digital_twin.py`。
+
+### 量測方法
+
+先確認 Isaac Sim 在 headless／無 GUI 的情況下能不能做效能剖析（可以，三種後端本機都已安裝）：
+
+| 方式 | 用途 | 本機位置 |
+|---|---|---|
+| `carb.profiler-cpu.plugin` | Chrome Trace，單一程序寫 `.gz` 檔，完全不需要視窗 | `kit/kernel/plugins/` |
+| `carb.profiler-tracy.plugin` + `capture.exe` | Tracy，client/server，`capture.exe` 是純命令列 | `extscache/omni.kit.profiler.tracy-1.2.0+wx64/bin/` |
+| `isaacsim.benchmark.services` | app_update／physics／render／GPU frametime 的 KPI | `exts/` |
+
+⚠️ `SimulationApp` 的 `profiler_backend` 參數**只認 `["tracy", "nvtx"]`**（原始碼
+`simulation_app.py` L518-549），傳 `"cpu"` 會被靜默忽略；要用 Chrome Trace 後端必須走
+`extra_args`。另外 `carb.profiler-cpu.plugin` 的存檔設定鍵是 `filePath`，不是網路上常見的
+`saveFileName`（實際從 plugin binary 裡撈出來確認）。
+
+最後沒有動用 Tracy——`isaacsim.benchmark.services` 那四個 recorder 的取數方式就夠定位了，
+本次自製的 `scripts/benchmark_gui_frametime.py` 直接照抄它們的訂閱方式：
+
+- app frametime：`carb.eventdispatcher` 訂閱 `omni.kit.app.GLOBAL_EVENT_PRE_UPDATE`
+- physics frametime：`omni.physics.core.get_physics_benchmarks_interface().subscribe_profile_stats_events()`
+- GPU frametime：`omni.hydra.engine.stats.HydraEngineStats().get_gpu_profiler_result()`
+
+### 關鍵洞察：我們自己的 tick 是算在 PhysX Update 裡的
+
+`BilliardExtension` 用 `SimulationManager.register_callback(..., PHYSICS_POST_STEP)` 註冊
+`_on_tick`，也就是 observation 組裝、RMPflow 計算、每顆球的速度讀取全部**發生在物理步進
+內部**，因此整包被算進 `"PhysX Update"` 這個 zone。一開始看到「Physics 佔 App_Update 的
+73.4%」時差點誤判成 PhysX 解算太慢；把 `_on_tick` 單獨計時後才發現它佔了那個 zone 的
+**68.8%**，真正的 PhysX 解算只有 ~6ms。
+
+量測工具用 `gc.get_objects()` 找出活著的 extension 實例再換掉 callback，刻意不去改
+production 程式碼——量測工具不該為了量測污染被量測的對象。
+
+### 根因：逐顆球的 tensor 讀取
+
+`RigidBodyAPIImpl` 為每個 prim path 各建一個單一 prim 的 `RigidPrim` view，
+`get_position()`／`get_linear_velocity()` 每次呼叫都是一次獨立的 tensor 讀取，
+`.list()` 會強制一次 GPU→CPU 同步。實測單次固定成本 0.27–0.38ms，**跟一次讀 1 顆還是
+10 顆幾乎無關**。三個呼叫端每個 tick 合計約 40 次：
+
+| API | 次數/frame | 單次 | 每 frame |
+|---|---|---|---|
+| `get_linear_velocity` | 19.5 | 0.270ms | 5.25ms |
+| `get_position` | 10.0 | 0.384ms | 3.84ms |
+| `get_angular_velocity` | 10.0 | 0.266ms | 2.66ms |
+| | | **合計** | **11.74ms** |
+
+佔 `_on_tick`（14.08ms）的 **83%**。
+
+修法：port 新增 `get_positions(paths)` 與 `get_velocities(paths)`，實作端用
+`RigidPrim(paths=[...])` 包住整批 prim（view 依 path 組合快取重用），三個呼叫端各改成
+一次批次讀取。40 次 → 3 次。
+
+`BallMotionMonitor` 順帶失去「發現有球在動就提前 return」的短路，這是刻意的：短路只有
+在球真的在滾時省得到，而絕大多數 tick（RESET／AIM 期間）球都靜止，那時逐顆版本必定跑滿
+10 次同步；批次版本任何情況都只有 1 次。
+
+### 走進死路的假設（都由實測推翻）
+
+1. **算圖是瓶頸**：`billiard_env.usda`（8.8MB）含整個 SimpleRoom——60 個 mesh、一盞
+   DomeLight（4K HDR 天空）＋一盞 RectLight、16 張貼圖全部從 S3 遠端串流。看起來非常
+   可疑，實際上 GPU frametime 只佔 App_Update 的 24–38%，從頭到尾都不是瓶頸。
+2. **碰撞體太多**：單張桌子 81 個 collider，其中 35 個是 `approximation="none"`（＝原始
+   三角網格）。把 SimpleRoom 底下 59 個 collider 全部關掉 → 20.23 FPS，跟沒關的 20.00
+   完全在雜訊範圍內。**排除**。
+3. **房間的算圖成本**：整個 SimpleRoom 隱藏 → 20.15 FPS。**同樣沒有差別**。
+4. **`updateVelocitiesToUsd` 回寫**：關掉 → 20.93 FPS，邊際效益。
+5. **物理 substep 疊加**：擔心 app frametime 拉長導致每 frame 跑多個 substep 形成惡性
+   循環。實測 `minFrameRate=30`、每 frame 恰好 1.00 個 substep，**沒有這回事**。
+
+### 量測結果
+
+單張 Demo 桌、RTX 4090、i7-12700、RaytracedLighting、1280×720、400 frame：
+
+| # | 設定 | FPS | App_Update | PhysX Update | `_on_tick` |
+|---|---|---|---|---|---|
+| 01 | 原始（Training 桌開著） | **12.01** | 83.3ms | 61.1ms | — |
+| 02 | Training 桌關閉 | 20.00 | 50.0ms | 29.9ms | — |
+| 03 | ＋CPU dynamics | 24.03 | — | — | — |
+| 04 | SimpleRoom collider 全關 | 20.23 | — | — | — |
+| 05 | SimpleRoom 隱藏 | 20.15 | — | — | — |
+| 06 | `updateVelocitiesToUsd=False` | 20.93 | — | — | — |
+| 08 | CPU dynamics（含 tick 計時） | 26.24 | 38.1ms | 20.0ms | 13.78ms |
+| 09 | 同上（含 API 計時） | 25.74 | 38.9ms | 20.1ms | 14.08ms |
+| 11 | **批次讀取**（物理設定不動） | **29.97** | 33.4ms | 15.4ms | **3.41ms** |
+| 10 | **批次讀取＋CPU dynamics** | **36.31** | 27.6ms | 9.4ms | **3.41ms** |
+
+API 呼叫成本 11.74ms/frame → **1.08ms/frame**。
+
+### 為什麼關掉 Training 球檯
+
+`BilliardTable` 不論 Demo 或 Training 都參照同一份 `assets/billiard_env.usda`，那份資產
+含整個 SimpleRoom，所以兩張桌子等於把整個房間連同環境光載入兩次（兩盞 DomeLight 疊在
+一起）。`TRAINING_TABLE_PATH`（`billiard_table_only.usda`，26KB，去掉 SimpleRoom 的版本）
+只有 RL 訓練環境 `rl_task/billiard_rl/` 在用，GUI 這條路徑從來沒用到。Training 路徑在
+GUI Demo 情境下沒有畫面用途，預設關閉；Debug Menu 的 Training toggle 仍可隨時開回來。

@@ -43,3 +43,5 @@ gui_console_utf8.log
 
 # scripts/verify_ur10e_cue_actuator.py 的算圖產出（隨時可重跑產生）
 _actuator_preview/
+# scripts/benchmark_gui_frametime.py 的量測產出（log + JSON，隨時可重跑產生）
+_bench/

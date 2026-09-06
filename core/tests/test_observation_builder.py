@@ -86,7 +86,13 @@ def demo_builder(
 
 
 def _set_ball_world_positions(rigid_body_api, positions_by_prim_path):
+    # ObservationBuilder 改成一次批次讀取（get_positions，見
+    # core/ports/rigid_body_api.py 的效能說明），測試資料仍以 prim path 對應
+    # 座標的形式描述比較好讀。
     rigid_body_api.get_position.side_effect = lambda prim_path: positions_by_prim_path[prim_path]
+    rigid_body_api.get_positions.side_effect = lambda prim_paths: [
+        positions_by_prim_path[prim_path] for prim_path in prim_paths
+    ]
 
 
 class TestObservationBuilderBallPositions:

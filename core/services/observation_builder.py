@@ -42,10 +42,13 @@ class ObservationBuilder(ABC):
         ball_index = 0
         table_x, table_y = self._table_ball_set.get_table_x_y()
 
-        for prim_path in self._table_ball_set.get_ball_prim_paths():
-            world_pos = self._rigid_body_api.get_position(prim_path)
+        # 批次讀取，不逐顆呼叫 get_position()：每次單顆讀取都是一次 GPU→CPU
+        # 同步（見 core/ports/rigid_body_api.py 的效能說明）
+        for world_pos in self._rigid_body_api.get_positions(
+            self._table_ball_set.get_ball_prim_paths()
+        ):
             ball_positions.append(world_pos)
-            
+
             relative_table_pos_x = world_pos[0] - table_x
             relative_table_pos_y = world_pos[1] - table_y
             default_pos_x, default_pos_y = default_pos[ball_index]
