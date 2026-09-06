@@ -43,11 +43,13 @@ class TestComputeRequiredTipSpeedForCueSlide:
 
         assert tip_speed * calc.CUE_SLIDE_MEASURED_SPEED_RATIO == pytest.approx(cue_ball_speed)
 
-    def test_reproduces_the_flat_case_measurement(self):
-        """實測數據（scripts/test_ur10e_table_flat.py）：指令桿尖速度
-        1.5116 m/s 打出母球 2.6200 m/s。反過來要打出 2.6200 m/s，
-        這個函式就該回報 1.5116 m/s。"""
-        assert calc.compute_required_tip_speed_for_cue_slide(2.6200) == pytest.approx(1.5116, abs=0.001)
+    def test_lands_within_measured_scatter_of_the_flat_case(self):
+        """實測比值有 ±5% 的 run-to-run 散布（見 CUE_SLIDE_MEASURED_SPEED_
+        RATIO 的三筆數據），所以驗收的是「算出來的指令速度落在三次實測
+        指令速度的範圍內」，不是釘死某一次的數值。"""
+        tip_speed = calc.compute_required_tip_speed_for_cue_slide(1.995)
+
+        assert 1.1509 <= tip_speed <= 1.2297
 
     def test_commands_lower_speed_than_momentum_theory(self):
         """理論公式把球桿當自由的 0.5kg 物體，低估了被 drive 硬撐住的等效

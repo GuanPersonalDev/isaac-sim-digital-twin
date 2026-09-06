@@ -45,12 +45,11 @@ def compute_required_tip_speed(cue_ball_speed: float) -> float:
     return cue_ball_speed / momentum_ratio
 
 
-CUE_SLIDE_MEASURED_SPEED_RATIO = 1.7333
+CUE_SLIDE_MEASURED_SPEED_RATIO = 1.7175
 """UR10e 線性滑軌推桿機構實測的「母球初速 ÷ 指令桿尖速度」端到端比值。
 
 `compute_required_tip_speed()` 那套 `(1+e)·M/(M+m)`＝1.3197 的理論比值
-**不適用於這個機構**，實測（`scripts/test_ur10e_table_flat.py`：指令桿尖
-速度 1.5116 m/s → 母球初速 2.6200 m/s）差了 31%，兩個原因疊加：
+**不適用於這個機構**，實測差了 31%，兩個原因疊加：
 
 1. 公式假設球桿是質量 0.5kg 的自由物體，但滑軌關節的 drive stiffness
    是 1e5，撞擊瞬間球桿是被驅動器硬撐住的，等效質量遠大於 0.5kg
@@ -60,10 +59,22 @@ CUE_SLIDE_MEASURED_SPEED_RATIO = 1.7333
    速度，中段就得超過），而母球實際是在 q≈0 前一點就被打到，吃到的是
    還沒降回終點值的中段速度。
 
-兩者都跟指令速度成正比（quintic 的正規化剖面與 v1 無關，見
-`Ur10eCueSlideController._step_backswing()` 的 `T=|q0|/v1`），所以用單一
-線性比值校準即可，不需要拆開建模。這是端到端量測結果，改動後擺距離、
-drive 增益或 quintic 邊界條件之後都要重新量。"""
+⚠️ 這個比值有 **±5% 左右的 run-to-run 散布**，取值是三次實測的平均，
+不是單次量測。`scripts/test_ur10e_table_flat.py` 的三次數據：
+
+| 指令桿尖速度 | 接觸時的 q | 母球初速 | 比值 |
+|---|---|---|---|
+| 1.5116 m/s | -0.00053 | 2.6200 m/s | 1.7333 |
+| 1.1509 m/s | +0.00172 | 1.8672 m/s | 1.6224 |
+| 1.2297 m/s | -0.00824 | 2.2094 m/s | 1.7967 |
+
+散布的來源是**接觸落在 physics tick 內的哪個位置**：quintic 在終點附近
+速度變化陡峭，母球在 q=-0.008 或 q=+0.002 被打到，吃到的瞬時速度差很多。
+比值跟指令速度沒有單調關係（第三點的指令速度介於前兩點之間，比值卻最
+高），所以不要拿少數幾點去擬合「比值對速度的趨勢」——那是在擬合雜訊。
+要真的收斂，得改動接觸判定本身（例如讓 quintic 在 q=0 附近速度平坦），
+不是繼續調這個常數。改動後擺距離、drive 增益或 quintic 邊界條件之後
+都要重新量。"""
 
 
 def compute_required_tip_speed_for_cue_slide(cue_ball_speed: float) -> float:
