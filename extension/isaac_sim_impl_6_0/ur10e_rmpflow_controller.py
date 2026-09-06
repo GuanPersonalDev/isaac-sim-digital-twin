@@ -110,6 +110,34 @@ class Ur10eRmpflowController:
     _ORIENTATION_TOLERANCE_RAD = 0.02
     _MAX_STEPS_PER_WAYPOINT = 240
 
+    # 中繼 waypoint「算不算走到了」的容許值，刻意比上面兩個鬆很多。
+    #
+    # 中繼點只是用來引導路徑形狀（順便讓避障有機會作用），**最終精度完全
+    # 由收尾階段負責**（_start_finishing_phase() → 解析 IK／joint-space
+    # finish／差動 IK 保底），所以中繼點根本不需要 5mm 這種精度。而
+    # RMPflow 是漸近收斂：要把誤差壓到 5mm，手臂等於在每一個中繼點都必須
+    # 減速到幾乎停住再重新加速——這正是「手臂關節轉動看起來非常慢」的主因。
+    #
+    # scripts/profile_ur10e_waypoint_tolerance.py 實測（RESET 到 HOME，
+    # 同一段動作只改這兩個值）：
+    #
+    #   中繼容許值              RESET tick   模擬秒數   收尾後 HOME 關節誤差
+    #   0.005m / 0.02rad（舊）      902       15.0s          0.001876 rad
+    #   0.020m / 0.05rad            494        8.2s          0.003269 rad
+    #   0.050m / 0.10rad            334        5.6s          0.002984 rad
+    #   0.100m / 0.20rad            211        3.5s          0.001899 rad
+    #
+    # 四組的最終誤差都遠低於驗收門檻 _FINAL_ORIENTATION_TOLERANCE_RAD
+    # （0.005 rad），最寬鬆那組甚至跟最嚴格那組一樣好——證實中繼點的精度
+    # 是白花的，放寬完全不犧牲最終精度。
+    #
+    # 取 0.05m/0.10rad（2.7 倍加速）而不是更快的 0.1m/0.2rad：中繼點還是
+    # 有引導路徑形狀的作用，留一些餘裕比極限加速重要，而且這一組是實際跑
+    # 過 flat／bridge 完整驗收（達成率、球桿-母球碰撞次數、手臂本體零碰撞）
+    # 確認過的值。要再快可以往 0.1m/0.2rad 調，但要重跑那兩支驗收。
+    _WAYPOINT_POSITION_TOLERANCE_M = 0.05
+    _WAYPOINT_ORIENTATION_TOLERANCE_RAD = 0.10
+
     # 最終姿態需要比中繼 waypoint 更嚴格的方向精度：球桿 1.35m
     # （CUE_STICK_GRIP_TO_TIP）的槓桿臂會把末端方向誤差等比放大，
     # 0.02rad 換算桿尖橫向誤差最壞可達 2.7cm，接近母球半徑（2.857cm）。
@@ -758,12 +786,12 @@ class Ur10eRmpflowController:
         live_orientation = np.asarray(live_orientation[0])
 
         position_error = float(np.linalg.norm(live_position - target_position))
-        if position_error > self._POSITION_TOLERANCE_M:
+        if position_error > self._WAYPOINT_POSITION_TOLERANCE_M:
             return False
 
         dot = float(np.clip(np.abs(np.dot(live_orientation, target_orientation)), -1.0, 1.0))
         orientation_error = 2.0 * np.arccos(dot)
-        return orientation_error <= self._ORIENTATION_TOLERANCE_RAD
+        return orientation_error <= self._WAYPOINT_ORIENTATION_TOLERANCE_RAD
 
     def _set_end_effector_target(self, target_position, target_orientation) -> None:
         self._rmp_flow.set_end_effector_target(

@@ -326,6 +326,53 @@ flat 驗收的達成率過了（92.3%），但決策 7 的「母球碰撞事件�
 
 ---
 
+## extension/isaac_sim_impl_6_0/ur10e_rmpflow_controller.py（續）
+
+### 中繼 waypoint 容許值太緊 —— 「手臂轉動非常慢」的主因（2026-09-06）
+
+GUI 回報 FPS 只有約 15、手臂關節轉動看起來非常慢。先釐清這是**兩個可以分開的問題**：Kit 預設一幀跑一個 physics step，所以 FPS 低只是「整段變慢動作」；但即使 tick 率正常，動作本身需要的 tick 數也太多——實測 RESET 要 902 tick，換算模擬時間 **15 秒**才把手臂移到 HOME，真實 UR10e 這種動作 2~3 秒就夠了。
+
+**先量再改**（`scripts/profile_ur10e_tick_cost.py`／`profile_ur10e_tick_ablation.py`）：
+
+| 項目 | 成本 |
+|---|---|
+| `simulation_app.update()`（headless、閒置、單桌） | 11.2 ms |
+| 同上但手臂運動中（無我方 callback） | 13.4 ms |
+| 我們的 `controller.step()` 全部 | 4.71 ms |
+| 實際每 tick | 26.8 ms（37 tick/秒）|
+
+ablation 顯示把 `_sync_dynamic_obstacles()`／`update_world()`／`switch_dof_control_mode()` 三項全部拿掉也只省 4.71ms（37→45 tick/秒）——**瓶頸不在我們的 callback**，82% 是 Isaac Sim 基礎場景（算圖＋物理）的固定開銷，那個改不動。第一版量測還踩到一個陷阱：在緊迴圈裡連續呼叫 tensor API 量到的是**快取讀取**（`get_dof_positions()` 只有 0.009ms），要在每次呼叫前插入真實 physics step 才量得到含 GPU 同步的真實成本。
+
+真正能改的是**動作需要的 tick 數**。根因：`_is_current_waypoint_converged()` 沿用 `_POSITION_TOLERANCE_M=0.005`（5mm），每一個中繼 waypoint 都要收斂到 5mm 才前進。RMPflow 是漸近收斂，要壓到 5mm 等於手臂在每個中繼點都減速到幾乎停住再重新加速。但中繼點只是引導路徑形狀，**最終精度本來就由收尾階段（解析 IK／joint-space finish）負責**。
+
+`scripts/profile_ur10e_waypoint_tolerance.py` 掃描（RESET 到 HOME，只改中繼容許值）：
+
+| 中繼容許值 | RESET tick | 模擬秒數 | 收尾後 HOME 關節誤差 |
+|---|---|---|---|
+| 0.005m / 0.02rad（舊） | 902 | 15.0s | 0.001876 rad |
+| 0.020m / 0.05rad | 494 | 8.2s | 0.003269 rad |
+| 0.050m / 0.10rad | 334 | 5.6s | 0.002984 rad |
+| 0.100m / 0.20rad | 211 | 3.5s | 0.001899 rad |
+
+四組最終誤差都遠低於驗收門檻 0.005 rad，最寬鬆那組甚至跟最嚴格那組一樣好——中繼點的精度是白花的。新增 `_WAYPOINT_POSITION_TOLERANCE_M=0.05`／`_WAYPOINT_ORIENTATION_TOLERANCE_RAD=0.10` 只給 `_is_current_waypoint_converged()` 用，收尾階段的 `_POSITION_TOLERANCE_M`／`_FINAL_ORIENTATION_TOLERANCE_RAD` 完全不動。
+
+⚠️ 這支掃描腳本第一版忘了呼叫 `set_robot_base_pose()`，四組全部跑滿 3000 tick、關節誤差 1.07 rad——量到的完全是假的（RMPflow 以為底座在原點）。補上之後基準組精確重現 902 tick 才確認量測有效。
+
+改後完整驗收（兩支都 PASS，所有標準都守住）：
+
+| 項目 | flat 舊 → 新 | bridge 舊 → 新 |
+|---|---|---|
+| RESET | 902 → **340** | 902 → **340** |
+| AIM | 2100 → **829** | 1493 → **819** |
+| AIM 位置誤差 | 0.00083 → 0.00185 m（容許 0.01） | 0.00126 → 0.00204 m |
+| 達成率 | 93.5% → 93.1% | 109.2% → 109.1% |
+| 球桿-母球碰撞 | 1 → 1 | 1 → 1 |
+| 手臂本體碰撞 | 0 → 0 | 0 → 0 |
+
+RESET+AIM 合計 3002 → 1169 tick，60Hz 下從 50 秒縮到 19.5 秒。要再快可以往 0.1m/0.2rad 調（RESET 211 tick），但要重跑這兩支驗收。
+
+---
+
 ## extension/isaac_sim_impl_6_0/articulation_api_impl.py（續）
 
 ### `did_last_motion_timeout()` 對 UR10e 提早誤判逾時（2026-09-06，步驟 9 GUI 首測）
