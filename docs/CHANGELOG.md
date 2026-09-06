@@ -246,6 +246,14 @@ policy 起點附近整片都是 -1.5，唯一的梯度是命中率約 4.5% 的�
 
 即使只是要把沉降/多球接觸解算的數值雜訊「夾到 0」，只要每個 tick 持續呼叫 `set_velocities()`，這個顯式寫入本身就會讓 PhysX 沒機會把球放進 sleep 狀態——接觸解算會持續在雜訊量級重新產生類似大小的殘留（永遠不是精確的 0）。實測回報：9 顆 rack 球卡在 `vz≈0.0687` 永久不動，`is_ball_moving` 永遠是 True，狀態機卡死在 IDLE。修法：低於 `SETTLING_NOISE_CEILING` 的雜訊完全跳過寫入，交還給 PhysX 自己的 sleep 機制處理（純物理環境不受干擾時會在 0.4 秒內自然收斂到 0 並保持 sleep）。
 
+### 兩個常數為何在模組層級（`ROLLING_FRICTION_COEFF`／`SETTLING_NOISE_CEILING`，#121 B-6）
+
+RL 訓練環境（1024 env × 10 球，每 physics tick 上萬次 Python 呼叫）不能重用本類別，改用 torch 向量化重寫，但兩份實作用的物理常數必須是同一個值，否則會出現「Demo 端跟訓練端的滾動摩擦係數各自改了一次」這種靜默漂移。做法是把常數提到模組層級（而不是留在 `__init__` 的預設引數裡），訓練端直接 `import` 使用；因此兩者都是公開（非底線開頭）名稱。
+
+`SETTLING_NOISE_CEILING` 的量級是實測出來的：沉降/多球接觸解算殘留的線速度雜訊約 1e-7~1e-5 m/s、角速度殘留雜訊約 1e-4~1e-3 rad/s，遠低於 `NEGLIGIBLE_SPEED_THRESHOLD`／`NEGLIGIBLE_SPIN_THRESHOLD`（那兩個是「已經停止，直接夾到 0」的**視覺**門檻，跟這裡「分辨真殘留 vs 純數值雜訊」是不同層級的判斷——#203 回報的門檻附近低速蠕動量級明顯大於這裡的雜訊上限，不會被誤判跳過）。
+
+訓練端在這個門檻內的行為與本類別**刻意不同**：本類別完全跳過寫入，把收斂交還給 PhysX sleep；訓練端的張量 API 是整塊寫入，沒辦法逐球跳過，因此改為主動把三軸速度寫成精確的 0（含 vz，本類別是原封不動傳遞），不需要 sleep，只需要 `BallMotionMonitor.SPEED_THRESHOLD` 讀得到 0。
+
 ---
 
 ## core/services/ur10e_swing_strategy.py
