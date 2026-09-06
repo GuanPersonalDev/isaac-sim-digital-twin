@@ -90,10 +90,11 @@ _MAX_STEPS_PER_ACTION = 4000
 # 卡在剛好 4000 步逾時，量到的姿態離目標 1m+，但那其實是「還沒跑完」，
 # 不是真的收斂失敗）。AIM 專用一個更寬裕的上限，RESET／STRIKE 不需要
 # 這麼多，維持原本的 _MAX_STEPS_PER_ACTION。
-# 2026-09-05 補充：solver iteration count 從預設拉高到 128（見
-# ur10e_rmpflow_controller.py 同日補充，修正 wrist_2_joint 耦合動力學
-# 殘留誤差）之後，每個 waypoint 收斂明顯變慢（STAGING 單一階段就要
-# 4000+ 步），8000 步的上限不夠讓兩階段 AIM 真的跑完 FINAL_APPROACH。
+# 2026-09-05 補充：solver iteration count 從預設拉高到 128 之後，每個
+# waypoint 收斂明顯變慢（STAGING 單一階段就要 4000+ 步），8000 步的上限
+# 不夠讓兩階段 AIM 真的跑完 FINAL_APPROACH，因此拉到 20000。
+# 2026-09-06 補充：那個 128 設定已經移除（見 ur10e_rmpflow_controller.py），
+# AIM 實測只要約 2100 步，這個上限現在只是寬鬆的安全網，不再是緊繃值。
 _MAX_STEPS_PER_AIM_ACTION = 20000
 
 

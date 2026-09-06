@@ -145,16 +145,8 @@ class Ur10eRmpflowController:
         self._end_effector_rigid_prim = RigidPrim(paths=end_effector_prim_path)
         self._rmp_flow = _load_rmp_flow()
 
-        # 拉高 solver iteration count：7-DOF 耦合鏈裡各關節 stiffness
-        # 量級差異大（shoulder ~187k vs wrist/elbow boost 後 1e6）時，
-        # 預設 iteration count 不足以讓 TGS 求解器正確收斂，會穩定收斂到
-        # 一個數值上自洽但錯誤的解（跟本專案 WAM7 除錯
-        # scripts/probe_first_case_residual_error.py 記錄過的同一類假影
-        # 特徵）。128 是能跨過收斂門檻、同時不用 255 這種極端值的折衷值；
-        # 代價是每個 waypoint 收斂變慢，已在呼叫端
-        # （scripts/test_ur10e_table_flat.py 的 _MAX_STEPS_PER_AIM_ACTION）
-        # 加大步數預算吸收，數據見 docs/CHANGELOG.md。
-        self._articulation.set_solver_iteration_counts(128, 128)
+        # 這裡曾經呼叫 set_solver_iteration_counts(128, 128)，2026-09-06
+        # 實測確認已經不需要，移除（見 docs/CHANGELOG.md）。
 
         # 提前呼叫一次 switch_dof_control_mode()，用 USD 原始烘焙增益值
         # 把 Articulation 內部的「default gains」快取填好，避免這個快取
