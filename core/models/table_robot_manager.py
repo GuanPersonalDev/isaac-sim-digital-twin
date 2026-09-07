@@ -33,7 +33,17 @@ class TableRobotManager:
     _CUE_SLIDE_JOINT_DRIVE_DAMPING = 1.0e4
     _CUE_SLIDE_JOINT_DRIVE_MAX_FORCE = 1.0e6
 
-    _ROBOT_OFFSET_FROM_TABLE_CENTER = (1.5, 0.0, 0.0)
+    # 建立當下擺放底座的位置（相對球檯中心），也是全專案唯一的預設站位
+    # 來源——需要初始基座位置的地方一律引用這個常數，不要另外寫死數值。
+    # UR10e 每次 AIM 都會用 `ur10e_placement_calculator.compute_base_
+    # position()` per-shot 重新擺放底座，這個值只決定「第一次 AIM 之前」
+    # 手臂站在哪，取一次實測 AIM 算出來的底座位置當預設，開場的姿態就
+    # 已經接近常用位置。沿革與數值來源見 docs/CHANGELOG.md。
+    #
+    # Z 分量為 0 不是巧合：`compute_base_position()` 的 base_z 一律取
+    # `table_z`，而 `BilliardTable.get_table_center()` 的 Z 就是同一個
+    # `_z_pos`，兩者相減必然為 0（底座跟桌面同高）。
+    _ROBOT_OFFSET_FROM_TABLE_CENTER = (-0.03562624841616952, -2.8926616547285984, 0.0)
 
     def __init__(
         self,

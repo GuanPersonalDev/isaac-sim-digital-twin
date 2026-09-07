@@ -129,8 +129,12 @@ def _run() -> None:
         simulation_app.update()
 
     # ⚠️ base_position 沿用 TableRobotManager._ROBOT_OFFSET_FROM_TABLE_CENTER
-    # 的既有公式（table_center=(0,0,0) 時機器人在 (1.5,0,0)），這次不做基座
-    # 最佳化，固定用這個值即可——見 plan 的範圍界定。
+    # 的既有公式（table_center=(0,0,0)，所以基座座標就等於這個偏移量本身），
+    # 這次不做基座最佳化，固定用這個值即可——見 plan 的範圍界定。
+    #
+    # ⚠️ 這支腳本量的是揮桿速度，站位改變會影響量測結果：2026-09-07 調整過
+    # 一次預設站位（見 docs/CHANGELOG.md），跨越那次改動的量測數字不能直接
+    # 互相比較。
     base_position = tuple(TableRobotManager._ROBOT_OFFSET_FROM_TABLE_CENTER)
     print(f"[iso] base_position={base_position}")
 

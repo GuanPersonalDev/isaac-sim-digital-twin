@@ -211,10 +211,8 @@ def compute_joint_targets(shot_angle_deg: float) -> list[float]:
     `set_dof_position_targets(...)`，跟既有 `move_to_home()` 走同一種機制，
     不需要跑差動 IK。
 
-    只是資料層的純函式——尚未接進任何呼叫端（`TableRobotManager` 仍用固定的
-    `_ROBOT_OFFSET_FROM_TABLE_CENTER`），要接的話還需要決定「逐球重新定位」
-    要放在初始化流程的哪個時間點，這個決定本身列為 #180 第九節明文排除的範圍
-    （本次不處理實際重新定位的機構或實作），留給後續 issue。
+    只是資料層的純函式——尚未接進任何呼叫端，WAM7 的逐球基座重定位還沒實作
+    （見 docs/CHANGELOG.md）。
     """
     base_yaw_rad = math.radians(shot_angle_deg) + math.pi / 2.0
     return [base_yaw_rad, *CANONICAL_REST_JOINTS]

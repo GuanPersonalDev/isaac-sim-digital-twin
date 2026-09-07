@@ -9,19 +9,12 @@ logger = logging.getLogger(__name__)
 _BASE_STANDOFF_M = 0.8
 """UR10e 基座沿擊球方向水平反方向、從 wrist 目標退開的距離。
 
-決策 4 原本假設 UR10e 固定基座位置（1.3m 可達距離夠大，不需要像
-WAM7/UR3e 每一擊都重算基座）。實測發現：wrist 目標本身就在離母球
-CUE_STICK_GRIP_TO_TIP=1.35m 遠的地方（球桿本身的長度），加上球檯各處
-位置差異，固定基座（沿用 WAM7 的 TableRobotManager._ROBOT_OFFSET_
-FROM_TABLE_CENTER=(1.5,0,0)）對某些母球位置離目標遠達 2.6m，遠超過
-UR10e 的可達距離——純幾何上到不了，不是 RMPflow 參數能調出來的。
-
-修正：改回 per-shot 重新計算基座位置（推翻決策 4 的固定基座假設），但
-比 WAM7/UR3e 簡單很多——UR10e 靠 RMPflow 自己解完整 6-DOF IK，不需要
-像 UR3e 那樣搜尋特定關節組合，也不需要像 WAM7 那樣算 base_yaw 關節
-目標，只需要確保 wrist 目標落在舒適的可達範圍內（留一些操作餘裕，不要
-让手臂伸到接近完全打直的邊界姿態）。做法：從 wrist 目標沿擊球方向的
-水平反方向（握把那一側）退開 _BASE_STANDOFF_M，Z 維持跟桌面同高。
+UR10e 每一擊都重新計算基座位置（不是固定基座，沿革見 docs/CHANGELOG.md）：
+從 wrist 目標沿擊球方向的水平反方向（握把那一側）退開 _BASE_STANDOFF_M，
+Z 維持跟桌面同高。只需要確保 wrist 目標落在舒適的可達範圍內（留一些操作
+餘裕，不要讓手臂伸到接近完全打直的邊界姿態）——UR10e 靠 RMPflow 自己解
+完整 6-DOF IK，不需要像 UR3e 那樣搜尋特定關節組合，也不需要像 WAM7 那樣
+算 base_yaw 關節目標。
 
 站距下限由 AIM 的逼近走廊決定，不是只看可達性：AIM 沿桿軸逼近的起點
 （中繼姿態／逼近緩衝點）都落在 wrist 目標往後 D 公尺處，也就是離基座

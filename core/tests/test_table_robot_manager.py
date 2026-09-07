@@ -57,11 +57,15 @@ class TestTableRobotManager:
             robot_arm_class=robot_arm_class,
         )
 
+        # table_center (2, 3, 0) 疊上 _ROBOT_OFFSET_FROM_TABLE_CENTER
+        # (-0.03562624841616952, -2.8926616547285984, 0.0)。寫死浮點值是
+        # 刻意的——用常數自己算會變成拿同一條公式驗自己，就驗不到「有沒有
+        # 真的把 offset 疊上去」。調整預設站位時這裡要跟著改。
         robot_arm_class.assert_called_once_with(
             "/World/DemoTable",
             stage_api,
             articulation_api,
-            (3.5, 3.0, 0.0),
+            (1.9643737515838304, 0.10733834527140163, 0.0),
         )
 
     def test_table_robot_manager_get_robot_prim_path(

@@ -726,3 +726,45 @@ headless 實測（`scripts/verify_joint_state_debug_getters.py`）確認：UR10e
 `get_dof_positions_for_debug()` 同一類——僅供除錯用，不進 `ArticulationAPI` 正式介面。
 `billiard_digital_twin.py` 新增 `get_joint_state_text()` 組字串，接上 Debug Menu 新增
 的關節狀態顯示（取代先前拿掉的球速度顯示欄位，位置沿用同一個 Label）。
+
+---
+
+## core/models/table_robot_manager.py — 預設基座站位改為 AIM 實測值（2026-09-07）
+
+`_ROBOT_OFFSET_FROM_TABLE_CENTER` 從 `(1.5, 0.0, 0.0)` 改為
+`(-0.03562624841616952, -2.8926616547285984, 0.0)`（相對球檯中心）。
+
+**動機**：基座只在 AIMING 時才由 `ur10e_placement_calculator.compute_base_position()`
+反推位置，舊的預設站位離實際瞄準位置很遠，Demo 一開場會看到手臂從一個明顯不自然的
+地方大幅移動過去。新值是實測一次 AIM 算出來的底座位置，開場姿態就已經接近常用位置。
+UR10e 每一擊仍然 per-shot 重算並 `reposition()`，這個常數只決定「第一次 AIM 之前」
+手臂站在哪。
+
+**兩個看起來可疑但正確的地方**：
+
+- **Z 分量為 0 不是巧合**：`compute_base_position()` 的 `base_z` 一律取 `table_z`，
+  而 `BilliardTable.get_table_center()` 的 Z 就是同一個 `_z_pos`，兩者相減必然為 0
+  （底座跟桌面同高）。
+- **y ≈ −2.89 遠超過 UR10e 1.3m 可達距離，但量級正確**：底座不需要搆到桌心。wrist
+  目標離母球有球桿長度 `CUE_STICK_GRIP_TO_TIP = 1.35m`，底座再沿擊球反方向退
+  `_BASE_STANDOFF_M = 0.8m`，所以底座離母球約 2.15m 是設計值；母球在桌邊時算出
+  −2.89 落在預期範圍內。
+
+**單一來源**：需要初始基座位置的地方一律引用 `TableRobotManager.
+_ROBOT_OFFSET_FROM_TABLE_CENTER`，不再有任何地方寫死數值。這次一併清掉四處還寫著
+舊值 `(1.5, 0, 0)` 的註解（`core/services/ur10e_placement_calculator.py`、
+`core/services/base_placement_calculator.py`、`scripts/verify_ur10e_rmpflow_aim.py`、
+`scripts/profile_ur10e_waypoint_tolerance.py`），它們的完整脈絡本來就已經分別記在
+本文件的「`ur10e_placement_calculator` 基座策略調整（2026-09-03）」（決策 4 固定
+基座假設的推翻）與「`move_to_pose()` — 方向也需逐段內插（2026-09-03）」兩條，不重複貼。
+`core/services/base_placement_calculator.py` 的 `compute_joint_targets()` 仍只是資料層
+純函式，WAM7 的逐球基座重定位還沒接上任何呼叫端（#180 第九節明文排除的範圍）。
+
+**連帶影響**：`scripts/test_isolated_swing_speed.py` 直接把這個常數當 `base_position`
+量揮桿速度，跨越這次改動的量測數字不能互相比較（已在該處加註）。其餘引用這個常數的
+`scripts/` 腳本是在模擬「reposition 之前的初始狀態」，跟著變才是對的。
+
+**驗證**：`core/tests` 738 個全過。`core/tests/test_table_robot_manager.py` 的期望值
+（`table_center` 疊上 offset）跟著更新；`core/tests/test_table_session.py` 原本用
+`(1.5, 0.0, 0.0)` 當 mock 回傳值，容易被誤讀成預設站位，改成明顯是假的 `(1.0, 2.0, 3.0)`
+——那個測試驗的是「有沒有把 `robot_manager` 給的位置原封不動同步給 RMPflow」，值本身不重要。

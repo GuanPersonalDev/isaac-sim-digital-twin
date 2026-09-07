@@ -211,12 +211,16 @@ class TestDemoTableSession:
     ):
         """第一個動作 RESET 會用 RMPflow 把 HOME 關節角換算成世界座標目標，
         沒先同步底座位姿的話 RMPflow 會當底座在原點。"""
-        robot_manager.get_initial_robot_base_position.return_value = (1.5, 0.0, 0.0)
+        # 座標值本身不重要（刻意用一個明顯是假的值，避免被誤讀成預設站位——
+        # 真正的預設值只有 TableRobotManager._ROBOT_OFFSET_FROM_TABLE_CENTER
+        # 一個來源）：這裡驗的是有沒有把 robot_manager 給的位置原封不動同步
+        # 給 RMPflow。
+        robot_manager.get_initial_robot_base_position.return_value = (1.0, 2.0, 3.0)
 
         demo_table_session.initialize_articulation()
 
         articulation_api.set_robot_base_pose.assert_called_once_with(
-            [1.5, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
+            [1.0, 2.0, 3.0], [1.0, 0.0, 0.0, 0.0]
         )
 
     def test_registers_obstacles_and_base_pose_only_after_initialize(

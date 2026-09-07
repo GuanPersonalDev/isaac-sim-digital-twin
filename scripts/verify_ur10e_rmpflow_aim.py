@@ -15,23 +15,9 @@ waypoint 拆分機制在真實使用情境下能不能收斂。
 cue_ball=(-0.036, -0.752) 是實際 GUI Break shot demo 開局母球位置（見
 scripts/test_flat_ur3e_table.py 同一個常數的說明），不是隨便挑的。
 
-2026-09-03 修正歷程：
-1. 第一版用決策 4 的固定基座偏移
-   （TableRobotManager._ROBOT_OFFSET_FROM_TABLE_CENTER=(1.5,0,0)）實測
-   發現 wrist 目標距離固定基座遠達 2.6m，遠超過 UR10e 1.3m 可達距離，
-   純幾何上到不了（詳見 core/services/ur10e_placement_calculator.py
-   模組說明）。改回 per-shot 重新計算基座
-   （core/services/ur10e_placement_calculator.py compute_base_position()，
-   推翻決策 4 的固定基座假設，但比 WAM7/UR3e 簡單——只需要確保 wrist
-   目標落在可達範圍內，不用搜尋特定關節組合）。
-2. 換上正確基座後仍卡在約 0.75m 殘留誤差不收斂——這次目標本身在可達
-   範圍內，問題出在 Ur10eRmpflowController.move_to_pose() 原本只內插
-   位置、方向從第一段就鎖定最終目標，跟高架橋案例真正需要的傾斜方向
-   互相拉扯。改成方向也用 slerp 逐段內插（見該方法 docstring）後：
-   16 個中繼 waypoint 全部收斂，最終誤差 0.00189m，PASS。
-
 結論：waypoint 拆分機制（位置線性內插＋方向 slerp 內插）＋per-shot 基座
 重算，用真實 AIM 目標（cue_ball=(-0.036,-0.752) 的高架橋案例）驗證通過。
+2026-09-03 的修正歷程（含中途踩到的兩個坑）見 docs/CHANGELOG.md。
 
 跑法：
     ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \

@@ -103,7 +103,8 @@ def _run() -> None:
     articulation_api.register_dynamic_sphere_obstacle(ball_prim_path, ball_radius)
 
     # ⚠️ 一定要先同步底座位姿，否則 RMPflow 會以為底座在原點、實際在
-    # table_center+(1.5,0,0)，move_to_home() 追的是錯的世界座標，永遠不會
+    # table_center+_ROBOT_OFFSET_FROM_TABLE_CENTER，move_to_home() 追的是
+    # 錯的世界座標，永遠不會
     # 收斂（第一版沒加，四組容許值全部跑滿 3000 tick、關節誤差 1.07 rad，
     # 量到的完全是假的）。跟 DemoTableSession._sync_initial_robot_base_pose()
     # 同一件事。
