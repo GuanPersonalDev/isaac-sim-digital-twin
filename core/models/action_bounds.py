@@ -38,6 +38,10 @@ CUE_BALL_PLACEMENT_Y = (-1.241425, -0.635)
 #    Milestone B 改回整圈時，任何殘留假設會大聲失敗而不是靜默算出越界值。
 SHOT_ANGLE = (-30.0, 30.0)
 
+# 🧭 手動擊球參數面板（#115）不受這條收窄約束——它不走 decode_rl_action()／
+#    normalize_action() 的正規化路徑，用的是自己的一把尺，見
+#    `core/models/manual_shot_bounds.py` 檔案級 docstring 的「兩把尺」說明。
+
 # 母球目標初速（m/s），不是球桿桿尖速度。
 #
 # 上限來源：實測 Barrett WAM 差動 IK 桿尖峰值速度 2.5302 m/s，套用真實撞球
@@ -91,7 +95,7 @@ ACTION_BOUNDS = (
 ACTION_LOW = [low for low, _ in ACTION_BOUNDS]
 ACTION_HIGH = [high for _, high in ACTION_BOUNDS]
 
-# 中點式反正規化的兩個係數（見 `rl_action_decoder._denormalize`）。
+# 中點式反正規化的兩個係數（見 `rl_action_decoder.denormalize_axis`）。
 #
 # 需要換算尺度的呼叫端一律引用這兩個常數，**不要**自己從 ACTION_BOUNDS 重算
 # (high ± low) / 2——那就是第二份實作，而換算漂移不會報錯（#228）。

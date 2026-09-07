@@ -115,7 +115,7 @@ def decode_rl_action(
     )
 
     physical = [
-        _denormalize(value, index) for index, value in enumerate(normalized)
+        denormalize_axis(value, index) for index, value in enumerate(normalized)
     ]
 
     return Action(
@@ -150,10 +150,10 @@ def normalize_action(action: Action) -> list[float]:
         *validate_2d_value(action.position_offset, "position_offset"),
     ]
 
-    return [_normalize(value, index) for index, value in enumerate(physical)]
+    return [normalize_axis(value, index) for index, value in enumerate(physical)]
 
 
-def _denormalize(value: float, index: int) -> float:
+def denormalize_axis(value: float, index: int) -> float:
     """正規化域 `[-1, 1]` → 第 index 維的物理域。
 
     採中點式 `center + x * half_span` 而非端點式
@@ -161,10 +161,21 @@ def _denormalize(value: float, index: int) -> float:
     退化成純等比縮放，圓形裁切保住的方向能精確帶到物理域；端點式有加減
     相消（x = 0.1 會算出 0.05000000000000004），兩軸誤差不對稱就會把圓
     壓歪。代價是端點不再位元精確，比較時用近似值。
+
+    公開介面：除了本模組內的 `decode_rl_action()`，`shot_panel_input_mapper.py`
+    的手動擊球參數面板（#115）也借用這個函式做偏移兩維（上下／左右）的尺度
+    換算——面板不走 `decode_rl_action()` 整條正規化管線，但換算偏移用的尺
+    跟 RL 是同一把（`action_bounds.POSITION_OFFSET_VERTICAL/HORIZONTAL`），
+    沒有理由重寫一次乘法。
     """
     return ACTION_CENTER[index] + value * ACTION_HALF_SPAN[index]
 
 
-def _normalize(value: float, index: int) -> float:
-    """第 index 維的物理域 → 正規化域 `[-1, 1]`，`_denormalize` 的反函式。"""
+def normalize_axis(value: float, index: int) -> float:
+    """第 index 維的物理域 → 正規化域 `[-1, 1]`，`denormalize_axis` 的反函式。
+
+    公開介面：跟 `denormalize_axis` 同一個理由，手動擊球參數面板（#115）的
+    `shot_panel_input_mapper.circle_pixels_from_offset()` 也借用這個函式把
+    `Action.position_offset` 換算回畫面像素，不自己重算一次除法。
+    """
     return (value - ACTION_CENTER[index]) / ACTION_HALF_SPAN[index]

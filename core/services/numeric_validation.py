@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 from numbers import Real
 
 def validate_finite_number(
@@ -21,7 +22,7 @@ def validate_max_offset(value: float) -> float:
     return numeric_value
 
 def validate_2d_value(
-    values: list[float],
+    values: Sequence[float],
     field_name: str,
 ) -> tuple[float, float]:
     if len(values) < 2:
