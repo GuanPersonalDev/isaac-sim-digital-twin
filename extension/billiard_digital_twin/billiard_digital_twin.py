@@ -162,7 +162,6 @@ class BilliardExtension(omni.ext.IExt):
             self._on_demo_toggle,
             self.get_table_ids,
             self.get_table_debug_info,
-            self.get_ball_velocities_text,
             self._on_demo_controller_mode_changed,
         )
 
@@ -409,17 +408,6 @@ class BilliardExtension(omni.ext.IExt):
             f"has_error: {observation.has_error}\n"
             f"Cue ball: {_format_vector(observation.cue_ball_position)}"
         )
-
-    def get_ball_velocities_text(self, table_id: str) -> str:
-        session = self._find_session(table_id)
-        if session is None:
-            return ""
-        velocities = session.get_ball_velocities()
-        lines = [
-            f"Ball_{ball_id}: v={_format_vector(linear)} w={_format_vector(angular)}"
-            for ball_id, (linear, angular) in sorted(velocities.items())
-        ]
-        return "\n".join(lines)
 
     def _event_init(self):
         timeline = omni.timeline.get_timeline_interface()
