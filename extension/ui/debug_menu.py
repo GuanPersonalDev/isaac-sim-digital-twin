@@ -1,64 +1,10 @@
 import asyncio
 from typing import Callable
+from .table_combo_box_model import TableComboBoxModel
 from .ui_style import UiStyle
 
 import omni.kit.app
 import omni.ui
-
-
-class _TableComboItem(omni.ui.AbstractItem):
-    """單一選桌選項，對應一個 table_id（沿用 prim path）"""
-
-    def __init__(self, table_id: str) -> None:
-        super().__init__()
-        self.table_id = table_id
-        self.model = omni.ui.SimpleStringModel(table_id)
-
-
-class _TableComboBoxModel(omni.ui.AbstractItemModel):
-    """
-    可動態增刪選項的 ComboBox model，對外一律用字串（table_id）溝通，不暴露
-    index。ComboBox 底層沒有原生「無選擇」狀態，用 -1 代表「尚未選擇 / 選項
-    已被移除」。
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._current_index = omni.ui.SimpleIntModel(-1)
-        self._current_index.add_value_changed_fn(
-            lambda _: self._item_changed(None)
-        )
-        self._items: list[_TableComboItem] = []
-
-    def get_item_children(self, item=None):
-        return self._items
-
-    def get_item_value_model(self, item=None, column_id=0):
-        if item is None:
-            return self._current_index
-        return item.model
-
-    def set_items(self, table_ids: list[str]) -> None:
-        """
-        整批更新選項清單。若原本選中的 table_id 已不在新清單中（該桌被
-        Toggle 關閉刪除），自動清空選擇；面板回到空白，不自動切換到其他桌。
-        """
-        previous_selected = self.get_selected_table_id()
-
-        self._items = [_TableComboItem(table_id) for table_id in table_ids]
-
-        if previous_selected is not None and previous_selected in table_ids:
-            self._current_index.set_value(table_ids.index(previous_selected))
-        else:
-            self._current_index.set_value(-1)
-
-        self._item_changed(None)
-
-    def get_selected_table_id(self) -> str | None:
-        idx = self._current_index.as_int
-        if 0 <= idx < len(self._items):
-            return self._items[idx].table_id
-        return None
 
 
 class DebugMenu:
@@ -88,7 +34,7 @@ class DebugMenu:
         self._get_table_debug_info = get_table_debug_info
         self._on_controller_mode_changed = on_controller_mode_changed
         self._get_joint_state_text = get_joint_state_text
-        self._table_combo_model = _TableComboBoxModel()
+        self._table_combo_model = TableComboBoxModel()
         self._build_ui()
         asyncio.ensure_future(self._dock_to_viewport())
         self._update_sub = (
@@ -135,9 +81,10 @@ class DebugMenu:
                 with omni.ui.HStack(height=24):
                     # 對「Table」選中的那張桌子換操作策略；true=AI
                     # （ModelController，訓練好的 policy 決定擊球）、
-                    # false=Script（固定開球，見 #115 手動參數面板落地前的
-                    # 過渡選項）。沒選桌子時按下無效果，是刻意的 no-op。
-                    omni.ui.Label("Controller: AI / Script")
+                    # false=Manual（ManualController，由 #115 的 HUD 面板
+                    # 手動決定擊球參數，按「擊球」鈕才出一桿，不自動循環）。
+                    # 沒選桌子時按下無效果，是刻意的 no-op。
+                    omni.ui.Label("Controller: AI / Manual")
                     controller_mode_model = omni.ui.SimpleBoolModel(True)
                     omni.ui.ToolButton(
                         text="",

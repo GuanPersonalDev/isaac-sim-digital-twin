@@ -17,8 +17,9 @@ for p in [_EXT_DIR, _PROJECT_ROOT]:
         sys.path.insert(0, p)
 
 from core.controllers.controller_base import ControllerBase
+from core.controllers.manual_controller import ManualController
 from core.controllers.model_controller import ModelController
-from core.controllers.script_controller import ScriptController
+from core.models.manual_shot_parameters import ManualShotParameters
 from core.models.table_ball_set import TableBallSet
 from core.models.robot_arm import RobotArm
 from core.models.barrett_wam_robot import BarrettWamRobot
@@ -84,6 +85,9 @@ class BilliardExtension(omni.ext.IExt):
     _TIMELINE_EVENT_NAME = "billiard_digital_twin_timeline_wait"
     _PHYSIC_CALL_BACK = "billiard_table_tick"
     def on_startup(self, ext_id: str):
+        # #115 手動擊球面板（階段 4）要用 viewport_window.get_frame(ext_id)
+        # 疊出 overlay，get_frame() 吃 ext_id 當 key，所以要存下來給那裡用。
+        self._ext_id = ext_id
         self._debug_menu = None
         self._training_sessions: list[TableSession] = []
         self._demo_sessions: list[DemoTableSession] = []
@@ -91,6 +95,10 @@ class BilliardExtension(omni.ext.IExt):
         # Debug Menu 切換操作策略要重建 controller，需要當初建 session 時
         # 用過的 table_ball_set（ModelController 建構參數之一）。
         self._demo_table_ball_sets: dict[str, TableBallSet] = {}
+        # #115 手動擊球面板：與 Demo session 同生同滅的常駐 ManualController，
+        # 一張 Demo 桌對應一個實例。不能在 `_build_controller_for_mode()`
+        # 裡臨時 new 一個新的——理由見該方法 docstring。
+        self._demo_manual_controllers: dict[str, ManualController] = {}
         # Training 球檯預設關閉（效能，見 docs/CHANGELOG.md「GUI FPS 調校」）：
         # 在 GUI Demo 情境下沒有畫面用途，需要時可從 Debug Menu 的 toggle 開回來。
         self._training_enabled = False
@@ -294,6 +302,9 @@ class BilliardExtension(omni.ext.IExt):
         if table_ball_set is None:
             raise RuntimeError(f"{table_id} 剛建立卻沒有 TableBallSet，無法建立 DemoTableSession")
         self._demo_table_ball_sets[table_id] = table_ball_set
+        # 與 table_ball_set 同一個地方建立、同一個地方（_disable_demo）清理，
+        # 常駐到這張 Demo 桌被 Toggle 關掉為止。
+        self._demo_manual_controllers[table_id] = ManualController()
 
         robot_manager = TableRobotManager(
             table.get_table_center(), table_id, self._stage_api, articulation_api, _ROBOT_ARM_CLASS
@@ -343,19 +354,30 @@ class BilliardExtension(omni.ext.IExt):
         self._demo_sessions = []
         self._demo_articulation_apis = {}
         self._demo_table_ball_sets = {}
+        self._demo_manual_controllers = {}
         if self._debug_menu:
             self._debug_menu.set_available_tables(self.get_table_ids())
 
     def _build_controller_for_mode(
-        self, is_ai_mode: bool, table_ball_set: TableBallSet
+        self, is_ai_mode: bool, table_id: str, table_ball_set: TableBallSet
     ) -> ControllerBase:
-        """Debug Menu 的操作策略切換用。Script 模式先借用既有的固定開球
-        ScriptController 當「非 AI」示範選項，#115 的手動參數面板落地後可
-        以換掉這個分支回傳的實例，呼叫端（DemoTableSession.
-        request_controller_swap()）完全不用改。"""
+        """Debug Menu 的操作策略切換用。
+
+        非 AI 模式回傳 `self._demo_manual_controllers[table_id]`——與 Demo
+        session 同生同滅的常駐實例，**不可在這裡 new 一個新的
+        ManualController**：`TableRuntime.tick()` 套用 pending controller
+        時一定會強制 `full_reset()`（重擺球＋手臂歸位，理由見該方法內的
+        說明）。如果每次調參數都在這裡新建實例、靠
+        `request_controller_swap()` 換上去，就等於每次調參數都觸發一次
+        `full_reset()`（重開一局），而且新實例是空白的
+        `ManualShotParameters.default()`，會讓使用者已經調好的參數憑空
+        消失。真正的參數更新走 `ManualController.set_parameters()`
+        （HUD 面板呼叫 `set_manual_shot_parameters()` 轉呼叫過去），完全
+        不經過這裡、也不經過 swap。
+        """
         if is_ai_mode:
             return self._build_model_controller(table_ball_set)
-        return ScriptController()
+        return self._demo_manual_controllers[table_id]
 
     def _on_demo_controller_mode_changed(self, table_id: str, is_ai_mode: bool) -> None:
         """Debug Menu 切換操作策略的入口。table_id 對不到任何已知的 Demo
@@ -366,7 +388,9 @@ class BilliardExtension(omni.ext.IExt):
         table_ball_set = self._demo_table_ball_sets.get(table_id)
         if session is None or table_ball_set is None:
             return
-        session.request_controller_swap(self._build_controller_for_mode(is_ai_mode, table_ball_set))
+        session.request_controller_swap(
+            self._build_controller_for_mode(is_ai_mode, table_id, table_ball_set)
+        )
 
     def _on_training_toggle(self, enable: bool) -> None:
         self._training_enabled = enable
@@ -422,6 +446,63 @@ class BilliardExtension(omni.ext.IExt):
         return "\n".join(
             f"{name}: q={position:.3f} qd={velocity:.3f}"
             for name, position, velocity in zip(names, positions, velocities)
+        )
+
+    def get_manual_shot_parameters(self, table_id: str) -> ManualShotParameters | None:
+        """給 HUD 面板（#115）切桌時回填控制項用。查無 table_id（例如選到
+        Training 桌，Training 桌沒有手動 controller）安靜回傳 None，沿用
+        `get_joint_state_text()` 那一類「查不到就給安全預設值」的慣例，只
+        是這裡沒有字串可回，改回傳 None 讓面板自行決定畫面怎麼處理。"""
+        controller = self._demo_manual_controllers.get(table_id)
+        if controller is None:
+            return None
+        return controller.get_parameters()
+
+    def set_manual_shot_parameters(self, table_id: str, parameters: ManualShotParameters) -> None:
+        """面板拖曳/輸入後推進來，直接轉給常駐 controller 的
+        `set_parameters()`——不經過 controller swap，見
+        `_build_controller_for_mode()` 的說明。查無 table_id 安靜 no-op，
+        沿用 `_on_demo_controller_mode_changed()` 的既定慣例。"""
+        controller = self._demo_manual_controllers.get(table_id)
+        if controller is None:
+            return
+        controller.set_parameters(parameters)
+
+    def request_manual_shot(self, table_id: str) -> None:
+        """對應面板的「擊球」按鈕。查無 table_id 安靜 no-op。"""
+        controller = self._demo_manual_controllers.get(table_id)
+        if controller is None:
+            return
+        controller.request_shot()
+
+    def request_manual_reset(self, table_id: str) -> None:
+        """對應面板的「重設球局」按鈕，轉給既有的
+        `session.request_full_reset()`（Timeline PLAY 也是走這條路徑）。
+        用途是從 ERROR 狀態復原——`ManualController` 沒有自動重試機制，
+        卡在 ERROR 時只能靠這個入口手動把狀態機清回 RESET 重來。查無
+        table_id 安靜 no-op。"""
+        session = self._find_session(table_id)
+        if session is None:
+            return
+        session.request_full_reset()
+
+    def get_manual_shot_status_text(self, table_id: str) -> str:
+        """面板每 frame 輪詢的狀態列文字，格式比照
+        `get_table_debug_info()` 的多行字串。查無 table_id 回傳空字串，
+        沿用 `get_joint_state_text()` 的慣例。"""
+        session = self._find_session(table_id)
+        controller = self._demo_manual_controllers.get(table_id)
+        if session is None or controller is None:
+            return ""
+        state = session.get_current_state()
+        parameters = controller.get_parameters()
+        return (
+            f"State: {state.name}\n"
+            f"Shot pending: {controller.is_shot_pending()}\n"
+            f"cue_ball_placement: {_format_vector(list(parameters.cue_ball_placement))}\n"
+            f"shot_angle: {parameters.shot_angle:.3f}\n"
+            f"cue_ball_speed: {parameters.cue_ball_speed:.3f}\n"
+            f"position_offset: {_format_vector(list(parameters.position_offset))}"
         )
 
     def _event_init(self):
