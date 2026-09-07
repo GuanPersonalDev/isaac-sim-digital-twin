@@ -768,3 +768,90 @@ _ROBOT_OFFSET_FROM_TABLE_CENTER`，不再有任何地方寫死數值。這次一
 （`table_center` 疊上 offset）跟著更新；`core/tests/test_table_session.py` 原本用
 `(1.5, 0.0, 0.0)` 當 mock 回傳值，容易被誤讀成預設站位，改成明顯是假的 `(1.0, 2.0, 3.0)`
 ——那個測試驗的是「有沒有把 `robot_manager` 給的位置原封不動同步給 RMPflow」，值本身不重要。
+
+---
+
+## #115 HUD 擊球參數控制面板 — 兩把尺、快照時序、常駐 controller（2026-09-08）
+
+完整技術計畫見 `C:\Users\guan_\.claude\plans\115-hud-peppy-harbor.md`；技術設計文件
+`docs/tech-design/hud-shot-control-panel-tech-design.md`；GUI 人工確認清單
+`docs/hud-shot-panel-gui-verification-checklist.md`。本條只記錄決策與踩過的坑，
+不重貼計畫書已有的完整推導。
+
+**兩把尺與 ±162.8° 的推導**：`core/models/manual_shot_bounds.py` 的角度上限跟
+`action_bounds.SHOT_ANGLE` 是刻意的兩把尺——後者 `(-30, 30)` 是 Milestone A 為了
+訓練信號密度收窄的 RL 動作空間（#231），手動面板不走 `decode_rl_action()`/
+`normalize_action()` 的正規化路徑，完全不受這個收窄約束。但手動面板也不能開放
+整圈：`Ur10eSwingStrategy.execute_aim()` 每一擊都會把基座 `reposition()` 到
+`base = cue_ball − 2.15 × (−sinθ, cosθ)`，母球在開球點 `(0, −0.9525)` 時，解出來要求
+基座落在桌台外才不會跟球台重疊，算出來是 `|θ| < 162.8°`；超過這個角度基座會被
+teleport 進球桌中央，狀態機進 `ERROR` 且不會自動復原。`MANUAL_SHOT_ANGLE` 取 ±160°
+留 2.8° 安全餘裕，把這整類錯誤從源頭排除。擺位/速度/偏移三項不管誰出手物理世界能不能
+接受都是同一個答案，`manual_shot_bounds.py` 一律 `from .action_bounds import ...`
+轉出，不重新定義數值——兩邊各自寫一份會漂移不會報錯（#228 的教訓）。
+
+**AIM 消費的是 IDLE handler 回傳的 action，順帶修掉一個既有 bug**：
+`TableOrchestrator.step()`（`core/services/table_orchestrator.py:48`）先呼叫
+`get_action()`（handler 內部已經改狀態），**再**讀 `get_current_state()` 去分派
+`_execute_aim()`/`_execute_strike()`。也就是說 AIMING 消費的其實是這一次 **IDLE
+handler** 回傳的 Action，`cue_ball_placement`/`shot_angle`/`position_offset` 必須在
+IDLE handler 就填好。`ScriptController._idle_state_action_result()` 一直以來只設了
+`should_execute_action`，沒設 `cue_ball_placement`，沿用 `_generate_action_result()`
+的 `[0, 0]` 桌台中心——這代表切到 Script 模式時 `_execute_aim()` 拿到的其實是桌台
+中心、把母球 teleport 過去，是個沒人發現的既有 bug。`ManualController` 用
+`ManualShotParameters.to_action()` 在 IDLE handler 一次填滿四項，這個問題隨著
+`ManualController` 取代 Script 模式的呼叫路徑自然消失，不需要另外修
+`ScriptController` 本身。
+
+**為什麼 `ManualController` 必須常駐、參數更新不能走 controller swap**：
+`TableRuntime.tick()` 套用 pending controller 時會強制 `full_reset()`（重擺球＋
+手臂歸位）。`_build_controller_for_mode()` 若每次都 `new` 一個 `ManualController`
+靠 `request_controller_swap()` 換上去，等於每次調參數都觸發一次 `full_reset()`
+（重開一局），而且新實例是空白的 `ManualShotParameters.default()`，會讓使用者已經
+調好的參數憑空消失。做法是 `_demo_manual_controllers: dict[str, ManualController]`
+與 Demo session 同生同滅，`_build_controller_for_mode()` 只回傳字典裡的常駐實例；
+真正的參數更新走 `ManualController.set_parameters()`，完全不經過這個方法、也不經過
+swap。這是整條接線裡最容易被「看起來很自然」的重構破壞的一步——直覺上「切模式」跟
+「調參數」都會想走同一個 `_build_controller_for_mode()`，但只有前者可以。
+
+**用序號而非 bool 旗標傳遞擊球請求**：`request_shot()` 由 UI 執行緒呼叫，
+`_idle_state_action_result()` 由 physics 執行緒呼叫，兩者沒有鎖保護。若用 `bool`
+旗標，消費端勢必要寫成 `pending = self._flag; self._flag = False`（read-modify-write），
+這段序列不是原子操作，兩個執行緒交錯時可能漏掉一次請求或誤判成兩次。序號法讓每個
+欄位只有唯一寫者（`_requested_seq` 只被 UI 執行緒寫、`_handled_seq` 只被 physics
+執行緒寫），`is_shot_pending()` 只是比較兩個整數，讀到任一方寫到一半的中間狀態也不
+影響正確性（int 賦值本身是原子的）；連按多次會讓 `_requested_seq` 多加幾次，消費時
+一次性追平，等效於合併成一次擊球，刻意不做佇列。也因此不需要 `threading.Lock`——
+physics callback 每個 tick 都會經過 `get_action()`，在這條熱路徑上取鎖是拿確定的
+效能成本換一個不存在的競態。
+
+**可行性量化結果**：`manual_shot_feasibility.py` 完工後對 Kitchen 合法擺位 × ±160°
+角度取樣 2079 組（母球 XY 網格 × 角度網格的笛卡兒積），逐組呼叫
+`evaluate_manual_shot()`，整體可行率 94.5%，且不可行的分布完全規律——只有「母球貼在
+擊球方向反側的庫邊」會無解（0° 時是 y 下界那一列、90° 時是 x 上界那一行）。球桿要從
+母球後方伸過來，後面就是庫邊，伸不進去，物理上正確。所以這個閘門是防呆而非常態阻礙，
+面板端只需要在少數邊界擺位顯示紅線、擋下擊球鈕，不會讓使用者覺得「動不動就打不出去」。
+
+**`table_z` 的坑**：`cue_pose_calculator.compute_tilted_wrist_pose()` 拿
+`table_z + ball_radius` 直接跟球檯庫邊高度相關的小常數比較，`table_z` 不是 0 附近
+時算出來的可行性會整組失真。生產路徑的 `table_z` 是 `BilliardTable._z_pos == 0.0`，
+但 `core/tests` 有些既有測試檔用 `0.75` 這個值來驗證「`table_z` 有沒有被正確傳遞」，
+不是真實桌面高度——如果拿 0.75 去試可行性判斷，會得到「母球在 Y 下界仍可行」這種
+錯誤結論（用錯 z 值把碰庫判定整個算歪）。面板呼叫可行性判斷時一律透過
+`BilliardExtension.get_table_geometry()` 取真實的 `table_ball_set.get_table_z()`，
+不可以寫死任何值；`core/tests/test_manual_shot_feasibility.py` 也固定用 `_TABLE_Z =
+0.0` 並在檔案開頭寫明理由，不是照抄計畫文件推斷出的座標，是實測掃描找出來的。
+
+**面板在沒有 Isaac Sim 的環境下寫成**：這台開發機沒有安裝 Isaac Sim，
+`extension/ui/hud_panel.py` 全部靠官方文件查證（`docs/tech-design/hud-shot-control-panel-tech-design.md`
+第 1 節）與既有專案慣例（`debug_menu.py` 的建構子風格、`SimpleStringModel` 先例）
+寫成，沒有在本機執行過。兩個文件查不到、只能在 GUI 下實測的假設，刻意隔離成
+`hud_panel.py` 的兩個獨立私有方法，其餘程式碼完全不碰這兩個假設：`_create_root_frame()`
+（`viewport_window.get_frame(ext_id)` 放一般 2D widget 能不能正常收到滑鼠事件、
+overlay 拖曳會不會被 viewport 相機操作吃掉——全計畫最大未知）與 `_to_local()`
+（`set_mouse_*_fn` 收到的 x/y 到底是螢幕座標還是 widget local 座標）。實測後如果
+假設錯了，只需要改這兩個方法其中之一，`HudPanel` 其餘部分（版面、互動、資料流）
+不用動。`docs/hud-shot-panel-gui-verification-checklist.md` 的「先決條件」一節把這
+兩支 spike 腳本（`scripts/probe_omni_ui_shot_panel_widgets.py`／
+`scripts/probe_viewport_overlay_drag.py`）列在所有其他確認項目之前，理由同樣是
+「座標系假設一旦錯了，後面所有互動類確認項目的失敗現象都是同一個根因的表徵」。

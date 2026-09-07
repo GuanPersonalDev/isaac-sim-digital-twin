@@ -29,6 +29,15 @@ Isaac Sim / core 元件。
      目標球的位置，推 20 次參數後斷言沒被 teleport 回開球位，證明沒有經過
      controller swap 那條會 `full_reset()` 的路）
   6. 未知 table_id 呼叫五個方法全部不拋例外
+  7. `HudPanel`（#115 階段 4）在 headless（拿不到 viewport）環境安靜不建立
+     內部 widget、extension 啟動全程不拋例外——這支腳本本身跑到這裡沒有
+     崩潰，就已經間接證明了「extension 啟動不拋例外」，這裡額外白箱檢查
+     `extension._hud_panel` 存在（`_billiard_init()` 無條件建構它，不因
+     headless 就整個跳過）但 `_hud_panel._root_frame is None`（`_create_
+     root_frame()` 拿不到 viewport 時安靜回傳 None，見 `hud_panel.py`
+     docstring）。保護的是「面板不會害死所有 headless 腳本」這條硬性
+     要求——`scripts/` 底下十幾支既有 headless 驗證腳本都要靠這條路徑
+     安全
 
 跑法（獨立執行，會自己開一個 headless SimulationApp）：
     ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \
@@ -220,6 +229,35 @@ def _verify(extension) -> bool:
     print(f"[verify] 連續推 {_PARAMETER_PUSH_COUNT} 次參數不觸發重擺球：{no_rerack}"
           f"（before={position_before_pushes}，after={position_after_pushes}）")
 
+    # 項目 7：HudPanel 在拿不到 viewport 的環境安靜不建立內部 widget、
+    # extension 啟動全程不拋例外。這支腳本執行到這裡本身沒有崩潰，就已經
+    # 證明了「extension 啟動不拋例外」；這裡額外白箱檢查 _billiard_init()
+    # 無條件建構 self._hud_panel（不是 None），而 HudPanel._create_root_
+    # frame() 只有在拿得到 viewport 時才會回傳非 None 的 Frame——用實際
+    # 查到的 viewport 可用性反推期望值，而不是寫死「一定是 headless」：
+    # 這支腳本主要跑法是 headless（見檔案開頭「跑法」），但也支援透過
+    # Tool Menu 在已有畫面的 GUI session 裡執行（見同一段說明），兩種情況
+    # 這裡都要給出正確答案，不能只驗證其中一種。
+    try:
+        from omni.kit.viewport.utility import get_active_viewport_window
+
+        viewport_available = get_active_viewport_window() is not None
+    except ImportError:
+        viewport_available = False
+
+    hud_panel = getattr(extension, "_hud_panel", None)
+    hud_panel_exists = hud_panel is not None
+    hud_panel_has_root_frame = hud_panel_exists and hud_panel._root_frame is not None
+    hud_panel_consistent_with_viewport = hud_panel_exists and (
+        hud_panel_has_root_frame == viewport_available
+    )
+    print(f"[verify] extension._hud_panel 存在（_billiard_init() 有建構它）：{hud_panel_exists}")
+    print(f"[verify] 目前環境拿得到 viewport：{viewport_available}"
+          f"（headless 跑法下應為 False）")
+    print(f"[verify] HudPanel 的 _root_frame 是否建立與 viewport 可用性一致："
+          f"{hud_panel_consistent_with_viewport}"
+          f"（headless 下應該是「拿不到 viewport → 安靜不建立 → _root_frame is None」）")
+
     # 項目 6：未知 table_id 呼叫五個方法全部不拋例外
     unknown_table_id = "/World/NotATable"
     no_crash_on_unknown_table = True
@@ -246,6 +284,8 @@ def _verify(extension) -> bool:
         and back_to_idle
         and no_rerack
         and no_crash_on_unknown_table
+        and hud_panel_exists
+        and hud_panel_consistent_with_viewport
     )
     print(f"[verify] {'PASS' if all_pass else 'FAIL'}：ManualController 常駐接線"
           f"{'運作正常' if all_pass else '有問題，見上方個別項目'}")

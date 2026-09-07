@@ -9,13 +9,18 @@
 
 ## 0. 文件狀態
 
-本文件目前只完成**第 1 節「omni.ui API 查證結果」**，是 #115 階段 0（API spike）的產出。其餘章節（模組清單、類別設計、資料流、依賴關係……）是階段 6「驗證與文件」的產物，尚未撰寫，先以 TODO 佔位，避免之後漏掉章節。
+第 1 節「omni.ui API 查證結果」是 #115 階段 0（API spike）的產出，內容保持
+原樣不動。第 2–6 節是階段 6「驗證與文件」補完的部分，涵蓋階段 1–5 實際落地
+的程式碼（`core/models/manual_shot_bounds.py`、`manual_shot_parameters.py`、
+`core/services/shot_panel_input_mapper.py`、`manual_shot_feasibility.py`、
+`core/controllers/manual_controller.py`、`extension/ui/hud_panel.py`、
+`extension/ui/table_combo_box_model.py`、`billiard_digital_twin.py` 的接線）。
 
-- [ ] 第 2 節：模組清單與職責
-- [ ] 第 3 節：類別設計（`ManualShotParameters`／`ManualController`／`HudPanel`／輸入換算純函式……）
-- [ ] 第 4 節：資料流（UI 執行緒 ↔ physics 執行緒）
-- [ ] 第 5 節：依賴關係
-- [ ] 第 6 節：驗證（Unit Test／Headless 驗證腳本／GUI 人工確認清單）
+- [x] 第 2 節：模組清單與職責
+- [x] 第 3 節：類別設計（`ManualShotParameters`／`ManualController`／`HudPanel`／輸入換算純函式……）
+- [x] 第 4 節：資料流（UI 執行緒 ↔ physics 執行緒，含 AIM/STRIKE 快照時序）
+- [x] 第 5 節：關鍵設計決策與理由
+- [x] 第 6 節：測試策略與已知限制
 
 ---
 
@@ -255,3 +260,528 @@ clicked_fn: Callable[[], None]
 - `https://docs.omniverse.nvidia.com/kit/docs/omni.ui/latest/omni.ui/omni.ui.Button.html`
 - `https://docs.omniverse.nvidia.com/kit/docs/omni.ui/latest/omni.ui/omni.ui.Axis.html`
 - `https://github.com/NVIDIA-Omniverse/kit-extension-sample-ui-scene/blob/main/exts/omni.example.ui_scene.widget_info/Tutorial/object.info.widget.tutorial.md`（唯一找到的 `get_frame()` 官方範例，用於 `sc.SceneView` 而非 2D widget）
+
+---
+
+## 2. 需求與範圍
+
+### 2.1 要解決的問題
+
+Demo 目前只能看著手臂用固定參數（開球點、0°、最大初速、零偏移）自動開球，
+沒有任何手動介入的方式，無法測試「不同擊球參數會打出什麼結果」，也無法為
+#116（ShotResult 顯示）、#117（完整流程確認）、#118（Demo 影片錄製）提供
+一個可控的展示點。#115 要在 Demo 桌上加一個常駐的參數控制面板，讓使用者能
+即時調整六維擊球參數中的四項（母球擺位、擊球方向角、初速、上下/左右擊球
+偏移）並手動觸發一次 AIM→STRIKE，不自動循環。
+
+### 2.2 範圍
+
+**包含：**
+
+- 一個嵌在 Viewport 內的半透明 overlay 面板（`HudPanel`），提供圓形擊球點
+  選擇器、力道輸入框、球桌俯瞰圖（含母球拖曳擺位＋點擊定角度）、「擊球」
+  與「重設球局」兩顆按鈕。
+- 一個新的 core 層 controller（`ManualController`），繼承既有的
+  `BilliardStateMachineController`，只在按下「擊球」時觸發一次 AIM→STRIKE，
+  平時停在 IDLE。
+- 一套獨立於 RL 訓練動作空間（`action_bounds.py`）的手動面板邊界常數
+  （`manual_shot_bounds.py`），角度範圍收窄到 ±160° 以避開機械臂基座
+  teleport 進球桌的錯誤。
+- 一套幾何可行性判斷（`manual_shot_feasibility.py`），在「角度合法但幾何
+  無解」時提前擋下擊球鈕，避免面板把桌子打進 `ERROR` 狀態。
+- Extension 層的接線：常駐 `ManualController` 字典（與 Demo session 同生
+  同滅）、六個 DI 方法供 `HudPanel` 呼叫、`_build_controller_for_mode()`
+  改為回傳常駐實例。
+
+**不包含（明確排除）：**
+
+- 走位球（cue ball placement 不受限於 Kitchen 之外的其他規則）——那是
+  Milestone B（#232）的範圍，`MANUAL_SHOT_ANGLE` 屆時要退化為直接轉出整圈
+  的 `SHOT_ANGLE`。
+- ShotResult 顯示（#116）、影片錄製（#118）——本次只交付「能手動打一桿」
+  這個能力本身。
+- 基座位置的幾何檢查——`manual_shot_feasibility.py` 目前只判斷
+  `tilt_rad is None` 這一種無解原因，角度上限已經在 `MANUAL_SHOT_ANGLE`
+  這一層排除掉「基座 teleport 進球桌」那一類錯誤，兩者不重疊判斷（見第
+  5.1 節）。
+
+### 2.3 使用者已拍板的決策（摘要）
+
+| 決策 | 結論 |
+|---|---|
+| 角度範圍 | 面板限制 ±160°（安全區），不動 `action_bounds.SHOT_ANGLE` 的 ±30° |
+| 母球擺位 | 納入，俯瞰圖上可拖曳（Kitchen 範圍內） |
+| 擊球觸發 | 面板加「擊球」按鈕，按下才跑一次 |
+| HUD 形式 | 嵌在 Viewport 內的半透明 overlay，不是獨立停靠視窗 |
+
+完整推導過程與拍板脈絡見完整技術計畫
+`C:\Users\guan_\.claude\plans\115-hud-peppy-harbor.md`（本文件不重複貼）。
+
+---
+
+## 3. 模組清單與職責
+
+| 模組 | 所在層級 | 職責 | 檔案路徑 |
+|---|---|---|---|
+| `MANUAL_SHOT_ANGLE`／四項轉出常數 | core/models | 手動面板專用的邊界值——角度是本檔自己定義的安全區（±160°），其餘四項（擺位/速度/偏移）直接轉出 `action_bounds`，不重新定義數值 | `core/models/manual_shot_bounds.py` |
+| `ManualShotParameters` | core/models | `frozen=True` 的四維參數容器，建構即驗證（越界拋 `ValueError`）；`default()`／`to_action()` | `core/models/manual_shot_parameters.py` |
+| 像素↔物理量換算純函式 | core/services | 圓形偏移選擇器、俯瞰圖擺位/角度的雙向換算，全部無狀態、不知道 omni.ui 的存在 | `core/services/shot_panel_input_mapper.py` |
+| `ManualShotFeasibility`／`evaluate_manual_shot(_parameters)` | core/services | 判斷「幾何無解」這一種擊球失敗原因，`reason` 是機器可讀字串，不含 UI 文案 | `core/services/manual_shot_feasibility.py` |
+| `ManualController` | core/controllers | 只覆寫 `_idle_state_action_result()`／`_aiming_state_action_result()`／`_on_reset()`／`_enter_error_state()`，其餘沿用 `BilliardStateMachineController` | `core/controllers/manual_controller.py` |
+| `HudPanel` | extension/ui | 嵌在 viewport 內的半透明 overlay 面板，建構子只吃 6 個注入的 Callable，不持有 `BilliardExtension` 參照 | `extension/ui/hud_panel.py` |
+| `TableComboBoxModel` | extension/ui | 從 `debug_menu.py` 搬出的共用選桌下拉 model，`HudPanel` 與 `DebugMenu` 各自持有一份實例 | `extension/ui/table_combo_box_model.py` |
+| `BilliardExtension`（修改） | extension/billiard_digital_twin | 保存 `self._ext_id`；`self._demo_manual_controllers: dict[str, ManualController]`；`_build_demo_session()` 建常駐實例；`_build_controller_for_mode()` 改吃 `table_id`；新增 6 個 DI 方法（`get_manual_shot_parameters`／`set_manual_shot_parameters`／`request_manual_shot`／`request_manual_reset`／`get_manual_shot_status_text`／`get_table_geometry`，另加 `get_demo_table_ids` 供選桌下拉用）；`_billiard_init()` 建構 `HudPanel`；`_disable_demo()`/`on_shutdown()` 清理 | `extension/billiard_digital_twin/billiard_digital_twin.py` |
+| `denormalize_axis`／`normalize_axis`（公開化） | core/services | `rl_action_decoder` 既有的正規化/反正規化邏輯改為公開函式，供 `shot_panel_input_mapper` 重用，避免第二份實作 | `core/services/rl_action_decoder.py` |
+| `SHOT_ANGLE` 指路註解 | core/models | 一行註解指向 `manual_shot_bounds.py`，不改任何數值 | `core/models/action_bounds.py` |
+
+---
+
+## 4. 類別設計
+
+### 4.1 `manual_shot_bounds.py`（兩把尺）
+
+不是類別，是模組級常數＋檔案級 docstring。核心設計是「兩把尺」：
+
+| 項目 | 尺的性質 | 來源 |
+|---|---|---|
+| 母球擺位 XY／初速／上下左右偏移 | 物理能力邊界（桌台幾何、桿尖速度上限、miscue limit） | `from .action_bounds import ...` 轉出，不重新定義數值 |
+| 擊球方向角 `MANUAL_SHOT_ANGLE` | 安全區，非物理極限 | 本檔自己定義 `(-160.0, 160.0)` |
+
+四項轉出常數與 RL 訓練動作空間共用同一個物理事實來源，理由是「擺位/速度/
+偏移無論是手動面板還是 RL policy 出手，物理世界能不能接受都是同一個答案」，
+若各自定義一份數值，兩邊漂移不會報錯（#228 的教訓，見該檔案級 docstring）。
+角度不同：`action_bounds.SHOT_ANGLE = (-30, 30)` 是 Milestone A 為了訓練
+信號密度收窄的 RL 動作空間（#231），跟手動面板的物理限制無關；手動面板
+自己的物理限制來自 `Ur10eSwingStrategy.execute_aim()` 的基座
+`reposition()` 公式解出的 `|θ| < 162.8°`，取 ±160° 留 2.8° 安全餘裕。
+
+### 4.2 `ManualShotParameters`（core/models，`frozen=True` dataclass）
+
+**職責：** UI 執行緒與 physics 執行緒之間交換擊球參數的唯一資料格式。
+
+```python
+@dataclass(frozen=True)
+class ManualShotParameters:
+    cue_ball_placement: tuple[float, float]
+    shot_angle: float
+    cue_ball_speed: float
+    position_offset: tuple[float, float]
+
+    def __post_init__(self) -> None: ...   # 越界拋 ValueError，不靜默夾住
+    @staticmethod
+    def default() -> "ManualShotParameters": ...
+    def to_action(self, should_execute_action: bool) -> Action: ...  # 每次回全新 Action
+```
+
+`frozen=True` + tuple 欄位是執行緒安全的基礎（見第 5.3 節）。`__post_init__`
+驗證邊界時對擺位/速度/偏移三項讀 `manual_shot_bounds.py` 轉出的常數，角度
+讀 `MANUAL_SHOT_ANGLE`——驗證即用兩把尺各自對應的範圍，職責邊界在這裡體現
+得最直接。`to_action()` 每次回傳全新 `Action` 物件，理由見第 5.4 節。
+
+**依賴：**
+- 輸入來源：`extension/ui/hud_panel.py` 用 `shot_panel_input_mapper` 夾好
+  邊界後建構
+- 輸出去向：`ManualController.set_parameters()`／`to_action()` 供狀態機
+  分派使用
+
+### 4.3 `shot_panel_input_mapper.py`（core/services，純函式集合）
+
+**職責：** 像素座標（widget local，左上原點，y 往下增加）↔ 物理量（桌台
+相對座標／`Action.position_offset`）的雙向換算，完全不知道 omni.ui 或螢幕
+座標系的存在——這條邊界讓所有換算邏輯可以在沒有 Isaac Sim 的環境下用
+Unit Test 覆蓋。
+
+九個函式：`offset_from_circle_pixels`／`circle_pixels_from_offset`（圓形
+擊球點選擇器）、`table_xy_from_topview_pixels`／`topview_pixels_from_table_xy`／
+`clamp_cue_ball_placement`（俯瞰圖擺位）、`shot_angle_from_points`／
+`clamp_manual_shot_angle`／`aim_line_endpoint`（俯瞰圖角度與瞄準線）、
+`is_within_radius`（俯瞰圖命中判定，分辨「拖擺位」還是「定角度」）。
+
+**必須重用既有實作**（見第 5.2 節「不要重新實作換算邏輯」）：
+- 偏移裁切固定走 `position_offset_limiter.clamp_position_offset()`（圓形
+  裁切，不是逐軸 clip）
+- 正規化/反正規化固定走 `rl_action_decoder.normalize_axis()`/
+  `denormalize_axis()`
+- 偏移處理順序固定「正規化 → 圓形裁切 → 反正規化」，與 `decode_rl_action()`
+  同一條順序
+
+**依賴：**
+- 輸入來源：`extension/ui/hud_panel.py` 的滑鼠事件 callback（已用
+  `_to_local()` 換算成 widget local 座標）
+- 輸出去向：`ManualShotParameters` 建構參數；`hud_panel.py` 重繪畫面時的
+  反方向換算（`circle_pixels_from_offset`／`topview_pixels_from_table_xy`）
+
+### 4.4 `manual_shot_feasibility.py`（core/services）
+
+**職責：** 判斷「按下擊球鈕真的打得出去嗎」，只處理「幾何無解」這一種原因
+（角度上限已經在 `MANUAL_SHOT_ANGLE` 這一層排除掉另一種失敗，見第 5.1
+節）。
+
+```python
+@dataclass(frozen=True)
+class ManualShotFeasibility:
+    is_feasible: bool
+    reason: str          # "" | "geometry_unsolvable"
+
+def evaluate_manual_shot(cue_ball_xy, shot_angle_deg, table_z, ball_radius,
+                         position_offset) -> ManualShotFeasibility: ...
+def evaluate_manual_shot_parameters(parameters, table_z, ball_radius) -> ManualShotFeasibility: ...
+```
+
+完全委派給 `cue_pose_calculator.compute_tilted_wrist_pose()`（`Ur10eSwingStrategy`
+本身也呼叫同一支函式），`tilt_rad is None` 翻譯成 `is_feasible=False`。
+`reason` 是機器可讀字串而非給人看的訊息——UI 文案是 `hud_panel.py` 的職責，
+`core/` 不做 UI 呈現。
+
+**依賴：**
+- 輸入來源：`hud_panel.py` 的 `_evaluate_feasibility()`（每次重繪呼叫）；
+  `table_z`／`ball_radius` 來自 `BilliardExtension.get_table_geometry()`
+- 輸出去向：面板的瞄準線顏色（紅/黃）與「擊球」按鈕 `enabled` 狀態
+
+### 4.5 `ManualController`（core/controllers）
+
+**職責：** 由使用者手動決定四維擊球參數，按下「擊球」鈕才出一桿一次。
+
+```python
+class ManualController(BilliardStateMachineController):
+    def __init__(self, parameters=None):
+        self._parameters = parameters or ManualShotParameters.default()
+        self._requested_seq = 0   # 只有 UI 執行緒寫
+        self._handled_seq = 0     # 只有 physics 執行緒寫
+        self._pending: ManualShotParameters | None = None
+
+    # UI 執行緒
+    def set_parameters(self, parameters) -> None: ...
+    def get_parameters(self) -> ManualShotParameters: ...
+    def request_shot(self) -> None: self._requested_seq += 1
+    def is_shot_pending(self) -> bool: return self._requested_seq != self._handled_seq
+
+    # physics 執行緒（BilliardStateMachineController 的擴充點）
+    def _idle_state_action_result(self, observation) -> Action: ...
+    def _aiming_state_action_result(self, observation) -> Action: ...
+    def _enter_error_state(self, exception) -> Action: ...   # 自己定義，不在基底類別
+    def _on_reset(self) -> None: ...
+```
+
+只覆寫基底類別明確開放的三個擴充點（`_idle_state_action_result`／
+`_aiming_state_action_result`／`_on_reset`），另外自己定義
+`_enter_error_state()`（`ModelController` 也是這樣做，不在
+`BilliardStateMachineController` 裡）。其餘 4 個狀態轉換（STRIKING/
+WAITING/RESET 的條件與 no-op Action 格式）沿用基底類別——那是
+`ScriptController` 與 `ModelController` 共用的契約，本類別不例外。
+
+「為什麼沒按鈕就會永遠停在 IDLE」「為什麼 AIM 與 STRIKE 要讀同一份快照」
+「為什麼用序號而不是 bool 旗標」三個關鍵設計問題見第 5.3／5.4 節（也已
+完整寫在 `manual_controller.py` 的類別 docstring 裡，本節不重複貼）。
+
+**依賴：**
+- 輸入來源：`HudPanel` 透過 `BilliardExtension` 的 DI 方法呼叫
+  `set_parameters()`/`request_shot()`
+- 輸出去向：`TableOrchestrator.step()` → `_execute_aim()`/`_execute_strike()`
+
+### 4.6 `HudPanel`（extension/ui）
+
+**職責：** 疊在 viewport 內的半透明 overlay，四個控制項（圓形擊球點選擇器、
+力道輸入框、俯瞰圖、擊球/重設按鈕）+ 收合鈕 + 狀態列。
+
+```python
+class HudPanel:
+    def __init__(
+        self,
+        ext_id: str,
+        get_parameters: Callable[[str], "ManualShotParameters | None"],
+        on_parameters_changed: Callable[[str, ManualShotParameters], None],
+        on_shot_requested: Callable[[str], None],
+        on_reset_requested: Callable[[str], None],
+        get_shot_status_text: Callable[[str], str],
+        get_table_geometry: Callable[[str], "tuple[float, float] | None"],
+    ) -> None: ...
+```
+
+沿用 `debug_menu.py` 的建構子風格——只吃注入的 Callable，不持有
+`BilliardExtension` 參照。面板**不保存參數狀態**：擊球參數只活在
+omni.ui model（力道欄）與常駐 `ManualController` 裡，面板唯一的私有狀態是
+拖曳暫態（`_topview_drag_mode`）與防遞迴旗標（`_suppress_speed_callback`）。
+
+兩處明確隔離 spike 未證實假設的方法（見第 1.1／1.2／1.5 節與第 6.5 節
+「已知限制」）：
+
+- `_create_root_frame()`：取得 `viewport_window.get_frame(ext_id)`；
+  headless 或拿不到 viewport 一律回傳 `None`，讓 `__init__` 安靜跳過建
+  面板（硬性要求，見第 5.5 節）。
+- `_to_local(x, y, widget)`：把 `set_mouse_*_fn` 收到的座標換算成 widget
+  local 座標，目前假設是螢幕座標（用 `screen_position_x/y` 相減）。
+
+**依賴：**
+- 輸入來源：使用者滑鼠/鍵盤事件；`BilliardExtension` 注入的 6 個查詢/回呼
+  方法
+- 輸出去向：`core.services.shot_panel_input_mapper`／
+  `manual_shot_feasibility` 的純函式；`BilliardExtension` 的 DI 方法
+
+### 4.7 `TableComboBoxModel`（extension/ui，從 `debug_menu.py` 搬出）
+
+**職責：** 可動態增刪選項的 ComboBox model，`HudPanel` 與 `DebugMenu` 各自
+持有一份獨立實例（不共用同一個 model——兩者的選桌下拉是獨立的 UI 狀態，
+選中的桌子沒有必要同步）。從 `debug_menu.py:18-61` 搬出成獨立檔案，避免
+`hud_panel.py` 複製第二份相同邏輯。
+
+---
+
+## 5. 資料流
+
+### 5.1 兩種失敗原因的分工（角度上限 vs 幾何可行性閘門）
+
+`Ur10eSwingStrategy.execute_aim()` 有兩種已知會失敗的情境：
+
+1. **基座 teleport 進球桌中央**——`base = cue_ball − 2.15 × (−sinθ, cosθ)`
+   在 `|θ|` 過大時解出來的基座落在桌台範圍內。`MANUAL_SHOT_ANGLE =
+   (-160.0, 160.0)` 從源頭排除這一種，`manual_shot_feasibility.py` 不重複
+   判斷。
+2. **幾何無解**——`compute_tilted_wrist_pose()` 回傳 `tilt_rad is None`：
+   即使把球桿垂直抬到最高也閃不過庫邊，跟角度範圍無關，是母球位置＋角度
+   ＋偏移量組合造成的純幾何問題。`manual_shot_feasibility.py` 只判斷這
+   一種。
+
+兩層防線各管一種失敗原因，不疊床架屋。
+
+### 5.2 UI 互動 → 參數更新（同步，UI 執行緒）
+
+```
+使用者拖曳圓形擊球點選擇器 / 俯瞰圖 / 輸入力道欄
+  → HudPanel._on_circle_press / _on_topview_press / _on_speed_value_changed
+    → shot_panel_input_mapper.*()（像素 → 物理量，夾好邊界）
+      → dataclasses.replace(current, ...) 產生新的 ManualShotParameters
+        （建構即驗證，越界會拋 ValueError——但因為呼叫端已經夾過邊界，
+        正常互動路徑不會走到這裡）
+    → HudPanel._push_parameters(table_id, updated)
+      → self._on_parameters_changed(table_id, updated)
+        = BilliardExtension.set_manual_shot_parameters(table_id, updated)
+          → self._demo_manual_controllers[table_id].set_parameters(updated)
+            （單一物件參照賦值，原子操作，見第 5.3 節）
+      → HudPanel._redraw_controls(table_id, updated)（整批重繪：標記位置、
+        讀數 Label、可行性紅線、按鈕 enabled 狀態）
+```
+
+`_push_parameters()` 不重新呼叫 `get_parameters()` 讀回來——用同一份剛
+建構好的物件重繪，省一趟往返，也避免「controller 端還沒來得及套用」的
+競態。
+
+### 5.3 擊球請求 → AIM → STRIKE（跨執行緒：UI 執行緒寫請求，physics 執行緒消費）
+
+```
+使用者按「擊球」
+  → HudPanel._on_shot_button_clicked
+    → self._on_shot_requested(table_id) = BilliardExtension.request_manual_shot(table_id)
+      → self._demo_manual_controllers[table_id].request_shot()
+        → self._requested_seq += 1   ← UI 執行緒寫，physics 執行緒不寫這個欄位
+
+（下一個 physics tick）
+TableOrchestrator.step()
+  → self._script_controller.get_action(observation)   ← 這裡呼叫的其實是 ManualController
+    → ManualController._idle_state_action_result(observation)
+      → is_shot_pending()？(self._requested_seq != self._handled_seq)
+        → 是，且 observation.is_init_state 且不是 is_ball_moving：
+          → parameters = self._parameters      # 只讀這一次，鎖定這次擊球的快照
+          → self._handled_seq = self._requested_seq   ← physics 執行緒寫，消費請求
+          → self._pending = parameters
+          → self._change_state(AIMING)
+          → return parameters.to_action(should_execute_action=True)
+  → step() 再讀 self.get_current_state()（此時已經是 AIMING）
+    → 分派 self._execute_aim(這次 IDLE handler 回傳的 action)
+```
+
+**時序關鍵**：`TableOrchestrator.step()`（`core/services/table_orchestrator.py:48`）
+先呼叫 `get_action()`（handler 內部已改狀態），**再**讀
+`get_current_state()` 去分派下游動作。也就是說 AIMING 消費的其實是這一次
+**IDLE handler** 回傳的 Action，`cue_ball_placement`/`shot_angle`/
+`position_offset` 必須在 IDLE handler 就填好——這是本次任務最容易被誤解
+的時序坑，`ModelController` 也是這樣做的，但 `ScriptController._idle_
+state_action_result()` 沒有填 `cue_ball_placement`（沿用 `_generate_
+action_result()` 的 `[0, 0]` 桌台中心）是既有 bug，`ManualController` 用
+`ManualShotParameters.to_action()` 一次填滿四項，不重演那個問題（見
+CHANGELOG）。
+
+```
+（後續 tick，瞄準動畫收斂）
+TableOrchestrator.step()
+  → ManualController._aiming_state_action_result(observation)
+    → observation.is_motion_complete？
+      → 是：
+        → self._pending is None？→ 是就 _enter_error_state()（時序被破壞）
+        → 否：self._change_state(STRIKING)
+          → return self._pending.to_action(should_execute_action=True)
+              ← 讀 IDLE handler 存下的快照，不讀 self._parameters
+  → 分派 self._execute_strike(這次 AIMING handler 回傳的 action)
+```
+
+`AIMING → STRIKING → WAITING → RESET → IDLE` 之後沿用基底類別邏輯自動跑
+完；回到 IDLE 時 `_requested_seq == _handled_seq`（請求已消費），不會自動
+觸發下一次。
+
+### 5.4 Extension 接線總覽
+
+```
+BilliardExtension._billiard_init()
+  → self._hud_panel = HudPanel(self._ext_id,
+        self.get_manual_shot_parameters, self.set_manual_shot_parameters,
+        self.request_manual_shot, self.request_manual_reset,
+        self.get_manual_shot_status_text, self.get_table_geometry)
+    → 建構永遠不拋例外：headless／拿不到 viewport 時 HudPanel 內部
+      安靜跳過建面板（_create_root_frame() 回 None），self._hud_panel
+      本身仍然是一個 HudPanel 實例（不是 None），只是它的 _root_frame
+      是 None、後續呼叫全部安全 no-op
+
+BilliardExtension._build_demo_session()
+  → self._demo_manual_controllers[table_id] = ManualController()
+    （與 table_ball_set 同一個地方建立，_disable_demo() 同一個地方清理）
+
+DebugMenu 切 AI/Manual（Debug Menu 專屬功能，跟 HudPanel 面板本身是否顯示
+無關）
+  → BilliardExtension._on_demo_controller_mode_changed(table_id, is_ai_mode)
+    → session.request_controller_swap(
+          self._build_controller_for_mode(is_ai_mode, table_id, table_ball_set))
+      → is_ai_mode=False 時回傳 self._demo_manual_controllers[table_id]
+        （常駐實例，不可在這裡 new 一個新的——swap 本身會在 TableRuntime.
+        tick() 套用時強制 full_reset()，每次調參數都經過這裡等於每次調參數
+        都重開一局，見第 5.5 節）
+
+HudPanel 呼叫的六個 DI 方法（BilliardExtension）
+  get_manual_shot_parameters(table_id)   → controller.get_parameters() | None
+  set_manual_shot_parameters(table_id, p) → controller.set_parameters(p)
+  request_manual_shot(table_id)          → controller.request_shot()
+  request_manual_reset(table_id)         → session.request_full_reset()
+  get_manual_shot_status_text(table_id)  → 組多行狀態文字（查無 table_id 回 ""）
+  get_table_geometry(table_id)           → (table_z, ball_radius) | None
+  （另外 get_demo_table_ids() 供選桌下拉清單，Training 桌不列入）
+
+  全部方法對未知 table_id 一律 dict.get() → None → 安靜 no-op，沿用
+  _on_demo_controller_mode_changed() 的既定慣例。
+```
+
+### 5.5 為什麼 `ManualController` 必須常駐、參數更新不能走 controller swap
+
+`TableRuntime.tick()` 套用 pending controller 時會強制 `full_reset()`
+（重擺球＋手臂歸位）。若 `_build_controller_for_mode()` 每次都 `new` 一個
+`ManualController` 靠 swap 換上去，等於每次調參數都觸發一次
+`full_reset()`（重開一局），而且新實例是空白的 `ManualShotParameters.
+default()`，會讓使用者已經調好的參數憑空消失。真正的參數更新走
+`ManualController.set_parameters()`（單一物件參照賦值），完全不經過
+`_build_controller_for_mode()`、也不經過 swap——`set_manual_shot_
+parameters()` 直接對常駐字典裡的實例呼叫，這是本次接線設計裡最容易被
+「看起來很自然」的重構破壞的一條路徑。
+
+---
+
+## 6. 關鍵設計決策與理由
+
+### 6.1 用序號而非 bool 旗標傳遞擊球請求
+
+`request_shot()` 由 UI 執行緒呼叫，`_idle_state_action_result()` 由
+physics 執行緒呼叫，兩者沒有鎖保護。若用 `bool` 旗標，消費端勢必要寫成
+`pending = self._flag; self._flag = False`（read-modify-write），這段
+序列不是原子操作，兩個執行緒交錯時可能漏掉一次請求或誤判成兩次。序號法
+讓每個欄位只有唯一寫者：`_requested_seq` 只被 UI 執行緒寫、`_handled_seq`
+只被 physics 執行緒寫，兩邊都只讀對方的欄位，不存在 lost update；
+`is_shot_pending()` 只是比較兩個整數，讀到任一方「寫到一半」的中間狀態
+也不影響正確性（int 賦值本身是原子的）。連按多次只會讓 `_requested_seq`
+多加幾次，消費時一次性追平成同一個值，等效於合併成一次擊球——刻意不做
+擊球佇列。也因此**不需要 `threading.Lock`**：physics callback 每個 tick
+都會經過 `get_action()`，若在這條熱路徑上取鎖，是拿一筆確定會發生的效能
+成本去換一個原本就不存在的競態。
+
+### 6.2 `frozen=True` + tuple 欄位是執行緒安全的基礎
+
+UI 端的寫入模式是「整包算好再一次賦值」——拖曳/輸入事件在 UI 執行緒裡各自
+更新暫存值，全部合法之後才建構一個新的 `ManualShotParameters` 蓋掉舊的。
+physics 端的讀取模式是「一次讀出整包」——`_idle_state_action_result()`
+只在進入 AIMING 的那一刻讀一次。兩邊都不會讀到「角度已更新但速度還沒」
+這種中間態：因為欄位是 frozen，唯一能看到的狀態只有「換之前的完整一份」
+或「換之後的完整一份」，不存在逐欄位修改途中被另一個執行緒讀到一半的
+問題。這比對 4 個欄位分別上鎖便宜得多，也不需要鎖。
+
+### 6.3 AIM 與 STRIKE 讀同一份快照 `_pending`
+
+兩次分派之間（AIM 發生在 IDLE→AIMING、STRIKE 發生在 AIMING→STRIKING）
+使用者可能已經在瞄準動畫播放期間改了面板上的值。若各自去讀
+`self._parameters` 這個「即時值」，會變成「照舊角度瞄準、照新速度打」；
+改擺位更糟——AIM 已經把母球 teleport 到舊位置，STRIKE 卻對著空氣揮桿。
+做法與 `ModelController` 快取 `_cached_raw_action` 是同一個理由：一次
+決策，兩次分派共用同一份輸出。`to_action()` 每次呼叫都回傳全新 `Action`
+物件（`Action` 是 mutable dataclass，下游會直接改它），若快取單一
+instance 重複回傳，AIM 用過的 Action 被下游改動後，STRIKE 讀到的就不再
+是原本的參數。
+
+### 6.4 不要重新實作換算邏輯
+
+`shot_panel_input_mapper.py` 的偏移裁切固定走
+`position_offset_limiter.clamp_position_offset()`（圓形裁切）而不是逐軸
+clip——逐軸 clip 會改變偏移方向，而偏移方向就是加旋方向（#222 的教訓）。
+正規化/反正規化固定走 `rl_action_decoder.normalize_axis()`/
+`denormalize_axis()`，不自己乘 0.5 或除以 half_span——即使數學上等價，
+換算漂移不會報錯（#228），兩個方向都公開是為了對稱，避免下一個人只看到
+`denormalize_axis` 是公開的就自己重算正規化那一半。
+
+### 6.5 headless 必須安靜跳過建面板
+
+`omni.kit.viewport.utility.get_active_viewport_window()` 在 headless 或
+viewport 尚未建立時回傳 `None`；`_create_root_frame()` 對這兩種情況（含
+`ImportError`）一律回傳 `None`，`HudPanel.__init__()` 檢查到 `None` 就
+提早 return，不建立任何 widget、也不拋例外。這不是防禦性程式碼，是硬性
+要求——`_billiard_init()` 無條件建構 `HudPanel`（跟 `DebugMenu` 一樣），
+`scripts/` 底下所有 headless 驗證腳本（`verify_manual_controller_wiring.py`
+等十幾支）都會在 extension 啟動時經過這條路徑，若建面板這一步會炸掉，
+等於這次任務破壞了所有既有的 headless 驗證能力。
+
+---
+
+## 7. 測試策略
+
+### 7.1 core 層：Unit Test（TDD 先寫，738 → 882）
+
+| 檔案 | 覆蓋重點 |
+|---|---|
+| `test_manual_shot_bounds.py` | `MANUAL_SHOT_ANGLE == (-160, 160)`；其餘四項與 `action_bounds` 完全相等；手動 `Action` 餵 `normalize_action()` 拋 `ValueError`（可執行的文件，見 8.1 節） |
+| `test_manual_shot_parameters.py` | `default()` 對齊 `BREAK_SHOT_POSITIONS[0]`/`CUE_BALL_SPEED[1]`；`to_action()` 每次回新物件；frozen 賦值拋 `FrozenInstanceError`；各欄位越界拋 `ValueError` |
+| `test_shot_panel_input_mapper.py` | 圓心/四極值/45° 圓周；拖到圓外方向保持（#222 回歸）；俯瞰圖四角+中心+round-trip；`shot_angle_from_points` 與 `compute_tilted_direction()` 的往返驗證；`clamp_manual_shot_angle` 夾到 ±160；退化/NaN 輸入拋 `ValueError` |
+| `test_manual_controller.py` | `test_stays_in_idle_forever_without_shot_request`（跑 100 tick 仍 IDLE，驗收錨點）；一次觸發後回 IDLE 停住；連按合併；球未靜止時保留請求；AIMING 期間改參數不影響 STRIKE；reset 丟請求保留參數；`_pending is None` 進 ERROR |
+| `test_manual_shot_feasibility.py` | 開球點 0° 可行；母球在 `CUE_BALL_PLACEMENT_Y` 下界 0° 為 `geometry_unsolvable`（實測掃描找出的座標，不是照抄計畫文件推斷，見該測試檔註解）；`ManualShotParameters` 版本與底層版本結果一致 |
+
+`core/tests` 目前為 **882 passed**（第 6 節收尾時再次確認，見交付標準）。
+
+### 7.2 extension 層：Unit Test 豁免，改用 headless 驗證腳本 + GUI 清單
+
+`HudPanel`/`TableComboBoxModel`/`BilliardExtension` 的接線屬於 UI 元件與
+視覺呈現邏輯（依 `docs/unit-test-rules.md` 條件 4/5），比照
+`debug-menu-dynamic-tables-tech-design.md` 第 7 節的既有先例，Unit Test
+豁免，改用兩種手段：
+
+1. **Headless 驗證腳本 `scripts/verify_manual_controller_wiring.py`**：
+   走真實路徑（不 mock 任何 Isaac Sim / core 元件），驗證常駐
+   `ManualController` 的接線正確（identity、不自動循環、按鈕觸發、參數
+   更新不重擺球、未知 table_id 不拋例外），另外補一項驗證 `HudPanel` 在
+   headless 環境安靜不建立內部 widget、extension 啟動不拋例外（見 8.2 節）。
+2. **GUI 人工確認清單 `docs/hud-shot-panel-gui-verification-checklist.md`**：
+   驗證 headless 驗不出來的部分——overlay 的視覺呈現、滑鼠拖曳與 viewport
+   相機操作的互動、收合鈕、俯瞰圖的拖曳手感、瞄準線顏色與擊球鈕的可行性
+   閘門是否正確反映在畫面上。
+
+### 7.3 已知限制與待實測項目
+
+- `hud_panel.py` 的 `_create_root_frame()` 與 `_to_local()` 兩處明確隔離
+  了 spike 未證實的假設（見第 1 節查證結果與第 6.5 節），**尚未在有
+  Isaac Sim 的 GUI 環境實際跑過** `probe_omni_ui_shot_panel_widgets.py`
+  與 `probe_viewport_overlay_drag.py`——這兩支腳本本身也只是「寫好、語法
+  正確、等有 Isaac Sim 的環境去跑」的狀態。
+- overlay 上的滑鼠拖曳會不會被 viewport 相機操作吃掉，是全計畫最大的
+  未知，只能在 GUI 下親手驗證，詳見
+  `docs/hud-shot-panel-gui-verification-checklist.md` 的「先決條件」一節
+  與計畫書的風險表（備援順序：停用相機互動 → 加吃事件的透明層 → 退回
+  獨立 `ui.Window`）。
+- `get_frame()` 在 viewport 重建（切換渲染器、切換 viewport 佈局）後是否
+  仍然有效，官方文件完全沒有討論，需要在 GUI 下順便觀察（viewport 縮放/
+  最大化那幾項確認項目）。
+- 走位球（cue ball 不受 Kitchen 限制）與 Milestone B 把 `action_bounds.
+  SHOT_ANGLE` 改回整圈之後，`manual_shot_bounds.py` 的角度項應該退化為
+  直接轉出 `SHOT_ANGLE`；`manual_shot_feasibility.py` 需要補上基座位置
+  檢查（`reason` 會多一個 `"base_inside_table"`）——目前刻意不做（YAGNI），
+  屆時再處理。
