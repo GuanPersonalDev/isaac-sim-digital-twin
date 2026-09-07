@@ -214,3 +214,51 @@ class TestTableRuntime:
         table_runtime.tick()
 
         orchestrator.full_reset.assert_not_called()
+
+    def test_request_controller_swap_does_not_apply_immediately(
+        self,
+        table_runtime: TableRuntime,
+        orchestrator: MagicMock,
+    ):
+        controller = MagicMock()
+
+        table_runtime.request_controller_swap(controller)
+
+        orchestrator.set_controller.assert_not_called()
+        orchestrator.full_reset.assert_not_called()
+
+    def test_controller_swap_applies_on_next_tick_before_full_reset(
+        self,
+        table_runtime: TableRuntime,
+        observation_builder: MagicMock,
+        orchestrator: MagicMock,
+        observation: Observation,
+    ):
+        controller = MagicMock()
+        observation_builder.build.return_value = observation
+        calls = []
+        orchestrator.set_controller.side_effect = lambda c: calls.append(("set_controller", c))
+        orchestrator.full_reset.side_effect = lambda: calls.append(("full_reset",))
+
+        table_runtime.request_controller_swap(controller)
+        table_runtime.tick()
+
+        # 換策略之後必須強制重新開局，不能讓新策略接手舊的殘留狀態
+        assert calls == [("set_controller", controller), ("full_reset",)]
+
+    def test_controller_swap_runs_only_once(
+        self,
+        table_runtime: TableRuntime,
+        observation_builder: MagicMock,
+        orchestrator: MagicMock,
+        observation: Observation,
+    ):
+        observation_builder.build.return_value = observation
+        controller = MagicMock()
+
+        table_runtime.request_controller_swap(controller)
+        table_runtime.tick()
+        table_runtime.tick()
+
+        orchestrator.set_controller.assert_called_once_with(controller)
+        orchestrator.full_reset.assert_called_once_with()

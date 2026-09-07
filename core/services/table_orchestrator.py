@@ -39,6 +39,12 @@ class TableOrchestrator(ABC):
         self._error_state = error_state
         self._rolling_resistance_service = rolling_resistance_service
 
+    def set_controller(self, controller: ControllerBase) -> None:
+        """替換操作策略（例如 Debug UI 切換手動/AI 模式）。純賦值，不做
+        reset——呼叫端（見 TableRuntime 的 pending 機制）負責決定何時安全
+        套用，新控制器接手前應該先讓狀態機回到乾淨的開局。"""
+        self._script_controller = controller
+
     def step(self, observation: Observation) -> None:
         """
         每個 tick 呼叫一次的共用骨架，見 docs/tech-design-5-9-table-orchestrator.md 第 3 節、

@@ -147,6 +147,43 @@ class TestGetCurrentState:
         assert training_orchestrator.get_current_state() == BilliardStatus.IDLE
 
 
+class TestSetController:
+    def test_demo_orchestrator_set_controller_replaces_the_one_get_current_state_uses(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+    ):
+        new_controller = MagicMock(spec=ControllerBase)
+        new_controller.get_current_state.return_value = BilliardStatus.AIMING
+
+        demo_orchestrator.set_controller(new_controller)
+
+        assert demo_orchestrator.get_current_state() == BilliardStatus.AIMING
+
+    def test_training_orchestrator_set_controller_replaces_the_one_get_current_state_uses(
+        self,
+        training_orchestrator: TrainingTableOrchestrator,
+    ):
+        new_controller = MagicMock(spec=ControllerBase)
+        new_controller.get_current_state.return_value = BilliardStatus.STRIKING
+
+        training_orchestrator.set_controller(new_controller)
+
+        assert training_orchestrator.get_current_state() == BilliardStatus.STRIKING
+
+    def test_set_controller_stops_using_the_old_controller(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+    ):
+        new_controller = MagicMock(spec=ControllerBase)
+
+        demo_orchestrator.set_controller(new_controller)
+        demo_orchestrator.step(_observation())
+
+        script_controller.get_action.assert_not_called()
+        new_controller.get_action.assert_called_once()
+
+
 class TestStepDispatch:
     def test_step_dispatches_reset_when_should_execute_action_true(
         self,

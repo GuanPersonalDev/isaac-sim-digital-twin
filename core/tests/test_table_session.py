@@ -93,6 +93,15 @@ class TestTableSession:
 
         runtime.request_full_reset.assert_called_once_with()
 
+    def test_request_controller_swap_delegates_to_runtime(
+        self, table_session: TableSession, runtime: MagicMock
+    ):
+        controller = MagicMock()
+
+        table_session.request_controller_swap(controller)
+
+        runtime.request_controller_swap.assert_called_once_with(controller)
+
     def test_get_current_state_delegates_to_runtime(
         self, table_session: TableSession, runtime: MagicMock
     ):

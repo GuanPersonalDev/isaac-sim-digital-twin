@@ -16,7 +16,9 @@ for p in [_EXT_DIR, _PROJECT_ROOT]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from core.controllers.controller_base import ControllerBase
 from core.controllers.model_controller import ModelController
+from core.controllers.script_controller import ScriptController
 from core.models.table_ball_set import TableBallSet
 from core.models.robot_arm import RobotArm
 from core.models.barrett_wam_robot import BarrettWamRobot
@@ -86,6 +88,9 @@ class BilliardExtension(omni.ext.IExt):
         self._training_sessions: list[TableSession] = []
         self._demo_sessions: list[DemoTableSession] = []
         self._demo_articulation_apis: dict[str, ArticulationAPIImpl] = {}
+        # Debug Menu 切換操作策略要重建 controller，需要當初建 session 時
+        # 用過的 table_ball_set（ModelController 建構參數之一）。
+        self._demo_table_ball_sets: dict[str, TableBallSet] = {}
         # Training 球檯預設關閉（效能，見 docs/CHANGELOG.md「GUI FPS 調校」）：
         # 在 GUI Demo 情境下沒有畫面用途，需要時可從 Debug Menu 的 toggle 開回來。
         self._training_enabled = False
@@ -158,6 +163,7 @@ class BilliardExtension(omni.ext.IExt):
             self.get_table_ids,
             self.get_table_debug_info,
             self.get_ball_velocities_text,
+            self._on_demo_controller_mode_changed,
         )
 
         self._event_init()
@@ -284,13 +290,15 @@ class BilliardExtension(omni.ext.IExt):
         # get_dof_positions_for_debug() 是除錯專用方法，刻意不加進正式 port。
         self._demo_articulation_apis[table_id] = articulation_api
 
+        table_ball_set = table.get_table_ball_set()
+        if table_ball_set is None:
+            raise RuntimeError(f"{table_id} 剛建立卻沒有 TableBallSet，無法建立 DemoTableSession")
+        self._demo_table_ball_sets[table_id] = table_ball_set
+
         robot_manager = TableRobotManager(
             table.get_table_center(), table_id, self._stage_api, articulation_api, _ROBOT_ARM_CLASS
         )
 
-        table_ball_set = table.get_table_ball_set()
-        if table_ball_set is None:
-            raise RuntimeError(f"{table_id} 剛建立卻沒有 TableBallSet，無法建立 DemoTableSession")
         robot_arm = robot_manager.get_robot()
         if robot_arm is None:
             raise RuntimeError(f"{table_id} 剛建立卻沒有 RobotArm，無法建立 DemoTableSession")
@@ -334,8 +342,31 @@ class BilliardExtension(omni.ext.IExt):
             session.destroy()
         self._demo_sessions = []
         self._demo_articulation_apis = {}
+        self._demo_table_ball_sets = {}
         if self._debug_menu:
             self._debug_menu.set_available_tables(self.get_table_ids())
+
+    def _build_controller_for_mode(
+        self, is_ai_mode: bool, table_ball_set: TableBallSet
+    ) -> ControllerBase:
+        """Debug Menu 的操作策略切換用。Script 模式先借用既有的固定開球
+        ScriptController 當「非 AI」示範選項，#115 的手動參數面板落地後可
+        以換掉這個分支回傳的實例，呼叫端（DemoTableSession.
+        request_controller_swap()）完全不用改。"""
+        if is_ai_mode:
+            return self._build_model_controller(table_ball_set)
+        return ScriptController()
+
+    def _on_demo_controller_mode_changed(self, table_id: str, is_ai_mode: bool) -> None:
+        """Debug Menu 切換操作策略的入口。table_id 對不到任何已知的 Demo
+        桌（例如選到的是 Training 桌，或桌子剛好被 toggle 關掉）時安靜略過
+        ——這是 Debug 工具，沒有對應的桌子代表選單當下沒有意義的操作對象，
+        不需要報錯。"""
+        session = self._find_session(table_id)
+        table_ball_set = self._demo_table_ball_sets.get(table_id)
+        if session is None or table_ball_set is None:
+            return
+        session.request_controller_swap(self._build_controller_for_mode(is_ai_mode, table_ball_set))
 
     def _on_training_toggle(self, enable: bool) -> None:
         self._training_enabled = enable

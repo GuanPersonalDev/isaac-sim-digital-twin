@@ -1,3 +1,4 @@
+from ..controllers.controller_base import ControllerBase
 from ..models.billiard_state import BilliardStatus
 from ..models.observation import Observation
 from .observation_builder import ObservationBuilder
@@ -9,8 +10,16 @@ class TableRuntime:
         self._orchestrator = orchestrator
         self._last_observation: Observation | None = None
         self._pending_full_reset = False
+        self._pending_controller: ControllerBase | None = None
 
     def tick(self) -> None:
+        if self._pending_controller is not None:
+            self._orchestrator.set_controller(self._pending_controller)
+            self._pending_controller = None
+            # 換了操作策略之後一定要重新開局：舊策略可能留在 AIMING/STRIKING
+            # 一半，新策略的狀態機是從 RESET 起跳，兩者的假設對不上。
+            self._pending_full_reset = True
+
         if self._pending_full_reset:
             self._pending_full_reset = False
             self._orchestrator.full_reset()
@@ -31,6 +40,12 @@ class TableRuntime:
         self._orchestrator.reset()
         self._last_observation = None
         self._pending_full_reset = True
+
+    def request_controller_swap(self, controller: ControllerBase) -> None:
+        """外部（Debug UI）呼叫入口：換手臂的操作策略。跟 request_full_reset()
+        同樣的理由，不在呼叫當下立刻套用——這通常是從 UI callback 觸發，不在
+        physics step 內，實際套用要等下一個 tick。"""
+        self._pending_controller = controller
 
     def get_last_observation(self) -> Observation | None:
         return self._last_observation

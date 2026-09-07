@@ -1,3 +1,4 @@
+from ..controllers.controller_base import ControllerBase
 from ..models.billiard_state import BilliardStatus
 from ..models.billiard_table import BilliardTable
 from ..models.observation import Observation
@@ -51,6 +52,11 @@ class TableSession:
         的狀態。
         """
         self._runtime.request_full_reset()
+
+    def request_controller_swap(self, controller: ControllerBase) -> None:
+        """換這張桌子的操作策略（例如 Debug UI 切換 AI/腳本模式），下一個
+        tick 生效並強制重新開局。"""
+        self._runtime.request_controller_swap(controller)
 
     def get_current_state(self) -> BilliardStatus:
         return self._runtime.get_current_state()

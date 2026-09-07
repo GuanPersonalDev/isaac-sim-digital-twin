@@ -73,6 +73,7 @@ class DebugMenu:
         get_table_ids: Callable[[], list[str]],
         get_table_debug_info: Callable[[str], str],
         get_ball_velocities_text: Callable[[str], str],
+        on_controller_mode_changed: Callable[[str, bool], None],
     ) -> None:
         self._window = omni.ui.Window(
             "Billiard Debug",
@@ -86,6 +87,7 @@ class DebugMenu:
         self._get_table_ids = get_table_ids
         self._get_table_debug_info = get_table_debug_info
         self._get_ball_velocities_text = get_ball_velocities_text
+        self._on_controller_mode_changed = on_controller_mode_changed
         self._show_ball_velocities = False
         self._table_combo_model = _TableComboBoxModel()
         self._build_ui()
@@ -131,6 +133,24 @@ class DebugMenu:
                     omni.ui.Label("Table")
                     omni.ui.ComboBox(self._table_combo_model, width=180, height=24)
 
+                with omni.ui.HStack(height=24):
+                    # 對「Table」選中的那張桌子換操作策略；true=AI
+                    # （ModelController，訓練好的 policy 決定擊球）、
+                    # false=Script（固定開球，見 #115 手動參數面板落地前的
+                    # 過渡選項）。沒選桌子時按下無效果，是刻意的 no-op。
+                    omni.ui.Label("Controller: AI / Script")
+                    controller_mode_model = omni.ui.SimpleBoolModel(True)
+                    omni.ui.ToolButton(
+                        text="",
+                        model=controller_mode_model,
+                        width=50,
+                        height=24,
+                        style=toggle_style,
+                    )
+                    controller_mode_model.add_value_changed_fn(
+                        self._on_controller_mode_toggle
+                    )
+
                 self._status_label = omni.ui.Label("", word_wrap=True)
 
                 with omni.ui.HStack(height=24):
@@ -148,6 +168,12 @@ class DebugMenu:
                     )
 
                 self._velocity_label = omni.ui.Label("", word_wrap=True)
+
+    def _on_controller_mode_toggle(self, model: omni.ui.SimpleBoolModel) -> None:
+        table_id = self._table_combo_model.get_selected_table_id()
+        if table_id is None:
+            return
+        self._on_controller_mode_changed(table_id, model.get_value_as_bool())
 
     def set_available_tables(self, table_ids: list[str]) -> None:
         self._table_combo_model.set_items(table_ids)

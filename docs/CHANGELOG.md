@@ -681,3 +681,32 @@ p95 砍半，佐證了鎖爭用的診斷。**但沒有採用**：Fabric 換掉�
 完全正確（材質、可見性切換、`TableBallSet.hide_ball()` 的進袋隱藏）必須肉眼確認，而且
 `useFabricSceneDelegate` 一般是啟動期設定，在 runtime 才設不保證完全生效。要採用的話應該
 走啟動參數並實際看畫面。
+
+---
+
+## core/services/table_orchestrator.py／table_runtime.py／table_session.py（續）— 操作策略可替換（2026-09-07）
+
+背景：`#115`（HUD 手動參數面板）跟 `ModelController`（RL policy 自動推論）之間曾懷疑有衝突——
+兩者若同時對同一張桌子下指令，policy 剛推論完的 Action 又被 UI 蓋掉，Demo 會分不清是 AI 打的
+還是人打的。查證原始規劃（`docs/phase3-task-breakdown.md` Block 8「參數化控制與中途展示點」、
+`docs/phase3-schedule.md` 51 行的敘事合併決定）後確認：這兩者本來就設計成**時間軸上先後出現的
+獨立示範**（手動參數化控制 → RL 訓練 → 手臂執行），不是要同時搶同一個執行權，只是 issue 內文
+沒寫清楚。
+
+解法：`TableOrchestrator` 本來就用建構子注入 `ControllerBase`（`core/controllers/controller_base.py`
+的抽象介面，`ScriptController`／`ModelController` 已經是並列實作），只是注入後不能換。新增
+`TableOrchestrator.set_controller()`——純賦值，不做 reset；由 `TableRuntime` 的 pending 旗標機制
+（跟既有 `request_full_reset()` 同一套模式）決定何時套用：Debug UI 的 callback 不在 physics step
+內，只記錄「要換成誰」，實際套用與強制 `full_reset()`（新策略不能繼承舊策略留下的狀態機/球位）
+都排到下一個 tick。`TableSession.request_controller_swap()` 是對外的轉發入口。
+
+`billiard_digital_twin.py` 新增 `_build_controller_for_mode()`／`_on_demo_controller_mode_changed()`
+接上 Debug Menu 新增的「Controller: AI / Script」切換鈕（`extension/ui/debug_menu.py`）。Script
+模式目前借用既有的固定開球 `ScriptController` 當「非 AI」示範選項的過渡——真正的手動參數面板
+（#115 本體）完工後只要換掉 `_build_controller_for_mode()` 回傳的實例，呼叫端完全不用改。
+
+驗證：`core/tests` 新增 9 個測試（`set_controller()` 生效、pending 機制的套用時機與只套用一次、
+`TableSession` 轉發），738 個全過；`scripts/verify_controller_mode_switch.py` 走 DebugMenu 的
+真實呼叫路徑（headless）驗證：初始為 `ModelController` → 呼叫當下不立刻套用 → 下個 tick 換成
+`ScriptController` 且跑 60 tick 不進 ERROR → 切回 `ModelController` → 對不存在的 table_id 呼叫
+安靜略過不拋例外，全部 PASS。
