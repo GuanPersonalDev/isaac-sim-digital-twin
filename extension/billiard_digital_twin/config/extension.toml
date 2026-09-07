@@ -16,6 +16,11 @@ description = "9-ball billiard robot simulation extension"
 "omni.timeline" = {}
 "omni.ui" = {}
 "omni.kit.menu.utils" = {}
+# #115 手動擊球面板（HudPanel）用 get_active_viewport_window() 疊 overlay，
+# 見 extension/ui/hud_panel.py 的 _create_root_frame()。import 本身已經包了
+# try/except ImportError（headless／模組不存在時安靜跳過建面板），這裡宣告
+# 依賴只是為了讓一般 GUI 環境下模組能被正確解析載入。
+"omni.kit.viewport.utility" = {}
 
 [[python.module]]
 name = "billiard_digital_twin"

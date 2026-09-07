@@ -43,6 +43,7 @@ from isaac_sim_impl_6_0.physics_api_impl import PhysicsAPIImpl
 from isaac_sim_impl_6_0.physics_scene_tuning import configure_physics_scene_for_demo_scale
 from isaac_sim_impl_6_0.torch_script_policy_impl import TorchScriptPolicyImpl
 from ui.debug_menu import DebugMenu
+from ui.hud_panel import HudPanel
 from ui.tool_menu_registry import discover_and_register, unregister
 from core.models.billiard_table import BilliardTable
 from core.models.table_robot_manager import TableRobotManager
@@ -89,6 +90,11 @@ class BilliardExtension(omni.ext.IExt):
         # 疊出 overlay，get_frame() 吃 ext_id 當 key，所以要存下來給那裡用。
         self._ext_id = ext_id
         self._debug_menu = None
+        # #115 手動擊球面板（階段 4）：與 _debug_menu 同一套生命週期慣例，
+        # 建構失敗（headless 拿不到 viewport）時 HudPanel 內部會安靜跳過建
+        # 面板但不拋例外，這裡先設 None 是為了讓 _disable_demo()/on_shutdown()
+        # 在 _billiard_init() 還沒跑到（stage 尚未載入）就被呼叫時也安全。
+        self._hud_panel = None
         self._training_sessions: list[TableSession] = []
         self._demo_sessions: list[DemoTableSession] = []
         self._demo_articulation_apis: dict[str, ArticulationAPIImpl] = {}
@@ -174,6 +180,19 @@ class BilliardExtension(omni.ext.IExt):
             self.get_joint_state_text,
         )
 
+        # #115 手動擊球面板（階段 4）：建構永遠不拋例外（headless／拿不到
+        # viewport 時 HudPanel 內部安靜跳過建面板），不需要額外的
+        # try/except 包住這一行——見 HudPanel._create_root_frame() docstring。
+        self._hud_panel = HudPanel(
+            self._ext_id,
+            self.get_manual_shot_parameters,
+            self.set_manual_shot_parameters,
+            self.request_manual_shot,
+            self.request_manual_reset,
+            self.get_manual_shot_status_text,
+            self.get_table_geometry,
+        )
+
         self._event_init()
 
         self._tick_callback_id = SimulationManager.register_callback(
@@ -245,6 +264,8 @@ class BilliardExtension(omni.ext.IExt):
                 self._training_sessions.append(self._build_training_session(table_id, table))
                 index += 1
 
+        if self._hud_panel:
+            self._hud_panel.set_available_tables(self.get_demo_table_ids())
         if self._debug_menu:
             self._debug_menu.set_available_tables(self.get_table_ids())
 
@@ -272,6 +293,8 @@ class BilliardExtension(omni.ext.IExt):
         for session in self._training_sessions:
             session.destroy()
         self._training_sessions = []
+        if self._hud_panel:
+            self._hud_panel.set_available_tables(self.get_demo_table_ids())
         if self._debug_menu:
             self._debug_menu.set_available_tables(self.get_table_ids())
 
@@ -286,6 +309,8 @@ class BilliardExtension(omni.ext.IExt):
             session.initialize_articulation()
         self._demo_sessions.append(session)
 
+        if self._hud_panel:
+            self._hud_panel.set_available_tables(self.get_demo_table_ids())
         if self._debug_menu:
             self._debug_menu.set_available_tables(self.get_table_ids())
 
@@ -355,6 +380,13 @@ class BilliardExtension(omni.ext.IExt):
         self._demo_articulation_apis = {}
         self._demo_table_ball_sets = {}
         self._demo_manual_controllers = {}
+        # #115 手動擊球面板：面板本身跟 _debug_menu 一樣常駐（_billiard_init()
+        # 建立、只在 on_shutdown() 銷毀），Demo 全關時不銷毀面板，只是沒有可
+        # 操作的桌子——下面 push 空清單後，面板的選桌下拉會自動清空選擇
+        # （TableComboBoxModel.set_items() 的既定行為），控制項的 callback
+        # 走 get_selected_table_id() 回 None 那條路徑安靜 no-op。
+        if self._hud_panel:
+            self._hud_panel.set_available_tables(self.get_demo_table_ids())
         if self._debug_menu:
             self._debug_menu.set_available_tables(self.get_table_ids())
 
@@ -447,6 +479,27 @@ class BilliardExtension(omni.ext.IExt):
             f"{name}: q={position:.3f} qd={velocity:.3f}"
             for name, position, velocity in zip(names, positions, velocities)
         )
+
+    def get_demo_table_ids(self) -> list[str]:
+        """給 HUD 面板（#115）選桌下拉用：只回傳 Demo 桌 id，不像
+        `get_table_ids()` 把 Training 桌也算進去——Training 桌沒有
+        `ManualController`，選了也沒有對應的手動控制可用。"""
+        return [session.get_table_id() for session in self._demo_sessions]
+
+    def get_table_geometry(self, table_id: str) -> tuple[float, float] | None:
+        """給 HUD 面板（#115）的可行性判斷（`evaluate_manual_shot_parameters`）
+        用：回傳 `(table_z, ball_radius)`。
+
+        ⚠️ `table_z` 一律取自 `TableBallSet.get_table_z()` 這個真實生產值
+        （目前是 `BilliardTable._z_pos == 0.0`），不可以寫死——某些測試檔
+        用的 `0.75` 只是測試場景，套用到這裡會讓可行性判斷用錯 z 值，得到
+        「母球貼庫仍可行」這種錯誤結論。查無 table_id 回傳 None，沿用
+        `get_manual_shot_parameters()` 的既定慣例，讓面板自行決定要不要
+        跳過可行性檢查。"""
+        table_ball_set = self._demo_table_ball_sets.get(table_id)
+        if table_ball_set is None:
+            return None
+        return table_ball_set.get_table_z(), table_ball_set.get_ball_radius()
 
     def get_manual_shot_parameters(self, table_id: str) -> ManualShotParameters | None:
         """給 HUD 面板（#115）切桌時回填控制項用。查無 table_id（例如選到
@@ -595,6 +648,11 @@ class BilliardExtension(omni.ext.IExt):
         if self._debug_menu:
             self._debug_menu.destroy()
             self._debug_menu = None
+        # #115 手動擊球面板：與 _debug_menu 同一套生命週期慣例（_billiard_init()
+        # 建立、只在這裡銷毀），不在 _disable_demo() 銷毀——見該方法的說明。
+        if self._hud_panel:
+            self._hud_panel.destroy()
+            self._hud_panel = None
         self._sub = None
         self._timeline_sub = None
         self._auto_play_sub = None
