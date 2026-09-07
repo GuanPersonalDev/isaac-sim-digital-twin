@@ -1140,6 +1140,22 @@ class ArticulationAPIImpl(ArticulationAPI):
             return []
         return np.asarray(self._articulation.get_dof_positions())[0].tolist()
 
+    def get_dof_velocities_for_debug(self) -> list[float]:
+        """僅供除錯用，同 `get_dof_positions_for_debug()`：回傳目前所有
+        關節角速度（旋轉關節 rad/s，UR10e 的 CueSlideJoint 是 m/s），供
+        Debug Menu 逐關節顯示使用。"""
+        if self._articulation is None:
+            return []
+        return np.asarray(self._articulation.get_dof_velocities())[0].tolist()
+
+    def get_dof_names_for_debug(self) -> list[str]:
+        """僅供除錯用，回傳關節名稱，順序與 `get_dof_positions_for_debug()`／
+        `get_dof_velocities_for_debug()` 一致，供 Debug Menu 標示每一列是
+        哪個關節。"""
+        if self._articulation is None:
+            return []
+        return list(self._articulation.dof_names)
+
     def is_motion_complete(self) -> bool:
         if self._ur10e_mode:
             # 退桿完成的那個 tick，_ur10e_active_controller 仍然是

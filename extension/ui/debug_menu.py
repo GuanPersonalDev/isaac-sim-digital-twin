@@ -73,6 +73,7 @@ class DebugMenu:
         get_table_ids: Callable[[], list[str]],
         get_table_debug_info: Callable[[str], str],
         on_controller_mode_changed: Callable[[str, bool], None],
+        get_joint_state_text: Callable[[str], str],
     ) -> None:
         self._window = omni.ui.Window(
             "Billiard Debug",
@@ -86,6 +87,7 @@ class DebugMenu:
         self._get_table_ids = get_table_ids
         self._get_table_debug_info = get_table_debug_info
         self._on_controller_mode_changed = on_controller_mode_changed
+        self._get_joint_state_text = get_joint_state_text
         self._table_combo_model = _TableComboBoxModel()
         self._build_ui()
         asyncio.ensure_future(self._dock_to_viewport())
@@ -149,6 +151,7 @@ class DebugMenu:
                     )
 
                 self._status_label = omni.ui.Label("", word_wrap=True)
+                self._joint_state_label = omni.ui.Label("", word_wrap=True)
 
     def _on_controller_mode_toggle(self, model: omni.ui.SimpleBoolModel) -> None:
         table_id = self._table_combo_model.get_selected_table_id()
@@ -163,9 +166,11 @@ class DebugMenu:
         table_id = self._table_combo_model.get_selected_table_id()
         if table_id is None:
             self._status_label.text = ""
+            self._joint_state_label.text = ""
             return
 
         self._status_label.text = self._get_table_debug_info(table_id)
+        self._joint_state_label.text = self._get_joint_state_text(table_id)
 
     async def _dock_to_viewport(self) -> None:
         target_window = None

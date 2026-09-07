@@ -710,3 +710,19 @@ p95 砍半，佐證了鎖爭用的診斷。**但沒有採用**：Fabric 換掉�
 真實呼叫路徑（headless）驗證：初始為 `ModelController` → 呼叫當下不立刻套用 → 下個 tick 換成
 `ScriptController` 且跑 60 tick 不進 ERROR → 切回 `ModelController` → 對不存在的 table_id 呼叫
 安靜略過不拋例外，全部 PASS。
+
+---
+
+## extension/isaac_sim_impl_6_0/articulation_api_impl.py（續）— 關節角度/角速度除錯讀取（2026-09-07）
+
+確認 `isaacsim.core.experimental.prims.Articulation` 除了既有的 `get_dof_positions()`
+（`get_dof_positions_for_debug()` 已在用），還有對稱的 `get_dof_velocities()`，兩者
+shape 一致；`dof_names` 也已是既有屬性。三者組合起來就能逐關節列出名稱/角度/角速度，
+headless 實測（`scripts/verify_joint_state_debug_getters.py`）確認：UR10e 7 個關節
+（6 旋轉 + `CueSlideJoint` 滑軌）名稱/角度/速度長度一致、RESET 靜止姿態速度量級合理、
+手臂移動過程中速度確實非零（排除讀到快取值或陣列接錯的可能）。
+
+新增 `get_dof_velocities_for_debug()`／`get_dof_names_for_debug()`，跟既有
+`get_dof_positions_for_debug()` 同一類——僅供除錯用，不進 `ArticulationAPI` 正式介面。
+`billiard_digital_twin.py` 新增 `get_joint_state_text()` 組字串，接上 Debug Menu 新增
+的關節狀態顯示（取代先前拿掉的球速度顯示欄位，位置沿用同一個 Label）。

@@ -163,6 +163,7 @@ class BilliardExtension(omni.ext.IExt):
             self.get_table_ids,
             self.get_table_debug_info,
             self._on_demo_controller_mode_changed,
+            self.get_joint_state_text,
         )
 
         self._event_init()
@@ -407,6 +408,20 @@ class BilliardExtension(omni.ext.IExt):
             f"is_motion_complete: {observation.is_motion_complete}\n"
             f"has_error: {observation.has_error}\n"
             f"Cue ball: {_format_vector(observation.cue_ball_position)}"
+        )
+
+    def get_joint_state_text(self, table_id: str) -> str:
+        """僅 Demo 桌有意義——Training 桌沒有手臂，`_demo_articulation_apis`
+        查不到就回傳空字串（Debug Menu 選到 Training 桌時這一欄自然空白）。"""
+        articulation_api = self._demo_articulation_apis.get(table_id)
+        if articulation_api is None:
+            return ""
+        names = articulation_api.get_dof_names_for_debug()
+        positions = articulation_api.get_dof_positions_for_debug()
+        velocities = articulation_api.get_dof_velocities_for_debug()
+        return "\n".join(
+            f"{name}: q={position:.3f} qd={velocity:.3f}"
+            for name, position, velocity in zip(names, positions, velocities)
         )
 
     def _event_init(self):
