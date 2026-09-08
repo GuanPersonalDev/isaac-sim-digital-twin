@@ -855,3 +855,107 @@ overlay 拖曳會不會被 viewport 相機操作吃掉——全計畫最大未�
 兩支 spike 腳本（`scripts/probe_omni_ui_shot_panel_widgets.py`／
 `scripts/probe_viewport_overlay_drag.py`）列在所有其他確認項目之前，理由同樣是
 「座標系假設一旦錯了，後面所有互動類確認項目的失敗現象都是同一個根因的表徵」。
+
+---
+
+## extension/ui/hud_panel.py — 面板定位方式的除錯歷程（2026-09-08）
+
+真人在 GUI 下實測（本機終於裝好 Isaac Sim，見「面板在沒有 Isaac Sim 的環境下寫成」
+一節），面板從一開始就沒有正確定位在使用者要求的位置，過程中確認了幾件文件查不到、
+只能實測才知道的事：
+
+**第一輪**：原始版面是 `VStack(Spacer + HStack(Spacer + ZStack(width=330px,
+height=100%)))`——用巢狀 Spacer 疊層把面板推到左下角、貼齊 viewport 高度。使用者
+截圖回報高度遠不到 viewport 一半、也沒貼底。根因：`VStack`／`HStack` 本身沒有明確
+定義的高度（由子項內容反推），`ui.Percent` 拿這種「高度未定」的容器當基準，算出來
+的結果不可靠。
+
+**第二輪**：改成單層外層 `ui.ZStack()`（不給 width/height，預設填滿 `self._root_frame`
+＝ viewport 實際渲染尺寸）包住面板，面板本身 `width=ui.Percent(25), height=
+ui.Percent(50)`，並在**面板自己身上**設 `alignment=ui.Alignment.RIGHT_BOTTOM`。
+結果：尺寸這次正確了（單層 Percent 解析沒問題），但位置沒變、還是左上角。
+
+**第三輪**：把 `alignment=ui.Alignment.RIGHT_BOTTOM` 改設在**外層**（比較大、包住面板
+的那個）ZStack 身上，猜測「決定怎麼擺放自己的子項」的語意在外層容器才有意義。結果：
+使用者回報依然是左上角，完全沒變化——代表 `alignment` 這個猜測本身就是錯的方向，不是
+設錯哪一層的問題。
+
+**查證**：委派 `api-lookup` agent 查官方文件，結論是 Stack 家族的 `alignment` 到底是
+「決定我自己的子項怎麼排」還是「決定我在父容器裡怎麼被放置」，兩種語意的官方 API
+參考頁多次擷取都沒有一字一句明確陳述（Sphinx-autodoc 自動產生的頁面不穩定，同一頁
+重複擷取結果會不一致）。反而是 `ui.Placer` 的 `offset_x`/`offset_y` 語意查得到高可信度
+依據：官方風格指南的公式邏輯確認 offset 定位的是子項的**左上角**，不是中心或右下角。
+
+**第四輪（採用）**：放棄 `alignment`，改用 `ui.Placer`：外層 `ui.ZStack()` 填滿
+`self._root_frame`，裡面套一個 `ui.Placer(offset_x=ui.Percent(100-25),
+offset_y=ui.Percent(100-50), width=ui.Percent(100), height=ui.Percent(100))`，
+Placer 內才是面板本體 `ui.ZStack(width=ui.Percent(25), height=ui.Percent(50))`。
+邏輯：子項左上角落在「100% − 子項尺寸%」的位置，子項右下角就會精準貼齊 Placer 範圍
+（＝整個 viewport）的右下角。`Placer` 本身要顯式給 `width=height=ui.Percent(100)`，
+確保 offset 的 Percent 是以整個 viewport 為基準，而不是退化成以子項自身尺寸為基準。
+
+實測確認這一版位置正確（面板落在右下角，尺寸比例也對），第四輪的 Placer
+寫法就是目前定案的版面。
+
+---
+
+## extension/ui/hud_panel.py — 定位修好之後，內容裝回去又冒出的四個問題（2026-09-08）
+
+面板位置定案後，把完整內容（圓形選擇器、俯瞰圖、力道欄、按鈕、狀態列）從
+`_build_diagnostic_background_only()` 換回 `_build_full_panel_content()`，
+使用者實測又回報四件事，逐一處理：
+
+**問題 1：內容裝不下**。粗估總高度（120 圓形選擇器 + 256 俯瞰圖 + 幾個
+24px 列 + 狀態文字）遠超過面板分配到的高度（viewport 高的 1/2）。改用
+`ui.ScrollingFrame`（`horizontal_scrollbar_policy=SCROLLBAR_ALWAYS_OFF`／
+`vertical_scrollbar_policy=SCROLLBAR_AS_NEEDED`），內部 `ui.VStack` 依官方
+範例寫法給 `height=0` 讓內容自然撐高、交給 ScrollingFrame 捲動。標題列跟
+內容放進同一個 ScrollingFrame（不是釘在外面固定不動）——多層巢狀容器的
+高度分配這個 Kit 版本一再證實不可靠（見上一節），標題列滾出畫面外還能
+捲回來看，比再賭一次「剩餘空間怎麼分配」風險小。
+
+**問題 2：中文變成 `??`**。Isaac Sim 內建 UI 字型沒有 CJK 字形。逐一排查
+`hud_panel.py` 全部 UI 顯示字串（`debug_menu.py`／`table_combo_box_model.py`
+本來就是純英文，沒有這個問題），把「力道」「擊球」「重設球局」「角度／
+擺位／不可行」這幾處改成英文（Speed／Shoot／Reset Table／Angle／
+Placement／Infeasible）。程式碼註解維持繁體中文不動——中文顯示不出來的
+只有嵌在 `omni.ui` widget 裡、實際渲染在畫面上的文字。
+
+**問題 3：收合鈕也變成 `?`**。三角形符號 `▼`/`▶` 一樣沒有字形，改用一定有
+字形的 ASCII 字元 `v`/`>`，順便把按鈕從 24px 加大到 28px（連帶外層列高
+也要跟著調整，不然新按鈕會被舊的列高夾住）。
+
+**問題 4：半透明背板不見了**。`_panel_background`（`ui.Rectangle`）跟
+`ScrollingFrame` 是同一層的手足元件，前者沒有明確給 `width`/`height`，
+兩者預設撐滿方式不一致，收合狀態下背板跟著縮成只剩標題列大小。加上明確
+`width=height=ui.Percent(100)`。
+
+修完問題 4 之後背板確實有正確顯示、佔滿整個面板範圍，但使用者回報「還是
+看起來不透明」。委派 Opus 5 深入調查（不是查文件，是直接讀本機 Isaac Sim
+安裝目錄裡 NVIDIA 出貨的原始碼、`omni.ui.dll` 字串表、以及 omni.ui 自己
+的 golden 測試圖實際像素值，證據等級比查文件高很多）：
+
+- `background_color` 的 alpha 確實有生效（golden 圖像素實測完全吻合標準
+  src-over 混色公式），viewport overlay 疊 3D 畫面走的也是一般 omni.ui
+  渲染路徑，沒有額外限制——官方的 Viewport HUD 統計面板、`omni.kit.tool.measure`
+  量測工具都是同一種「ZStack + 半透明 Rectangle + 內容」結構，證實可行。
+- **關鍵發現**：`ui.Rectangle()` 沒套上 style 時的內建預設色是不透明深灰
+  `RGB(41,41,41)`。原本選的 `cl(0.08, 0.08, 0.10, 0.55)` 換算是
+  `RGB(20,20,26)`——跟預設色肉眼幾乎分不出來，「半透明失效」跟「style
+  根本沒套上」兩種情況外觀幾乎一樣。順手嘗試直接套用官方案例的顏色配方
+  （`omni.kit.viewport.window.stats` 用的 `ui.color(0.145, 0.157, 0.165,
+  alpha)`）也踩到同一個陷阱——換算出來是 `RGB(37,40,42)`，一樣接近預設灰，
+  等於白改。改用刻意偏藍、遠離中性灰的色調 `cl(0.05, 0.08, 0.16, 0.55)`
+  （`RGB(13,20,41)`），讓「style 有沒有套上」一眼可辨。
+- 額外的零成本保險：`ScrollingFrame` 疊在 `_panel_background` 正上方，若
+  它自己的背景不是透明的會整個蓋掉底下的背板；明確清成透明
+  （`style={"ScrollingFrame": {"background_color": 0x0}}`），不依賴預設值
+  （golden 測試顯示預設應該已經是透明，但測試底色剛好是純黑，無法完全
+  排除，不差這一行）。
+- 順帶記錄一個目前沒踩到、但以後可能咬人的陷阱：`cl()` 判斷「走浮點分支
+  還是整數分支」只看 r/g/b 三個參數，不看 a——如果哪天不小心寫成整數
+  RGB＋浮點 alpha 混用（例如 `cl(20, 20, 26, 0.55)`），alpha 會被直接當成
+  255 全不透明，而且不會報錯。`hud_panel.py` 目前全部顏色常數都是純浮點
+  RGB，沒有踩到，寫在這裡提醒之後不要犯。
+
+查證細節與逐項可信度存在 `skills/isaac_sim_6_api_cache.md`。

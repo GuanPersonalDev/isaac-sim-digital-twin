@@ -37,6 +37,7 @@
 import dataclasses
 from typing import Callable
 
+import carb.settings
 import omni.kit.app
 import omni.ui as ui
 from omni.ui import color as cl
@@ -54,9 +55,12 @@ from core.services.manual_shot_feasibility import (
 )
 from core.services.pocket_geometry import POCKET_POSITIONS
 
-# 面板本體寬度（含背板），viewport overlay 用 Spacer 相對定位推到左下角，
-# 不寫死絕對座標，理由見計畫「HUD 嵌在 Viewport 內」一節。
-_PANEL_WIDTH = 330.0
+# 面板本體尺寸（含背板）：viewport 寬的 1/3、高的 1/2，用 ui.Percent 相對
+# self._root_frame（= viewport 的實際渲染尺寸）算，不寫死像素值——viewport
+# 窗格多大都會自動跟著縮放，不會固定佔用某個絕對大小。用 Placer 定位到
+# 右下角，理由見計畫「HUD 嵌在 Viewport 內」一節與 _build_ui() 內的說明。
+_PANEL_WIDTH_PERCENT = 100.0 / 3.0
+_PANEL_HEIGHT_PERCENT = 50.0
 
 # 圓形擊球點選擇器：120x120，半徑 60px 填滿整個方框，標記半徑 6px。數值全部
 # 寫死常數，不依賴 computed_width（第一 frame 可能是 0，見 tech-design 1.5）。
@@ -81,7 +85,35 @@ _POCKET_MARKER_RADIUS_PX = 4.0
 _AIM_DOT_COUNT = 12
 _AIM_DOT_RADIUS_PX = 1.5
 
-_PANEL_BACKGROUND_COLOR = cl(0.08, 0.08, 0.10, 0.55)
+# 滑鼠懸停在面板上時暫時停用的相機手勢——用來擋掉滾輪穿透到底下 viewport
+# 觸發相機縮放。2026-09-08 實測發現掛在 widget 上的 set_mouse_wheel_fn()
+# no-op handler 完全沒有擋住穿透，改用這個機制，見 _on_panel_hovered()
+# docstring 的完整推導。
+#
+# 官方文件確認的設定路徑與預設值（camera_manipulator.html）：
+#   /exts/omni.kit.viewport.window/bindings/camera
+#   -> {'PanGesture': 'Any MiddleButton', 'TumbleGesture': 'Alt LeftButton',
+#       'ZoomGesture': 'Alt RightButton', 'LookGesture': 'RightButton',
+#       'ZoomScrollGesture': 'Any', 'FlightSpeedGesture': 'RightButton',
+#       'FlightMode': 'RightButton'}
+# 只停用 ZoomScrollGesture（滾輪縮放）——這是使用者實際回報的症狀。其餘
+# 手勢（TumbleGesture/ZoomGesture 需要 Alt、LookGesture 是右鍵）本面板沒有
+# 用到對應的滑鼠按鍵，暫時沒有回報衝突，但理論上同一個穿透機制可能一樣
+# 影響它們，尚未實測——見 _on_panel_hovered() docstring。
+_CAMERA_BINDINGS_SETTING_PATH = "/exts/omni.kit.viewport.window/bindings/camera"
+_DISABLED_CAMERA_GESTURES = ("ZoomScrollGesture",)
+
+# 診斷用旗標：True 時只畫純背板、不建任何互動元件，方便排除「是不是內容
+# 本身造成穿透/溢出」的問題，跟正式內容分開驗證。除錯歷程見
+# docs/CHANGELOG.md「面板定位方式的除錯歷程」。正式版面固定用 False。
+_DIAGNOSTIC_BACKGROUND_ONLY = False
+
+# 原本 cl(0.08, 0.08, 0.10, 0.55)（RGB≈20,20,26）跟 ui.Rectangle 沒套上
+# style 時的內建預設色 RGB(41,41,41) 肉眼幾乎分不出來，半透明失效跟「style
+# 根本沒套上」兩種情況外觀一樣分不清。刻意選明顯偏藍、遠離中性灰的色調——
+# 如果畫面上看到藍色調就代表 style 有套上（alpha 是否正確混色再另外判斷），
+# 如果看到的是純中性灰 (41,41,41) 才代表 style 沒套上，兩種情況一眼可辨。
+_PANEL_BACKGROUND_COLOR = cl(0.05, 0.08, 0.16, 0.55)
 _AIM_LINE_COLOR = cl(0.95, 0.85, 0.2, 0.9)
 _AIM_LINE_INFEASIBLE_COLOR = cl(0.95, 0.2, 0.2, 0.95)
 _FEASIBILITY_TEXT_COLOR = cl(0.95, 0.35, 0.3, 1.0)
@@ -117,7 +149,17 @@ class HudPanel:
         # headless（root frame 為 None）下安全呼叫。
         self._update_sub = None
         self._table_combo_model: TableComboBoxModel | None = None
-        self._is_collapsed = False
+        # 2026-09-08 實測回報：面板展開時的版面總高度（粗估 ~626px：120 圓形
+        # 選擇器 + 256 俯瞰圖 + 4 個 24px 列 + 6 行狀態文字 + margin/spacing）
+        # 超出使用者當時的 viewport 窗格高度，視覺上溢出邊界。預設改成收合，
+        # 只留 24px 的標題列，使用者需要調整參數時自己按 ▼ 展開——不是真正
+        # 解決「面板可能比 viewport 還高」這件事（那需要知道實際 viewport
+        # 尺寸才能對症處理，例如改用可捲動區塊或縮小控制項），只是先把「一
+        # 開啟就溢出」這個立即症狀壓下去。
+        self._is_collapsed = True
+        # 滑鼠懸停在面板上時暫存的相機手勢設定（懸停期間停用 ZoomScrollGesture，
+        # 離開時還原），None 代表目前沒有暫停任何東西。見 _on_panel_hovered()。
+        self._saved_camera_bindings: dict | None = None
         self._topview_drag_mode: str | None = None  # "placement" | "angle" | None
         self._suppress_speed_callback = False
         self._last_selected_table_id: str | None = None
@@ -197,34 +239,120 @@ class HudPanel:
         if self._root_frame is None:
             return
         with self._root_frame:
-            with ui.VStack():
-                ui.Spacer()  # 把面板推到 viewport 底部
-                with ui.HStack():
-                    with ui.ZStack(width=_PANEL_WIDTH):
-                        self._panel_background = ui.Rectangle(
-                            style={
-                                "background_color": _PANEL_BACKGROUND_COLOR,
-                                "border_radius": 6,
-                            }
-                        )
-                        # 見 _on_panel_wheel() docstring：擋掉滾輪事件往下傳給
-                        # viewport 相機縮放，覆蓋整個面板底色範圍。
-                        self._panel_background.set_mouse_wheel_fn(self._on_panel_wheel)
-                        with ui.VStack(spacing=6, style={"margin": 8}):
-                            with ui.HStack(height=24):
-                                ui.Label("Shot Control")
-                                ui.Spacer()
-                                self._collapse_button = ui.Button(
-                                    "▼",
-                                    width=24,
-                                    height=24,
-                                    clicked_fn=self._on_collapse_button_clicked,
-                                )
+            # 面板貼齊 viewport 右下角、佔寬 1/4、高 1/2。用 Placer 定位而不是
+            # ZStack 的 alignment——ZStack.alignment 的語意（跨容器定位 vs 排列
+            # 自己的子項）查不到文件明確陳述，兩種猜測都實測失敗；Placer 的
+            # offset 定位子項左上角是查證過的行為，offset 設成
+            # 100%-子項尺寸%，子項右下角就會精準貼齊。除錯歷程見 docs/CHANGELOG.md。
+            with ui.ZStack():  # 填滿 self._root_frame（= viewport 實際渲染尺寸）
+                with ui.Placer(
+                    offset_x=ui.Percent(100.0 - _PANEL_WIDTH_PERCENT),
+                    offset_y=ui.Percent(100.0 - _PANEL_HEIGHT_PERCENT),
+                    width=ui.Percent(100),
+                    height=ui.Percent(100),
+                ):
+                    self._panel_root_zstack = ui.ZStack(
+                        width=ui.Percent(_PANEL_WIDTH_PERCENT),
+                        height=ui.Percent(_PANEL_HEIGHT_PERCENT),
+                    )
+                    with self._panel_root_zstack:
+                        if _DIAGNOSTIC_BACKGROUND_ONLY:
+                            self._build_diagnostic_background_only()
+                        else:
+                            self._build_full_panel_content()
 
-                            self._collapsible_body = ui.VStack(spacing=6)
-                            with self._collapsible_body:
-                                self._build_body_ui()
-                    ui.Spacer()  # 把面板推到 viewport 左側
+        # 見 _on_panel_hovered() docstring：多個 widget 疊在同一個 ZStack
+        # 裡，哪一個會收到 hover 事件（geometric containment vs 頂層 widget
+        # 專屬）沒有文件可查，外層 ZStack 與背板都掛同一個 handler——handler
+        # 本身是冪等的（見該方法 docstring），多次觸發無害。診斷模式下也要掛，
+        # 否則沒東西可以測「單純背板會不會擋住滾輪穿透」。
+        self._panel_root_zstack.set_mouse_hovered_fn(self._on_panel_hovered)
+        self._panel_background.set_mouse_hovered_fn(self._on_panel_hovered)
+
+    def _build_diagnostic_background_only(self) -> None:
+        """⚠️ 診斷用，見 `_DIAGNOSTIC_BACKGROUND_ONLY` 的說明——只畫一塊填滿
+        `self._panel_root_zstack`（viewport 右下角，1/4 寬 × 1/2 高）的
+        背板，不建任何互動元件，用來排除「是不是內容本身造成滾輪穿透／
+        視覺溢出」。`width=height=ui.Percent(100)` 是相對**直接父層**
+        `self._panel_root_zstack`，不是直接相對 viewport——單純填滿父層
+        留給它的空間。除錯歷程見 docs/CHANGELOG.md。
+        """
+        self._panel_background = ui.Rectangle(
+            width=ui.Percent(100),
+            height=ui.Percent(100),
+            style={
+                "background_color": _PANEL_BACKGROUND_COLOR,
+                "border_radius": 6,
+            },
+        )
+        self._panel_background.set_mouse_wheel_fn(self._on_panel_wheel)
+
+    def _build_full_panel_content(self) -> None:
+        """正式版面：背板 + 一個垂直可捲動、內含可收合內容本體的 ScrollingFrame。
+
+        內容（圓形選擇器 120px + 俯瞰圖 256px + 幾個 24px 列 + 狀態文字）
+        粗估總高度遠超過面板分配到的高度（viewport 高的 1/2），裝不下就用
+        ScrollingFrame 捲動，不讓面板本身撐高溢出邊界。標題列跟捲動內容
+        放在同一個 ScrollingFrame 裡（不是釘在外面固定不動）——多層巢狀
+        容器的高度分配在這個 Kit 版本一再證實不可靠（見 docs/CHANGELOG.md
+        「面板定位方式的除錯歷程」），標題列滾出畫面外還能捲回來看，比
+        再賭一次「剩餘空間怎麼分配」風險小。
+        """
+        # width/height 明確給 Percent(100)：Rectangle 跟緊接著的 ScrollingFrame
+        # 是同一層的手足元件，各自預設撐滿的方式不一定一致，不明講的話背板
+        # 可能只跟著收合狀態縮成標題列大小，蓋不住展開後的內容區域。
+        self._panel_background = ui.Rectangle(
+            width=ui.Percent(100),
+            height=ui.Percent(100),
+            style={
+                "background_color": _PANEL_BACKGROUND_COLOR,
+                "border_radius": 6,
+            },
+        )
+        # 見 _on_panel_wheel() docstring：掛上去但 2026-09-08 實測發現沒有
+        # 真的擋住滾輪穿透，留著沒有壞處，真正的修法是 _on_panel_hovered()
+        # （carb.settings 停用相機手勢）。
+        self._panel_background.set_mouse_wheel_fn(self._on_panel_wheel)
+
+        self._scroll_frame = ui.ScrollingFrame(
+            height=ui.Percent(100),
+            horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
+            vertical_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_AS_NEEDED,
+            # ScrollingFrame 疊在 _panel_background 正上方，若它自己的背景不是
+            # 透明的就會整個蓋掉底下的半透明背板；明確清成透明，不依賴預設值。
+            style={"ScrollingFrame": {"background_color": 0x0}},
+        )
+        # 見 _on_panel_hovered() docstring：多個 widget 疊在同一個位置時，
+        # 誰會收到 hover 事件沒有文件可查，ScrollingFrame 是內容區域最上層
+        # 的容器，額外掛一份確保滾動內容時相機縮放手勢也會被停用。
+        self._scroll_frame.set_mouse_hovered_fn(self._on_panel_hovered)
+        with self._scroll_frame:
+            # height=0 是 ScrollingFrame 官方範例的寫法：讓 VStack 依內容
+            # 自然撐高，捲動的空間才有意義（不是被截斷成固定高度）。
+            with ui.VStack(height=0, spacing=6, style={"margin": 8}):
+                with ui.HStack(height=28):
+                    ui.Label("Shot Control")
+                    ui.Spacer()
+                    # 三角形符號（▼/▶）在 Isaac Sim 內建 UI 字型裡沒有字形，
+                    # 會顯示成 "?"，改用一定有字形的 ASCII 字元；順便加大
+                    # 點擊區域，24px 見方偏小不好點。
+                    self._collapse_button = ui.Button(
+                        "v",
+                        width=28,
+                        height=28,
+                        clicked_fn=self._on_collapse_button_clicked,
+                    )
+
+                self._collapsible_body = ui.VStack(spacing=6)
+                with self._collapsible_body:
+                    self._build_body_ui()
+
+        # 見「這些屬性無論 root frame 拿不拿得到都要先設好」那條註解旁邊的
+        # 說明：預設收合，這裡把實際 widget 狀態同步成 __init__ 設的
+        # self._is_collapsed=True，不能只改常數不改 widget（widget 建構時
+        # 沒有讀那個旗標，預設一律可見）。
+        self._collapsible_body.visible = False
+        self._collapse_button.text = ">"
 
     def _build_body_ui(self) -> None:
         with ui.HStack(height=24, spacing=6):
@@ -237,7 +365,7 @@ class HudPanel:
                 self._offset_readout_label = ui.Label("", word_wrap=True)
 
         with ui.HStack(height=24, spacing=6):
-            ui.Label("力道", width=40)
+            ui.Label("Speed", width=40)
             # 力道輸入框選 FloatField + SimpleFloatModel，不退回 StringField：
             # tech-design 1.7 已從官方文件確認兩者的類別本身存在（「文件
             # 確認」等級），只有 get_value_as_float()/set_value()/
@@ -264,9 +392,9 @@ class HudPanel:
                 )
 
         with ui.HStack(height=24, spacing=6):
-            self._shot_button = ui.Button("擊球", clicked_fn=self._on_shot_button_clicked)
+            self._shot_button = ui.Button("Shoot", clicked_fn=self._on_shot_button_clicked)
             self._reset_button = ui.Button(
-                "重設球局", clicked_fn=self._on_reset_button_clicked
+                "Reset Table", clicked_fn=self._on_reset_button_clicked
             )
 
         self._status_label = ui.Label("", word_wrap=True)
@@ -533,37 +661,74 @@ class HudPanel:
         整個面板本體）與兩個互動畫布的透明滑鼠捕手（`_circle_catcher`／
         `_topview_catcher`）上。
 
-        面板本來完全沒有處理過 `set_mouse_wheel_fn`——這三個 widget 原本
-        只掛了 `mouse_pressed_fn`/`mouse_moved_fn`/`mouse_released_fn`
-        （拖曳互動用），滾輪事件從來沒有被任何 widget 認領過。在 viewport
-        overlay 上滾滾輪，因此會直接落到面板底下的 3D viewport，觸發相機
-        縮放——這跟面板本身有多大**無關**：就算面板整體小於 viewport 窗格，
-        只要滾輪事件沒有被面板上的任一 widget 消費掉，就一定會穿透到
-        viewport；面板疊出來的每一個角落理論上都要有一個 widget 認領滾輪
-        事件，才能真正擋住這個穿透。
+        ⚠️ **2026-09-08 實測結果：這個假設不成立。** 使用者在 GUI 下實際
+        滾動，確認掛了這個 no-op handler 之後滾輪還是會讓 viewport 相機
+        縮放——不是「事件送到這裡、又繼續往下傳」的猜測，是真的擋不住。
 
-        ⚠️ **這是另一個依賴未證實假設的地方**：`set_mouse_wheel_fn()` 的
-        官方文件只說「跟 `set_mouse_pressed_fn` 用法相同」，完全沒有陳述
-        「掛了這個 callback 是否就代表這次滾輪事件不會再往下傳給 viewport
-        相機」——跟 `_create_root_frame()`／`_to_local()` 依賴的兩個未知
-        同一個等級，`probe_viewport_overlay_drag.py` 目前也還沒有涵蓋滾輪
-        事件（只測過 press/moved/released），需要另外在 GUI 下親手滾過
-        才能確認這個 no-op handler 真的擋得住穿透，而不是「事件送到這裡、
-        然後又繼續往下傳」。
-
-        什麼都不做（連 `pass` 都不需要特別寫）就是這個函式的全部用途——
-        掛上去這件事本身可能就是在宣告「這個 widget 認領了這次事件」，
-        跟本方法要不要做任何實際處理無關。
+        推論：`omni.kit.manipulator.camera` 的相機操作走的是獨立於
+        `omni.ui` widget 事件樹的輸入路徑（官方文件用 `carb.settings` 的
+        手勢綁定表描述相機互動，不是用 widget 的事件消費機制），也就是說
+        在 `ui.Widget` 上「認領」一個事件，並不會讓底層相機操作的輸入監聽
+        跟著停下來——這兩層是分開的。真正的修法是 `_on_panel_hovered()`
+        （懸停時透過 `carb.settings` 暫時停用相機的 `ZoomScrollGesture`
+        手勢），這個 handler 留著沒有壞處但已知無效，之後若要精簡可以直接
+        移除，這裡先保留紀錄。
         """
 
-    # 已知的殘留缺口：面板裡的 Label／Button／ComboBox／FloatField／列與
-    # 列之間的間距／外圍 8px margin，這些區域都不是上面三個掛了滾輪
-    # handler 的 widget 本體所在——如果 Kit 的 ZStack 對「同一位置、上層
-    # widget 沒有處理某個事件類型」不會自動往下層的 _panel_background
-    # 落，滾輪事件在這些空隙位置一樣會穿透到 viewport。這點跟
-    # `_create_root_frame()`/`_to_local()` 一樣，只能靠 GUI 實測確認，
-    # 若證實需要更完整的覆蓋，屆時再決定要不要把整個面板本體用一層
-    # 「先擋滾輪、再把其他事件轉交」的 widget 包起來。
+    def _on_panel_hovered(self, hovered: bool) -> None:
+        """滑鼠懸停在面板範圍內／離開時，暫時停用／還原
+        `ZoomScrollGesture`（滾輪縮放）這個相機手勢——見
+        `_CAMERA_BINDINGS_SETTING_PATH` 常數旁的官方文件依據與推導。
+
+        懸停進入：讀目前的 `/exts/omni.kit.viewport.window/bindings/camera`
+        整包設定值存進 `self._saved_camera_bindings`，再寫回一份拿掉
+        `ZoomScrollGesture` 的副本。懸停離開：把存起來的原始值寫回去，並把
+        `self._saved_camera_bindings` 清成 `None`。`self._saved_camera_bindings
+        is not None` 同時是「目前已經停用中」的判斷依據，避免同一次懸停
+        期間（多個 widget 各自觸發 hover）重複存值蓋掉更早存的原始值。
+
+        ⚠️ **這裡有兩個尚未在 GUI 下驗證的假設**：
+        1. `set_mouse_hovered_fn()` 的觸發範圍——多個 widget（外層
+           `_panel_root_zstack`、`_panel_background`）疊在同一個位置，
+           `hovered=True/False` 是照「游標是否落在這個 widget 的幾何範圍
+           內」判斷（跟 z-order／有沒有被其他 widget 蓋住無關），還是照
+           「這個 widget 是不是滑鼠事件的目標」判斷（跟滾輪穿透一樣，只有
+           最上層的 widget 才會觸發），官方文件沒有陳述。若是後者，懸停在
+           被其他子 widget（Label/Button/ComboBox/FloatField）蓋住的位置
+           時，這兩個 widget 都不會觸發 hover，滾輪縮放在那些位置一樣不會
+           被停用——這正是 `_DIAGNOSTIC_BACKGROUND_ONLY` 診斷分支要排除
+           的第一件事：拿掉所有子 widget、只留純背板，如果懸停在純背板上
+           滾輪縮放確實被擋住了，就能確定這個機制本身有效，殘留的問題
+           只在「哪些位置沒有掛到 hover」。
+        2. **這個設定是全域的，不是 per-viewport 的**——路徑
+           `/exts/omni.kit.viewport.window/bindings/camera` 沒有任何
+           viewport id 或 window 限定詞。本專案目前只會同時顯示一個
+           Demo 桌的 viewport，這個限制暫時不影響使用，但如果未來場景
+           變成多視窗，懸停在其中一個面板會連帶停用所有視窗的滾輪縮放。
+
+        目前只停用滾輪縮放（`_DISABLED_CAMERA_GESTURES`）。右鍵環景
+        （`LookGesture`）、Alt+左鍵翻轉（`TumbleGesture`）、Alt+右鍵縮放
+        （`ZoomGesture`）理論上可能有同一種穿透，但面板互動沒有用到那些
+        按鍵組合，使用者也還沒回報那幾個手勢的問題，這次不主動處理。
+        """
+        settings = carb.settings.get_settings()
+        if hovered:
+            if self._saved_camera_bindings is not None:
+                return
+            current = settings.get(_CAMERA_BINDINGS_SETTING_PATH)
+            current = dict(current) if current else {}
+            self._saved_camera_bindings = current
+            modified = {
+                key: value
+                for key, value in current.items()
+                if key not in _DISABLED_CAMERA_GESTURES
+            }
+            settings.set(_CAMERA_BINDINGS_SETTING_PATH, modified)
+        else:
+            if self._saved_camera_bindings is None:
+                return
+            settings.set(_CAMERA_BINDINGS_SETTING_PATH, self._saved_camera_bindings)
+            self._saved_camera_bindings = None
 
     def _handle_topview_pointer(self, table_id: str, local_x: float, local_y: float) -> None:
         current = self._current_parameters(table_id)
@@ -636,7 +801,7 @@ class HudPanel:
     def _on_collapse_button_clicked(self) -> None:
         self._is_collapsed = not self._is_collapsed
         self._collapsible_body.visible = not self._is_collapsed
-        self._collapse_button.text = "▶" if self._is_collapsed else "▼"
+        self._collapse_button.text = ">" if self._is_collapsed else "v"
 
     # ------------------------------------------------------------------
     # 資料流：讀取現值／推送更新／整批重繪
@@ -688,9 +853,9 @@ class HudPanel:
 
         placement_x, placement_y = parameters.cue_ball_placement
         self._angle_placement_readout_label.text = (
-            f"角度 {parameters.shot_angle:+.1f}°  擺位 ({placement_x:+.3f}, {placement_y:+.3f})"
+            f"Angle {parameters.shot_angle:+.1f}°  Placement ({placement_x:+.3f}, {placement_y:+.3f})"
         )
-        self._feasibility_label.text = "" if feasibility.is_feasible else f"不可行：{feasibility.reason}"
+        self._feasibility_label.text = "" if feasibility.is_feasible else f"Infeasible: {feasibility.reason}"
 
         self._shot_button.enabled = table_id is not None and feasibility.is_feasible
         self._reset_button.enabled = table_id is not None
@@ -706,6 +871,11 @@ class HudPanel:
         self._table_combo_model.set_items(table_ids)
 
     def _refresh_controls_for_selected_table(self) -> None:
+        # 診斷模式下沒有任何 body widget（讀數 Label、offset marker、俯瞰圖
+        # 圖層……）可以刷新，一定要在碰它們之前擋掉，否則對不存在的屬性
+        # 直接 AttributeError，整個 extension startup 就失敗。
+        if _DIAGNOSTIC_BACKGROUND_ONLY:
+            return
         if self._table_combo_model is None:
             return
         table_id = self._table_combo_model.get_selected_table_id()
@@ -720,7 +890,13 @@ class HudPanel:
         """沿用 debug_menu 的每 frame 輪詢寫法，但只更新狀態列 Label（輕量的
         文字操作），不重繪畫布——畫布只在互動或切桌時才重繪（見
         `_redraw_controls()` docstring）。桌子清單改用 push（見
-        `set_available_tables()`），這裡不再輪詢查表。"""
+        `set_available_tables()`），這裡不再輪詢查表。
+
+        診斷模式（`_DIAGNOSTIC_BACKGROUND_ONLY`）下 `self._status_label`
+        根本不存在，整個狀態列更新跳過——純背板沒有東西可以顯示狀態。
+        """
+        if _DIAGNOSTIC_BACKGROUND_ONLY:
+            return
         if self._table_combo_model is None:
             return
         table_id = self._table_combo_model.get_selected_table_id()
@@ -734,6 +910,14 @@ class HudPanel:
     # ------------------------------------------------------------------
 
     def destroy(self) -> None:
+        # 安全網：若面板在游標還停在上面、camera bindings 還處於暫停狀態
+        # 時被銷毀（例如 Demo toggle 關閉、extension 重載），不能讓使用者
+        # 的滾輪縮放永遠停在停用狀態——見 _on_panel_hovered() docstring。
+        if self._saved_camera_bindings is not None:
+            carb.settings.get_settings().set(
+                _CAMERA_BINDINGS_SETTING_PATH, self._saved_camera_bindings
+            )
+            self._saved_camera_bindings = None
         self._update_sub = None
         if self._root_frame is not None:
             self._root_frame.clear()
