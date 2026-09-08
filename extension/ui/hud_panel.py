@@ -11,14 +11,20 @@
 唯一的私有狀態是拖曳暫態（`self._topview_drag_mode`）與防遞迴旗標
 （`self._suppress_speed_callback`）。
 
-⚠️ **本檔兩處明確隔離了 spike 未證實的假設**，實測後若需要調整，只需要改
+⚠️ **本檔幾處明確隔離了 spike 未證實的假設**，實測後若需要調整，只需要改
 對應的那一個方法，其餘部分不動：
 
 1. `_create_root_frame()` — overlay 容器怎麼拿到（`get_frame()` vs 退回
    獨立 `ui.Window`）。
 2. `_to_local()` — `set_mouse_*_fn` 收到的座標怎麼換算成 widget local 座標。
+3. `_on_panel_wheel()` — 面板背板與兩個互動畫布掛了滾輪 no-op handler，
+   目的是擋掉滾輪事件穿透到底下的 viewport 相機縮放（2026-09-08 實際使用
+   時回報過這個症狀），但「掛了 `set_mouse_wheel_fn()` 是否真的能擋住
+   穿透」跟前兩項一樣是未證實的假設，見該方法 docstring；且目前只覆蓋
+   三個特定 widget，面板裡 Label／Button／ComboBox／FloatField／列間距／
+   外圍 margin 這些空隙位置有沒有殘留穿透，也還沒實測。
 
-兩者的細節與可信度標示見
+三者的細節與可信度標示見
 `docs/tech-design/hud-shot-control-panel-tech-design.md` 第 1 節。
 
 其餘實作細節（`Placer.offset_x` 是否接受 `ui.Pixel`、`FloatField`/
@@ -195,12 +201,15 @@ class HudPanel:
                 ui.Spacer()  # 把面板推到 viewport 底部
                 with ui.HStack():
                     with ui.ZStack(width=_PANEL_WIDTH):
-                        ui.Rectangle(
+                        self._panel_background = ui.Rectangle(
                             style={
                                 "background_color": _PANEL_BACKGROUND_COLOR,
                                 "border_radius": 6,
                             }
                         )
+                        # 見 _on_panel_wheel() docstring：擋掉滾輪事件往下傳給
+                        # viewport 相機縮放，覆蓋整個面板底色範圍。
+                        self._panel_background.set_mouse_wheel_fn(self._on_panel_wheel)
                         with ui.VStack(spacing=6, style={"margin": 8}):
                             with ui.HStack(height=24):
                                 ui.Label("Shot Control")
@@ -310,6 +319,7 @@ class HudPanel:
             )
             self._circle_catcher.set_mouse_pressed_fn(self._on_circle_press)
             self._circle_catcher.set_mouse_moved_fn(self._on_circle_move)
+            self._circle_catcher.set_mouse_wheel_fn(self._on_panel_wheel)
 
     def _build_topview_map(self) -> None:
         """球桌俯瞰圖：桌面底色 → Kitchen 合法區 → head string → 6 個袋口
@@ -359,6 +369,7 @@ class HudPanel:
             self._topview_catcher.set_mouse_pressed_fn(self._on_topview_press)
             self._topview_catcher.set_mouse_moved_fn(self._on_topview_move)
             self._topview_catcher.set_mouse_released_fn(self._on_topview_release)
+            self._topview_catcher.set_mouse_wheel_fn(self._on_panel_wheel)
 
     def _draw_static_kitchen_region(self) -> None:
         x0, y0 = mapper.topview_pixels_from_table_xy(
@@ -512,6 +523,47 @@ class HudPanel:
 
     def _on_topview_release(self, x: float, y: float, button: int, modifier: int) -> None:
         self._topview_drag_mode = None
+
+    # ------------------------------------------------------------------
+    # 滾輪事件：擋掉往下傳給 viewport 相機縮放
+    # ------------------------------------------------------------------
+
+    def _on_panel_wheel(self, x: float, y: float, modifier: int) -> None:
+        """滑鼠滾輪 no-op handler，掛在面板背板 `_panel_background`（覆蓋
+        整個面板本體）與兩個互動畫布的透明滑鼠捕手（`_circle_catcher`／
+        `_topview_catcher`）上。
+
+        面板本來完全沒有處理過 `set_mouse_wheel_fn`——這三個 widget 原本
+        只掛了 `mouse_pressed_fn`/`mouse_moved_fn`/`mouse_released_fn`
+        （拖曳互動用），滾輪事件從來沒有被任何 widget 認領過。在 viewport
+        overlay 上滾滾輪，因此會直接落到面板底下的 3D viewport，觸發相機
+        縮放——這跟面板本身有多大**無關**：就算面板整體小於 viewport 窗格，
+        只要滾輪事件沒有被面板上的任一 widget 消費掉，就一定會穿透到
+        viewport；面板疊出來的每一個角落理論上都要有一個 widget 認領滾輪
+        事件，才能真正擋住這個穿透。
+
+        ⚠️ **這是另一個依賴未證實假設的地方**：`set_mouse_wheel_fn()` 的
+        官方文件只說「跟 `set_mouse_pressed_fn` 用法相同」，完全沒有陳述
+        「掛了這個 callback 是否就代表這次滾輪事件不會再往下傳給 viewport
+        相機」——跟 `_create_root_frame()`／`_to_local()` 依賴的兩個未知
+        同一個等級，`probe_viewport_overlay_drag.py` 目前也還沒有涵蓋滾輪
+        事件（只測過 press/moved/released），需要另外在 GUI 下親手滾過
+        才能確認這個 no-op handler 真的擋得住穿透，而不是「事件送到這裡、
+        然後又繼續往下傳」。
+
+        什麼都不做（連 `pass` 都不需要特別寫）就是這個函式的全部用途——
+        掛上去這件事本身可能就是在宣告「這個 widget 認領了這次事件」，
+        跟本方法要不要做任何實際處理無關。
+        """
+
+    # 已知的殘留缺口：面板裡的 Label／Button／ComboBox／FloatField／列與
+    # 列之間的間距／外圍 8px margin，這些區域都不是上面三個掛了滾輪
+    # handler 的 widget 本體所在——如果 Kit 的 ZStack 對「同一位置、上層
+    # widget 沒有處理某個事件類型」不會自動往下層的 _panel_background
+    # 落，滾輪事件在這些空隙位置一樣會穿透到 viewport。這點跟
+    # `_create_root_frame()`/`_to_local()` 一樣，只能靠 GUI 實測確認，
+    # 若證實需要更完整的覆蓋，屆時再決定要不要把整個面板本體用一層
+    # 「先擋滾輪、再把其他事件轉交」的 widget 包起來。
 
     def _handle_topview_pointer(self, table_id: str, local_x: float, local_y: float) -> None:
         current = self._current_parameters(table_id)
