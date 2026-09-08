@@ -434,7 +434,7 @@ RESET+AIM 合計 3002 → 1169 tick，60Hz 下從 50 秒縮到 19.5 秒。要再
 
 修法：`did_last_motion_timeout()` 只有在 `is_motion_complete()==True` 時才回報底層旗標，動作還在進行中一律回傳 False。對 WAM7/UR3e 完全不影響行為——那邊 `self._did_last_motion_timeout = True` 本來就跟 `self._stop_motion()` 同一行程式碼、同一時刻發生，兩者從來就是同一個事件，不像 UR10e 的多階段 waypoint chain 會有「中途翻過一次 True、之後又靠新階段重置」這種暫態。
 
-**次要發現，尚未解決**：修好上面的 bug 後用同一組參數重跑，AIM 不再卡死，但收斂明顯比驗收過的 flat／bridge 案例慢很多——STAGING／NEAR_FINAL 階段大多數 waypoint 都逼近 240 步上限才過，推算整個 AIM 可能要跑 8000~10000+ tick（2~3 分鐘）才會走完，不是幾秒內看得出進展的速度。研判是這組從未測過的大幅 `position_offset` 把逼近走廊推到接近母球避障力場的區域，RMPflow 反應式規劃在那附近收斂變慢（不是卡死，是慢），呼應本專案稍早就記錄過的已知限制：「RMPflow：反應式、每 tick 加速度場、收斂不確定」。真人在 GUI 前觀察的時間如果不夠長，這個「動得很慢」很容易被誤認成「完全不動」。這個問題留給下次 GUI 復測後視情況決定是否要處理（例如收窄 `POSITION_OFFSET_VERTICAL/HORIZONTAL` 的訓練/評估上限，或改善 STAGING/NEAR_FINAL 附近的避障参数）。
+**次要發現，尚未解決**：修好上面的 bug 後用同一組參數重跑，AIM 不再卡死，但收斂明顯比驗收過的 flat／bridge 案例慢很多——STAGING／NEAR_FINAL 階段大多數 waypoint 都逼近 240 步上限才過，推算整個 AIM 可能要跑 8000~10000+ tick（2~3 分鐘）才會走完，不是幾秒內看得出進展的速度。研判是這組從未測過的大幅 `position_offset` 把逼近走廊推到接近母球避障力場的區域，RMPflow 反應式規劃在那附近收斂變慢（不是卡死，是慢），呼應本專案稍早就記錄過的已知限制：「RMPflow：反應式、每 tick 加速度場、收斂不確定」。真人在 GUI 前觀察的時間如果不夠長，這個「動得很慢」很容易被誤認成「完全不動」。這個問題留給下次 GUI 復測後視情況決定是否要處理（例如收窄 `POSITION_OFFSET_VERTICAL/HORIZONTAL` 的訓練/評估上限，或改善 STAGING/NEAR_FINAL 附近的避障參數）。
 
 ---
 
