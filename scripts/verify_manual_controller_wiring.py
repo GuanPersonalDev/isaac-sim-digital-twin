@@ -23,8 +23,11 @@ Isaac Sim / core 元件。
      `test_stays_in_idle_forever_without_shot_request` 錨點，但這裡走的是
      Extension 接線，不是單元測試）
   4. 推參數 `(0.3, -0.8) / 12° / 2.0 / (0.2, -0.1)` → `request_manual_shot()`
-     → tick 到 WAITING：母球世界座標 ≈ 桌台 XY + (0.3, -0.8)、全程
-     `has_error` 恆為 False
+     → 一進 AIMING 立刻量母球世界座標 ≈ 桌台 XY + (0.3, -0.8)（擺位是這一刻
+     同步 teleport 的，量的是位元級精確度；不能在 WAITING 才量——那時球
+     已經被真正打動、朝球堆滾動甚至撞散球堆，2026-09-08 實測踩過這個坑，
+     落差達 0.86m，見腳本內對應段落的說明）→ 繼續 tick 到 WAITING，確認
+     整套流程（含真正的揮桿與擊球）全程 `has_error` 恆為 False
   5. 連續呼叫 `set_manual_shot_parameters()` 20 次不觸發重擺球（記錄某顆
      目標球的位置，推 20 次參數後斷言沒被 teleport 回開球位，證明沒有經過
      controller swap 那條會 `full_reset()` 的路）
@@ -42,7 +45,11 @@ Isaac Sim / core 元件。
 跑法（獨立執行，會自己開一個 headless SimulationApp）：
     ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \
     PYTHONIOENCODING=utf-8 \
-    "/c/Users/Kuan/isaac-project/venv/Scripts/python.exe" scripts/verify_manual_controller_wiring.py
+    "C:/Other/OmniverseProjects/isaac/python.bat" scripts/verify_manual_controller_wiring.py
+
+    ⚠️ 這是獨立安裝的 Isaac Sim（`python.bat`，不是 pip venv 的
+    `Scripts/python.exe`）——路徑因環境而異，2026-09-08 實測確認的路徑是
+    `C:/Other/OmniverseProjects/isaac`。
 
 也可透過 Tool Menu Registry（extension/ui/tool_menu_registry.py）在 Kit 主
 選單「Tools > Billiard/...」點擊執行——此時 billiard_digital_twin 已經在
@@ -68,7 +75,18 @@ for _p in (_EXT_DIR, _PROJECT_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from ui.tool_menu_registry import tool_menu_item
+try:
+    from ui.tool_menu_registry import tool_menu_item
+except ImportError:
+    # 獨立執行時 SimulationApp 還沒建構、Kit 的擴充功能系統（含
+    # omni.kit.menu.utils）還沒載入，import 不到——見
+    # probe_omni_ui_shot_panel_widgets.py 同一處的說明，這裡是同一個問題
+    # 同一個修法。獨立執行模式不需要 Tool Menu 註冊，給 no-op decorator。
+    def tool_menu_item(menu_path: str):
+        def decorator(func):
+            return func
+
+        return decorator
 
 _IDLE_HOLD_TICKS = 120  # 項目 3：不按按鈕的情況下跑幾個 tick 確認恆為 IDLE
 _MAX_TICKS_TO_IDLE = 8000  # controller swap 觸發的 full_reset() 收斂回 IDLE 的預算（手臂歸位）
@@ -76,8 +94,7 @@ _MAX_TICKS_TO_WAITING = 30000  # 項目 4：AIM（RMPflow 可能上萬 tick）+ 
 # 數量級參照 scripts/test_ur10e_table_flat.py 的 _MAX_STEPS_PER_AIM_ACTION=20000。
 _MAX_TICKS_BACK_TO_IDLE = 8000  # 項目 4 打完之後，等 WAITING -> RESET -> IDLE 走完才能開始項目 5
 _PARAMETER_PUSH_COUNT = 20  # 項目 5：連續推參數次數
-_WORLD_POSITION_TOLERANCE_M = 0.05  # STRIKING -> WAITING 之間母球可能已經開始滾動，容許誤差
-_STATIC_POSITION_TOLERANCE_M = 1e-3  # 球理論上完全靜止，容許浮點/物理求解器的極小抖動
+_STATIC_POSITION_TOLERANCE_M = 1e-3  # 球理論上完全靜止（或剛被同步 teleport），容許浮點/物理求解器的極小抖動
 
 
 def _find_extension():
@@ -169,6 +186,37 @@ def _verify(extension) -> bool:
     extension.set_manual_shot_parameters(table_id, shot_parameters)
     extension.request_manual_shot(table_id)
 
+    # 擺位是 IDLE handler 進 AIMING 那一刻同步 teleport 的（_execute_aim()
+    # 呼叫 place_ball()），STRIKE 之後球會被真正打動、朝球堆滾動甚至撞散
+    # 球堆。2026-09-08 實測踩過：若在 WAITING（整套 AIM->STRIKE->球滾動
+    # ->停止都跑完之後）才量，量到的是這一整局結束時的最終停止位置，跟
+    # cue_ball_speed=2.0/shot_angle=12° 這組會把母球往球堆方向打的參數
+    # 完全無關——實測落差達 0.86m，遠超出「STRIKING->WAITING 之間小滾動」
+    # 的容許誤差，一度誤判成接線壞了。正確做法是一偵測到狀態變成 AIMING
+    # 就立刻讀，那個當下球剛被同步 teleport、手臂甚至還沒開始動，理論上
+    # 應該是位元級精確（用 _STATIC_POSITION_TOLERANCE_M，不是給滾動誤差
+    # 留餘裕的 _WORLD_POSITION_TOLERANCE_M）。直接用
+    # RigidBodyAPI.get_position() 讀即時世界座標（跟項目 3 同一種讀法），
+    # 不透過 session.get_last_observation()——避免糾結 Observation 是否
+    # 跟這一個 tick 的 teleport 同步。
+    ticks_to_aiming = _wait_for_state(session, "AIMING", _MAX_TICKS_TO_WAITING, app)
+    reached_aiming = ticks_to_aiming is not None
+    placement_ok = False
+    if reached_aiming:
+        expected_xy = [table_x + 0.3, table_y + (-0.8)]
+        actual_xy = list(extension._rigid_body_api.get_position(cue_ball_prim_path))[:2]
+        placement_ok = all(
+            abs(a - b) < _STATIC_POSITION_TOLERANCE_M for a, b in zip(actual_xy, expected_xy)
+        )
+        print(f"[verify] 母球世界座標 ≈ 桌台 XY + (0.3, -0.8)（進 AIMING 那一刻同步"
+              f"teleport，量的是位元級精確度，不是滾動後的容許誤差）：{placement_ok}"
+              f"（預期≈{expected_xy}，實際={actual_xy}，花費 {ticks_to_aiming} tick）")
+    else:
+        print("[verify] 未在預算內進入 AIMING，跳過母球擺位斷言")
+
+    # 繼續等到 WAITING，確認整套流程（含真正的揮桿與擊球）順利跑完、
+    # 全程沒有錯誤——這是項目 4 剩下要驗的部分，跟母球擺位是否精確是
+    # 兩件事，不應該用同一次量測回答。
     reached_waiting = False
     had_error = False
     steps_to_waiting = 0
@@ -185,19 +233,6 @@ def _verify(extension) -> bool:
     print(f"[verify] 推參數＋擊球後在 {steps_to_waiting} tick 內到達 WAITING：{reached_waiting}"
           f"（目前狀態={session.get_current_state().name}）")
     print(f"[verify] 全程 has_error 恆為 False：{not had_error}")
-
-    placement_ok = False
-    if reached_waiting:
-        observation = session.get_last_observation()
-        expected_xy = [table_x + 0.3, table_y + (-0.8)]
-        actual_xy = list(observation.cue_ball_position[:2])
-        placement_ok = all(
-            abs(a - b) < _WORLD_POSITION_TOLERANCE_M for a, b in zip(actual_xy, expected_xy)
-        )
-        print(f"[verify] 母球世界座標 ≈ 桌台 XY + (0.3, -0.8)：{placement_ok}"
-              f"（預期≈{expected_xy}，實際={actual_xy}）")
-    else:
-        print("[verify] 未到達 WAITING，跳過母球擺位斷言")
 
     # 項目 5：連續推 20 次參數不觸發重擺球。要先等這一局自然走完
     # WAITING -> RESET -> IDLE（正常擊球流程本身就會 _reset_balls()，跟

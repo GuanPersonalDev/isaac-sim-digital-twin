@@ -31,7 +31,11 @@ scripts/probe_omni_ui_shot_panel_widgets.py — #115 階段 0 API spike：headle
   1) 獨立執行，自己開一個 headless SimulationApp：
      ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \\
      PYTHONIOENCODING=utf-8 \\
-     "/c/Users/Kuan/isaac-project/venv/Scripts/python.exe" scripts/probe_omni_ui_shot_panel_widgets.py
+     "C:/Other/OmniverseProjects/isaac/python.bat" scripts/probe_omni_ui_shot_panel_widgets.py
+
+     ⚠️ 這是獨立安裝的 Isaac Sim（`python.bat`，不是 pip venv 的
+     `Scripts/python.exe`）——路徑因環境而異，2026-09-08 實測確認的路徑是
+     `C:/Other/OmniverseProjects/isaac`。
 
   2) 透過 Tool Menu Registry：billiard_digital_twin 啟用後，Kit 主選單
      「Tools > Billiard/Probe Omni UI Shot Panel Widgets」直接點擊執行，
@@ -53,7 +57,23 @@ for _p in (_EXT_DIR, _PROJECT_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from ui.tool_menu_registry import tool_menu_item
+try:
+    from ui.tool_menu_registry import tool_menu_item
+except ImportError:
+    # 獨立執行（python.bat scripts/...py）時，這一行在 SimulationApp 建構
+    # 之前就會被執行到——Kit 的擴充功能系統（含 omni.kit.menu.utils，
+    # tool_menu_registry.py 依賴它）此時還沒載入，import 不到。實測踩過：
+    # `ModuleNotFoundError: No module named 'omni.kit.menu'`。獨立執行模式
+    # 本來就不需要 Tool Menu 註冊（見檔案最下方 __main__ 區塊，直接呼叫
+    # `_run()`），這裡給一個 no-op decorator 讓模組照常載入完畢即可；只有
+    # 「透過 Tool Menu Registry 點擊執行」那個模式（discover_and_register()
+    # 在 BilliardExtension.on_startup() 之後才呼叫，那時 Kit 早就跑起來
+    # 了）才用得到真正的 tool_menu_item，那個情境下這個 try 會成功。
+    def tool_menu_item(menu_path: str):
+        def decorator(func):
+            return func
+
+        return decorator
 
 # 內部固定的 ext_id key：get_frame() 只把它當成 dict key 用來識別同一個
 # frame，不要求一定是真的 extension id 字串，探測不依賴 BilliardExtension

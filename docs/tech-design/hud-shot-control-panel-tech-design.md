@@ -21,6 +21,9 @@
 - [x] 第 4 節：資料流（UI 執行緒 ↔ physics 執行緒，含 AIM/STRIKE 快照時序）
 - [x] 第 5 節：關鍵設計決策與理由
 - [x] 第 6 節：測試策略與已知限制
+- [x] 第 1.12 節：`probe_omni_ui_shot_panel_widgets.py` 實測結果（2026-09-08，headless）
+
+⚠️ 第 1.0–1.11 節寫於「這台機器沒有 Isaac Sim」的階段，內容全部是**文件查證與推測**，`1.0` 節那句「尚未實際執行」已經過時——2026-09-08 已在 `C:/Other/OmniverseProjects/isaac` 這個獨立安裝的 Isaac Sim 6.0.0 環境跑過 `probe_omni_ui_shot_panel_widgets.py`（headless），結果見新增的 **1.12 節**。1.0–1.11 節本文保持原樣不動（歷史查證過程仍有參考價值），實際數字與結論一律以 1.12 節為準。
 
 ---
 
@@ -260,6 +263,30 @@ clicked_fn: Callable[[], None]
 - `https://docs.omniverse.nvidia.com/kit/docs/omni.ui/latest/omni.ui/omni.ui.Button.html`
 - `https://docs.omniverse.nvidia.com/kit/docs/omni.ui/latest/omni.ui/omni.ui.Axis.html`
 - `https://github.com/NVIDIA-Omniverse/kit-extension-sample-ui-scene/blob/main/exts/omni.example.ui_scene.widget_info/Tutorial/object.info.widget.tutorial.md`（唯一找到的 `get_frame()` 官方範例，用於 `sc.SceneView` 而非 2D widget）
+
+---
+
+### 1.12 `probe_omni_ui_shot_panel_widgets.py` 實測結果（2026-09-08，headless）
+
+環境：`C:/Other/OmniverseProjects/isaac`（獨立安裝的 Isaac Sim 6.0.0，`python.bat` 啟動，非 pip venv），`SimulationApp({"headless": True})`。跑法見腳本 docstring。跑之前先修掉一個擋路的 bug——見 6.6 節「headless 執行的既有陷阱」。以下逐項用實測結果取代 1.9 節總表的「推測/文件查不到」。
+
+| # | 項目 | 1.9 節原標示 | 實測結果 |
+|---|---|---|---|
+| 1 | `get_frame(ext_id)` 放 2D widget | 推測，需實測 | **確認可行**：`VStack`+`Rectangle`+`Button` 建構於 `get_frame()` 回傳的 `Frame` 內不拋例外 |
+| 1 | 同一 `ext_id` 重複呼叫 | 文件確認 | **實測吻合**：identity 比對為 `True` |
+| 1 | `get_active_viewport_window()` headless 下的回傳值 | （原本假設「大機率回傳 None」） | **推翻假設，但是好消息**：headless 下回傳非 `None`（`weakref.ProxyType`）。`hud_panel.py` 與 `verify_manual_controller_wiring.py` docstring 裡「headless 大機率拿不到 viewport」的說法在**這個環境**不成立；但 `_create_root_frame()` 拿不到 viewport 時回傳 `None` 的分支仍然是必要的防禦性設計——換一台真正無顯示裝置的機器（CI、無 GPU 的 Linux 容器）行為可能不同，程式碼不需要改 |
+| 2 | overlay 拖曳是否被相機操作吃掉 | 文件查不到 | **仍未知**——headless 沒有真實滑鼠事件，本項只能證明「callback 掛得上去」，見下方區塊 9 |
+| 3 | `omni.ui.color` ABGR 理論 | 文件確認＋交叉比對 | **實測反推驗證成立**：`cl(1,0,0,1)` → `int` 值換算成十六進位剛好等於 ABGR 理論預測的 `0xff0000ff` |
+| 4 | `Placer.offset_x` 純 `float` 賦值 | 文件確認型別，賦值方式未確認 | **確認可行**：`placer.offset_x = 25.5`（純 `float`）寫入後讀回型別仍是 `omni.ui._ui.Length`、值正確 |
+| 4 | `draggable`/`drag_axis` 可用性 | 文件確認 | **實測確認**：`Placer(draggable=True, drag_axis=ui.Axis.XY)` 建構成功、`set_offset_x_changed_fn()` 掛載成功（`hud_panel.py` 主方案沒有用到這個，備援方案確認可用） |
+| 5 | `set_mouse_*_fn` x/y 座標系 | 文件查不到 | **仍未知**——同項目 2，需要 `probe_viewport_overlay_drag.py` 在 GUI 下才能測出真實事件的座標系 |
+| 5 | `computed_width/height`、`screen_position_x/y` 第一 frame 是否為 0 | 推測，需實測 | **確認為 0，且遠比預期持久**：headless 下累計到第 10 個 `app.update()` 仍是 `0.0`（原本只抓到「第一 frame」這個量測點，實測發現不是「延遲幾個 frame」而是在 headless 底下可能永遠不會有非零值——`hud_panel.py`「全部尺寸用寫死常數，不依賴 computed 值」的設計决策因此被進一步證實是對的；但 `_to_local()` 依賴的 `screen_position_x/y` 同樣卡在 0，這條路徑在 headless 下無法驗證，仍待 GUI 實測） |
+| 6 | `ui.Circle.size_policy` | 文件確認（不完整） | **踩到一個真實地雷，但沒打中我們的程式碼**：`circle.size_policy = ui.FillPolicy.STRETCH` 會拋 `TypeError`（要求 `CircleSizePolicy`，不是 `FillPolicy`）；`circle.size_policy = ui.CircleSizePolicy.STRETCH` 才會成功。逐一核對過 `hud_panel.py` 全部 6 處 `ui.Circle(...)` 呼叫，**沒有一處設定 `size_policy`**（只用 `width`/`height`/`radius`/`style`），這個地雷沒有被踩到，不需要改程式碼 |
+| 7 | `SimpleFloatModel` 讀寫方法 | 推測，需實測 | **實測確認、且逐字對上 `hud_panel.py` 的實際呼叫**：`get_value_as_float()` 與 `set_value()` 都存在且行為正確（`SimpleFloatModel(1.5)` → 讀值 `1.5` → `set_value(2.75)` → 讀值 `2.75`），跟 `hud_panel.py:470` 的 `model.get_value_as_float()`、`hud_panel.py:631` 的 `self._speed_model.set_value(...)` 完全一致 |
+
+**結論：本次實測沒有推翻 `hud_panel.py` 任何一行程式碼的正確性，`_create_root_frame()` 與 `_to_local()` 兩個隔離點目前仍原封不動——`_create_root_frame()` 內部呼叫的 `get_frame()` 已被證實可行；`_to_local()` 依賴的螢幕座標系仍待 `probe_viewport_overlay_drag.py` 在 GUI 下驗證。** 剩下唯一真正未知的是「overlay 拖曳會不會被相機操作吃掉」與「滑鼠事件座標系」，兩者都需要真實滑鼠事件，headless 原理上量不出來。
+
+完整 console 輸出（11 個區塊、共 41 行 `[probe]` 前綴輸出）已由使用者貼回並核對過，不重複收錄在此；有需要可重跑腳本重現。
 
 ---
 
@@ -723,14 +750,67 @@ clip——逐軸 clip 會改變偏移方向，而偏移方向就是加旋方向�
 
 ### 6.5 headless 必須安靜跳過建面板
 
-`omni.kit.viewport.utility.get_active_viewport_window()` 在 headless 或
-viewport 尚未建立時回傳 `None`；`_create_root_frame()` 對這兩種情況（含
-`ImportError`）一律回傳 `None`，`HudPanel.__init__()` 檢查到 `None` 就
-提早 return，不建立任何 widget、也不拋例外。這不是防禦性程式碼，是硬性
-要求——`_billiard_init()` 無條件建構 `HudPanel`（跟 `DebugMenu` 一樣），
-`scripts/` 底下所有 headless 驗證腳本（`verify_manual_controller_wiring.py`
-等十幾支）都會在 extension 啟動時經過這條路徑，若建面板這一步會炸掉，
-等於這次任務破壞了所有既有的 headless 驗證能力。
+`omni.kit.viewport.utility.get_active_viewport_window()` 在 viewport 尚未
+建立時回傳 `None`；`_create_root_frame()` 對這種情況（含 `ImportError`）
+一律回傳 `None`，`HudPanel.__init__()` 檢查到 `None` 就提早 return，不
+建立任何 widget、也不拋例外。這不是防禦性程式碼，是硬性要求——
+`_billiard_init()` 無條件建構 `HudPanel`（跟 `DebugMenu` 一樣），`scripts/`
+底下所有 headless 驗證腳本（`verify_manual_controller_wiring.py` 等十幾支）
+都會在 extension 啟動時經過這條路徑，若建面板這一步會炸掉，等於這次任務
+破壞了所有既有的 headless 驗證能力。
+
+⚠️ **2026-09-08 實測更正**：這一節原本寫「`get_active_viewport_window()`
+在 headless 回傳 `None`」是撰寫當下（沒有 Isaac Sim 可測）的推測，見 1.12
+節——實測發現這台環境的 `SimulationApp({"headless": True})` 內部仍然建立
+了一個可用的 viewport（回傳 `weakref.ProxyType`，非 `None`），`get_frame()`
+也真的能建出可用的 `Frame` 並放進 2D widget。也就是說在**這個環境**，
+`HudPanel` 在 headless 下其實會正常建面板，不會走到「安靜跳過」那個分支
+——`verify_manual_controller_wiring.py` 第 7 項的斷言是動態比對
+`hud_panel_has_root_frame == viewport_available`（不是寫死「必須是
+`None`」），所以這個結果不影響驗證腳本的正確性。這段防禦邏輯本身仍然
+保留：換一台真正沒有顯示裝置的環境（CI、無 GPU 容器）行為可能不同，
+「拿不到 viewport 就安靜跳過」依然是必要的硬性要求，只是實測證明「headless
+必定拿不到 viewport」這個前提本身不成立。
+
+### 6.6 headless 執行的既有陷阱：`ui.tool_menu_registry` 的匯入順序
+
+2026-09-08 實測執行 `probe_omni_ui_shot_panel_widgets.py` 時第一次就在
+`SimulationApp` 建構**之前**炸掉：
+
+```
+ModuleNotFoundError: No module named 'omni.kit.menu'
+```
+
+根因：`tool_menu_registry.py` 內部 `import omni.kit.menu.utils`——這是一個
+**純 Python Kit 擴充功能**（不是隨 Kit Python 發行版一起打包的原生模組），
+只有在 Kit 的 Extension Manager 載入完那個擴充功能之後才能 import 到。而
+`probe_omni_ui_shot_panel_widgets.py`／`probe_viewport_overlay_drag.py`／
+`verify_manual_controller_wiring.py` 三支腳本原本在**模組最上層**寫
+`from ui.tool_menu_registry import tool_menu_item`——這行在 Python 剖析
+整個檔案的當下就會執行，早於檔案最下方 `if __name__ == "__main__":` 區塊
+裡才建構的 `SimulationApp(...)`。用最小重現腳本證實：同一個
+`import omni.kit.menu.utils`，寫在 `SimulationApp({"headless": True})`
+**建構完成之後**執行就完全正常（這個 Kit 版本的 base app 設定檔
+`isaacsim.exp.base.python.kit` 有把 `omni.kit.menu.utils` 收進預設擴充
+集）。
+
+修法：把這行 import 包進 `try/except ImportError`，失敗時（獨立執行、
+Kit 還沒啟動）提供一個 no-op 版的 `tool_menu_item` decorator——獨立執行
+模式本來就不透過 Tool Menu 觸發，不需要真正的註冊：
+
+```python
+try:
+    from ui.tool_menu_registry import tool_menu_item
+except ImportError:
+    def tool_menu_item(menu_path: str):
+        def decorator(func):
+            return func
+        return decorator
+```
+
+已修正上述三支腳本。**`scripts/measure_swing_speed.py`（#176，跟 #115
+無關的既有腳本）有完全相同的模組頂層 import 順序**，理論上獨立執行也會
+踩到同一個錯誤，但這次沒有動它——超出 #115 的範圍，留給後續處理。
 
 ---
 

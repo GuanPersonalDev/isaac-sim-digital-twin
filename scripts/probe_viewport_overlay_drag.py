@@ -65,7 +65,11 @@ viewport window 拿到這個 model」**——這條路徑本身也是要在這�
 跑法：
     ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES ISAACSIM_ACCEPT_EULA=YES \\
     PYTHONIOENCODING=utf-8 \\
-    "/c/Users/Kuan/isaac-project/venv/Scripts/python.exe" scripts/probe_viewport_overlay_drag.py
+    "C:/Other/OmniverseProjects/isaac/python.bat" scripts/probe_viewport_overlay_drag.py
+
+    ⚠️ 這是獨立安裝的 Isaac Sim（`python.bat`，不是 pip venv 的
+    `Scripts/python.exe`）——路徑因環境而異，2026-09-08 實測確認的路徑是
+    `C:/Other/OmniverseProjects/isaac`。
 
 **不要加 `headless: True`**——這支腳本量的就是滑鼠拖曳跟相機操作的視覺
 互動，headless 沒有畫面也沒有真實滑鼠事件，跑起來沒有意義。
@@ -88,7 +92,18 @@ for _p in (_EXT_DIR, _PROJECT_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from ui.tool_menu_registry import tool_menu_item
+try:
+    from ui.tool_menu_registry import tool_menu_item
+except ImportError:
+    # 獨立執行時 SimulationApp 還沒建構、Kit 的擴充功能系統（含
+    # omni.kit.menu.utils）還沒載入，import 不到——見
+    # probe_omni_ui_shot_panel_widgets.py 同一處的說明，這裡是同一個問題
+    # 同一個修法。獨立執行模式不需要 Tool Menu 註冊，給 no-op decorator。
+    def tool_menu_item(menu_path: str):
+        def decorator(func):
+            return func
+
+        return decorator
 
 _PROBE_EXT_ID = "billiard_digital_twin.probe_viewport_overlay_drag"
 
