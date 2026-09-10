@@ -297,6 +297,30 @@ class TestClampCueBallPlacement:
             shot_panel_input_mapper.clamp_cue_ball_placement(math.nan, 0.0)
 
 
+class TestKitchenLineBounds:
+    def test_expands_placement_bounds_by_one_ball_radius(self):
+        # Act
+        x_min, x_max, y_min, y_max = shot_panel_input_mapper.kitchen_line_bounds()
+
+        # Assert：跟 CUE_BALL_PLACEMENT_X/Y（球心合法範圍）差一顆球半徑，
+        # 不是同一組數字，也不是隨便乘個係數。
+        radius = TableBallSet.DEFAULT_BALL_RADIUS
+        assert x_min == pytest.approx(CUE_BALL_PLACEMENT_X[0] - radius)
+        assert x_max == pytest.approx(CUE_BALL_PLACEMENT_X[1] + radius)
+        assert y_min == pytest.approx(CUE_BALL_PLACEMENT_Y[0] - radius)
+        assert y_max == pytest.approx(CUE_BALL_PLACEMENT_Y[1] + radius)
+
+    def test_range_is_strictly_larger_than_placement_bounds(self):
+        # Act
+        x_min, x_max, y_min, y_max = shot_panel_input_mapper.kitchen_line_bounds()
+
+        # Assert：外擴方向要對，不能算成內縮
+        assert x_min < CUE_BALL_PLACEMENT_X[0]
+        assert x_max > CUE_BALL_PLACEMENT_X[1]
+        assert y_min < CUE_BALL_PLACEMENT_Y[0]
+        assert y_max > CUE_BALL_PLACEMENT_Y[1]
+
+
 class TestShotAngleFromPoints:
     _CUE_BALL = (0.0, -0.9525)
 

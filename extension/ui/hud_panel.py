@@ -45,7 +45,6 @@ from omni.ui import color as cl
 from .table_combo_box_model import TableComboBoxModel
 
 from core.models.action_bounds import CUE_BALL_SPEED
-from core.models.manual_shot_bounds import CUE_BALL_PLACEMENT_X, CUE_BALL_PLACEMENT_Y
 from core.models.manual_shot_parameters import ManualShotParameters
 from core.services import shot_panel_input_mapper as mapper
 from core.services.break_shot_position_provider import BREAK_SHOT_POSITIONS
@@ -62,7 +61,7 @@ from core.services.pocket_geometry import POCKET_POSITIONS
 _PANEL_WIDTH_PERCENT = 100.0 / 3.0
 _PANEL_HEIGHT_PERCENT = 50.0
 
-# 圓形擊球點選擇器：120x120，半徑 60px 填滿整個方框，標記半徑 6px。數值全部
+# 圓形擊球點選擇器：120x120，半徑 60px 填滿整個方框，標記半徑 12px。數值全部
 # 寫死常數，不依賴 computed_width（第一 frame 可能是 0，見 tech-design 1.5）。
 _CIRCLE_SIZE_PX = 120.0
 _CIRCLE_CENTER_PX = 60.0
@@ -76,14 +75,14 @@ _CIRCLE_MAX_OFFSET = 1.0
 # 被畫成橢圓（見計畫「版面」一節）。
 _TOPVIEW_WIDTH_PX = 128.0
 _TOPVIEW_HEIGHT_PX = 256.0
-_CUE_BALL_MARKER_RADIUS_PX = 5.0
+_CUE_BALL_MARKER_RADIUS_PX = 4.0
 # 命中判定半徑刻意大於視覺半徑（球心對應像素半徑約 2.9px 太小難點擊）——這是
 # UX 上的選擇，不是物理量，跟 evaluate_manual_shot 用的 ball_radius 無關。
-_CUE_BALL_HIT_RADIUS_PX = 10.0
-_RACK_BALL_MARKER_RADIUS_PX = 3.0
+_CUE_BALL_HIT_RADIUS_PX = 2.0
+_RACK_BALL_MARKER_RADIUS_PX = 4.0
 _POCKET_MARKER_RADIUS_PX = 4.0
-_AIM_DOT_COUNT = 12
-_AIM_DOT_RADIUS_PX = 1.5
+_AIM_DOT_COUNT = 20
+_AIM_DOT_RADIUS_PX = 2.0
 
 # 滑鼠懸停在面板上時暫時停用的相機手勢——用來擋掉滾輪穿透到底下 viewport
 # 觸發相機縮放。2026-09-08 實測發現掛在 widget 上的 set_mouse_wheel_fn()
@@ -292,11 +291,17 @@ class HudPanel:
 
         內容（圓形選擇器 120px + 俯瞰圖 256px + 幾個 24px 列 + 狀態文字）
         粗估總高度遠超過面板分配到的高度（viewport 高的 1/2），裝不下就用
-        ScrollingFrame 捲動，不讓面板本身撐高溢出邊界。標題列跟捲動內容
-        放在同一個 ScrollingFrame 裡（不是釘在外面固定不動）——多層巢狀
-        容器的高度分配在這個 Kit 版本一再證實不可靠（見 docs/CHANGELOG.md
-        「面板定位方式的除錯歷程」），標題列滾出畫面外還能捲回來看，比
-        再賭一次「剩餘空間怎麼分配」風險小。
+        ScrollingFrame 捲動，不讓面板本身撐高溢出邊界——捲動是硬性需求，
+        不能拿掉。標題列跟捲動內容放在同一個 ScrollingFrame 裡（不是釘在
+        外面固定不動）——多層巢狀容器的高度分配在這個 Kit 版本一再證實不
+        可靠（見 docs/CHANGELOG.md「面板定位方式的除錯歷程」），標題列滾出
+        畫面外還能捲回來看，比再賭一次「剩餘空間怎麼分配」風險小。
+
+        ⚠️ 俯瞰圖／圓形選擇器內部用 `ui.Placer(Pixel offset)` 定位的元件
+        （Kitchen 矩形、袋口、球堆、母球標記、瞄準線）先前實測會偏移；已定位
+        元兇是本方法內、包住 body 的 VStack 曾經帶的 `style={"margin": 8}`
+        （與 ScrollingFrame 本身、與外層面板定位用的 Placer 都無關），改用
+        `ui.Spacer()` 圍內距後確認修好，除錯歷程見 docs/CHANGELOG.md。
         """
         # width/height 明確給 Percent(100)：Rectangle 跟緊接著的 ScrollingFrame
         # 是同一層的手足元件，各自預設撐滿的方式不一定一致，不明講的話背板
@@ -329,23 +334,36 @@ class HudPanel:
         with self._scroll_frame:
             # height=0 是 ScrollingFrame 官方範例的寫法：讓 VStack 依內容
             # 自然撐高，捲動的空間才有意義（不是被截斷成固定高度）。
-            with ui.VStack(height=0, spacing=6, style={"margin": 8}):
-                with ui.HStack(height=28):
-                    ui.Label("Shot Control")
-                    ui.Spacer()
-                    # 三角形符號（▼/▶）在 Isaac Sim 內建 UI 字型裡沒有字形，
-                    # 會顯示成 "?"，改用一定有字形的 ASCII 字元；順便加大
-                    # 點擊區域，24px 見方偏小不好點。
-                    self._collapse_button = ui.Button(
-                        "v",
-                        width=28,
-                        height=28,
-                        clicked_fn=self._on_collapse_button_clicked,
-                    )
+            #
+            # ⚠️ 內距刻意不用 style={"margin": 8}——實測確認這個 Kit 版本裡，
+            # 帶 margin style、又沒有明確 width 的 VStack，會讓巢狀在裡面的
+            # `ui.Placer` 算出錯誤的座標基準（俯瞰圖 Kitchen 矩形等元件全部
+            # 偏移，跟 ScrollingFrame 本身無關），見 docs/CHANGELOG.md 除錯
+            # 歷程。改用四個固定像素的 `ui.Spacer()` 手動圍出同樣的 8px
+            # 內距，不透過 margin style。
+            with ui.VStack(height=0, spacing=6):
+                ui.Spacer(height=8)
+                with ui.HStack():
+                    ui.Spacer(width=8)
+                    with ui.VStack(spacing=6):
+                        with ui.HStack(height=28):
+                            ui.Label("Shot Control")
+                            ui.Spacer()
+                            # 三角形符號（▼/▶）在 Isaac Sim 內建 UI 字型裡
+                            # 沒有字形，會顯示成 "?"，改用一定有字形的 ASCII
+                            # 字元；順便加大點擊區域，24px 見方偏小不好點。
+                            self._collapse_button = ui.Button(
+                                "v",
+                                width=28,
+                                height=28,
+                                clicked_fn=self._on_collapse_button_clicked,
+                            )
 
-                self._collapsible_body = ui.VStack(spacing=6)
-                with self._collapsible_body:
-                    self._build_body_ui()
+                        self._collapsible_body = ui.VStack(spacing=6)
+                        with self._collapsible_body:
+                            self._build_body_ui()
+                    ui.Spacer(width=8)
+                ui.Spacer(height=8)
 
         # 見「這些屬性無論 root frame 拿不拿得到都要先設好」那條註解旁邊的
         # 說明：預設收合，這裡把實際 widget 狀態同步成 __init__ 設的
@@ -359,10 +377,12 @@ class HudPanel:
             ui.Label("Table", width=50)
             ui.ComboBox(self._table_combo_model, width=180, height=24)
 
-        with ui.HStack(spacing=6):
+        # 讀數疊在圓形選擇器下方（不是並排）：並排的 HStack 裡「固定像素
+        # 圓形 + 沒給寬度的 VStack」寬度分配在這個 Kit 版本不可靠（跟上一輪
+        # Stack 高度分配的問題同一類），改成疊放讓 Label 吃到面板全寬。
+        with ui.VStack(spacing=4):
             self._build_offset_picker()
-            with ui.VStack():
-                self._offset_readout_label = ui.Label("", word_wrap=True)
+            self._offset_readout_label = ui.Label("", word_wrap=True)
 
         with ui.HStack(height=24, spacing=6):
             ui.Label("Speed", width=40)
@@ -379,17 +399,19 @@ class HudPanel:
             self._speed_model.add_value_changed_fn(self._on_speed_value_changed)
             ui.FloatField(model=self._speed_model, width=70, height=24, precision=3)
             ui.Label(
-                f"m/s ({CUE_BALL_SPEED[0]:.2f}–{CUE_BALL_SPEED[1]:.2f})",
+                # en-dash（U+2013）在內建字型裡沒有字形，改用 ASCII 減號。
+                f"m/s ({CUE_BALL_SPEED[0]:.2f}-{CUE_BALL_SPEED[1]:.2f})",
                 word_wrap=True,
             )
 
-        with ui.HStack(spacing=6):
+        # 讀數疊在俯瞰圖下方（不是並排），理由同上——並排的固定像素俯瞰圖
+        # 128px + 沒給寬度的 VStack 在窄面板下會把文字壓縮到逐字換行。
+        with ui.VStack(spacing=4):
             self._build_topview_map()
-            with ui.VStack():
-                self._angle_placement_readout_label = ui.Label("", word_wrap=True)
-                self._feasibility_label = ui.Label(
-                    "", word_wrap=True, style={"color": _FEASIBILITY_TEXT_COLOR}
-                )
+            self._angle_placement_readout_label = ui.Label("", word_wrap=True)
+            self._feasibility_label = ui.Label(
+                "", word_wrap=True, style={"color": _FEASIBILITY_TEXT_COLOR}
+            )
 
         with ui.HStack(height=24, spacing=6):
             self._shot_button = ui.Button("Shoot", clicked_fn=self._on_shot_button_clicked)
@@ -437,7 +459,7 @@ class HudPanel:
                     width=_CIRCLE_MARKER_RADIUS_PX * 2,
                     height=_CIRCLE_MARKER_RADIUS_PX * 2,
                     radius=_CIRCLE_MARKER_RADIUS_PX,
-                    style={"background_color": cl(0.95, 0.35, 0.15, 1.0)},
+                    style={"background_color": cl(0.9, 0.1, 0.1, 1.0)},
                 )
 
             self._circle_catcher = ui.Rectangle(
@@ -452,8 +474,8 @@ class HudPanel:
     def _build_topview_map(self) -> None:
         """球桌俯瞰圖：桌面底色 → Kitchen 合法區 → head string → 6 個袋口
         → 開球球堆 9 顆（靜態，狀態機只在 is_init_state 時才離開 IDLE，按下
-        擊球那一刻球一定在開球位置）→ 母球標記（可拖）→ 瞄準線（12 個小
-        圓點，不用 `ui.Line`——軸對齊，畫斜線要 `FreeLine` + 兩個 anchor
+        擊球那一刻球一定在開球位置）→ 母球標記（可拖）→ 瞄準線（`_AIM_DOT_COUNT`
+        個小圓點，不用 `ui.Line`——軸對齊，畫斜線要 `FreeLine` + 兩個 anchor
         widget，是風險最高的未知 API，見計畫「俯瞰圖圖層」一節）→ 透明滑鼠
         捕手。
         """
@@ -474,7 +496,7 @@ class HudPanel:
                     width=_CUE_BALL_MARKER_RADIUS_PX * 2,
                     height=_CUE_BALL_MARKER_RADIUS_PX * 2,
                     radius=_CUE_BALL_MARKER_RADIUS_PX,
-                    style={"background_color": cl(0.95, 0.95, 0.92, 1.0)},
+                    style={"background_color": cl(1.0, 1.0, 1.0, 1.0)},
                 )
 
             self._aim_dot_placers: list[tuple[ui.Placer, ui.Circle]] = []
@@ -500,11 +522,17 @@ class HudPanel:
             self._topview_catcher.set_mouse_wheel_fn(self._on_panel_wheel)
 
     def _draw_static_kitchen_region(self) -> None:
+        # 畫的是真實撞球桌 Kitchen 線（球面到線的距離），不是母球球心的合法
+        # 擺位範圍——兩者差一顆球半徑，見 mapper.kitchen_line_bounds()
+        # docstring。拖曳限制仍然是 clamp_cue_ball_placement()／
+        # CUE_BALL_PLACEMENT_X/Y，這裡只是畫給使用者看的參考線，兩者刻意
+        # 不同一組數字。
+        x_min, x_max, y_min, y_max = mapper.kitchen_line_bounds()
         x0, y0 = mapper.topview_pixels_from_table_xy(
-            CUE_BALL_PLACEMENT_X[0], CUE_BALL_PLACEMENT_Y[0], _TOPVIEW_WIDTH_PX, _TOPVIEW_HEIGHT_PX
+            x_min, y_min, _TOPVIEW_WIDTH_PX, _TOPVIEW_HEIGHT_PX
         )
         x1, y1 = mapper.topview_pixels_from_table_xy(
-            CUE_BALL_PLACEMENT_X[1], CUE_BALL_PLACEMENT_Y[1], _TOPVIEW_WIDTH_PX, _TOPVIEW_HEIGHT_PX
+            x_max, y_max, _TOPVIEW_WIDTH_PX, _TOPVIEW_HEIGHT_PX
         )
         left, right = min(x0, x1), max(x0, x1)
         top, bottom = min(y0, y1), max(y0, y1)
@@ -516,8 +544,12 @@ class HudPanel:
             )
 
     def _draw_static_head_string(self) -> None:
+        # head string 是 Kitchen 真實邊界線，要跟 _draw_static_kitchen_region()
+        # 畫的矩形同一組數字（kitchen_line_bounds() 的 y_max），不能用球心
+        # 範圍的 CUE_BALL_PLACEMENT_Y[1]——否則矩形邊緣會超出這條線。
+        _, _, _, y_max = mapper.kitchen_line_bounds()
         _, py = mapper.topview_pixels_from_table_xy(
-            0.0, CUE_BALL_PLACEMENT_Y[1], _TOPVIEW_WIDTH_PX, _TOPVIEW_HEIGHT_PX
+            0.0, y_max, _TOPVIEW_WIDTH_PX, _TOPVIEW_HEIGHT_PX
         )
         with ui.Placer(offset_x=ui.Pixel(0.0), offset_y=ui.Pixel(py)):
             ui.Rectangle(
@@ -766,7 +798,7 @@ class HudPanel:
         dot_color = _AIM_LINE_COLOR if feasibility.is_feasible else _AIM_LINE_INFEASIBLE_COLOR
         dot_count = len(self._aim_dot_placers)
         for index, (placer, dot) in enumerate(self._aim_dot_placers):
-            # 12 個點等距排列在母球與瞄準線終點之間（不含母球本身這一端），
+            # 點等距排列在母球與瞄準線終點之間（不含母球本身這一端），
             # 視覺上就是撞球軟體常見的虛線瞄準線。
             t = (index + 1) / (dot_count + 1)
             dot_x = cue_x + (end_x - cue_x) * t
@@ -842,7 +874,9 @@ class HudPanel:
         時呼叫，不在 `_on_update()` 裡每 frame 呼叫。"""
         self._reposition_offset_marker(parameters.position_offset)
         offset_v, offset_h = parameters.position_offset
-        self._offset_readout_label.text = f"↑{offset_v:+.3f}  →{offset_h:+.3f}"
+        # ↑/→ 箭頭符號在 Isaac Sim 內建 UI 字型裡沒有字形，換成一定有字形
+        # 的 ASCII 前綴（跟 v/> 收合鈕、力道範圍標籤同一類修法）。
+        self._offset_readout_label.text = f"V:{offset_v:+.3f}  H:{offset_h:+.3f}"
 
         self._suppress_speed_callback = True
         self._speed_model.set_value(parameters.cue_ball_speed)

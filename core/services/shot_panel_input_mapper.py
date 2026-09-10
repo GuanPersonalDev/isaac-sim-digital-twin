@@ -190,6 +190,22 @@ def clamp_cue_ball_placement(x: float, y: float) -> tuple[float, float]:
     return clamped_x, clamped_y
 
 
+def kitchen_line_bounds() -> tuple[float, float, float, float]:
+    """真實撞球桌 Kitchen 線的矩形範圍（x_min, x_max, y_min, y_max），桌台
+    相對座標——不是母球球心的合法擺位範圍。`CUE_BALL_PLACEMENT_X/Y` 量的是
+    球心到邊界的距離（已內縮一顆球半徑，用來限制拖曳），Kitchen 線本身量
+    的是球面到線的距離，兩者差一顆球半徑，範圍不同、用途不同：拖曳限制
+    用前者，畫真實 Kitchen 線給使用者參考位置用後者。
+    """
+    radius = TableBallSet.DEFAULT_BALL_RADIUS
+    return (
+        CUE_BALL_PLACEMENT_X[0] - radius,
+        CUE_BALL_PLACEMENT_X[1] + radius,
+        CUE_BALL_PLACEMENT_Y[0] - radius,
+        CUE_BALL_PLACEMENT_Y[1] + radius,
+    )
+
+
 def shot_angle_from_points(
     cue_ball_xy: tuple[float, float], target_xy: tuple[float, float]
 ) -> float:

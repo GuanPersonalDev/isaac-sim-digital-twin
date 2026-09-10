@@ -1135,16 +1135,22 @@ class ArticulationAPIImpl(ArticulationAPI):
     def get_dof_positions_for_debug(self) -> list[float]:
         """僅供除錯用，不是 `ArticulationAPI` 正式介面：回傳目前所有關節
         角度，供 `billiard_digital_twin.py` 的 `BILLIARD_DEBUG_LOG_PATH`
-        除錯 log 使用。"""
-        if self._articulation is None:
+        除錯 log 使用。
+
+        ⚠️ Timeline 停止時 physics tensor entity 會失效，`get_dof_positions()`
+        內部會 assert 噴例外；Debug Menu 每個 frame 都會呼叫這裡，Timeline
+        Stop 之後必須安靜回傳空 list，不能讓整個面板跟著炸。
+        """
+        if self._articulation is None or not self._articulation.is_physics_tensor_entity_valid():
             return []
         return np.asarray(self._articulation.get_dof_positions())[0].tolist()
 
     def get_dof_velocities_for_debug(self) -> list[float]:
         """僅供除錯用，同 `get_dof_positions_for_debug()`：回傳目前所有
         關節角速度（旋轉關節 rad/s，UR10e 的 CueSlideJoint 是 m/s），供
-        Debug Menu 逐關節顯示使用。"""
-        if self._articulation is None:
+        Debug Menu 逐關節顯示使用。Timeline 停止時的處理見
+        `get_dof_positions_for_debug()` docstring。"""
+        if self._articulation is None or not self._articulation.is_physics_tensor_entity_valid():
             return []
         return np.asarray(self._articulation.get_dof_velocities())[0].tolist()
 

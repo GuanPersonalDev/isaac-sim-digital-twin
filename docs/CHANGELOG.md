@@ -959,3 +959,50 @@ Placement／Infeasible）。程式碼註解維持繁體中文不動——中文�
   RGB，沒有踩到，寫在這裡提醒之後不要犯。
 
 查證細節與逐項可信度存在 `skills/isaac_sim_6_api_cache.md`。
+
+## extension/ui/hud_panel.py — Kitchen 矩形偏移：`style={"margin": 8}` 是元兇（2026-09-10）
+
+使用者實測發現俯瞰圖的 Kitchen 矩形（淺綠）跟俯瞰圖底色（深綠）沒有貼齊、
+母球 x=0 時也不在矩形水平中線上；肉眼回報「矩形整塊偏左」。先用
+`shot_panel_input_mapper.kitchen_line_bounds()`／`topview_pixels_from_table_xy()`
+離線與線上（Script Editor 內 `print`）雙重驗證，兩邊算出來的數字完全一致
+（`x_min=-0.635` 精確對應 `-TABLE_WIDTH/2`，換算像素後矩形理論上應該橫跨
+俯瞰圖整個寬度 0~128px）——確認問題不在計算，在 Kit 怎麼畫。
+
+**排查過程**（Script Editor 逐步隔離變因，每次只換一個條件）：
+
+1. 獨立浮動 `ui.Window` 內最小重現（`ZStack` 直接放兩個矩形，一個用
+   `ui.Placer(Pixel offset)`）→ **貼齊**，證明 `ui.Placer(Pixel offset)`
+   本身沒有問題。
+2. 同樣結構外面包一層真正面板用的 `ui.ScrollingFrame` + `ui.VStack(margin=8)`
+   → **偏移重現**。
+3. 分別測試「`Placer` 拿掉 `ui.Pixel()` 包裝」「`ScrollingFrame`／內容中間
+   多包一層 `ui.Frame()`」「完全不用 `Placer`、改用 `ui.Spacer` 推擠定位」
+   三種變體 → **全部還是偏**，證明不是 `Placer` API 用法的問題，也不是
+   `ui.Pixel()` 包裝的問題。
+4. 改用 `ui.Percent` offset（相對俯瞰圖自己的 128×256）→ 矩形**置中但變
+   窄**，透露出一個關鍵線索：Percent 實際上是相對某個「比 128 還小」的
+   可用寬度在算，不是相對 ZStack 宣告的 128px。
+5. 懷疑是 `vertical_scrollbar_policy=SCROLLBAR_AS_NEEDED` 永久預留捲軸
+   寬度（讀官方 `test_scrollingframe.py` 的 golden 測試圖`test_size.png`，
+   證實 `ScrollingFrame` 開垂直捲軸時容器可用寬度真的會縮水，這個機制
+   確實存在）——但把 `vertical_scrollbar_policy` 臨時改成 `ALWAYS_OFF`
+   （理論上完全不佔空間）**還是偏右**，排除捲軸佔位是（唯一）元兇。
+6. 整個拿掉 `ScrollingFrame`，只留 `ui.VStack(height=0, spacing=6,
+   style={"margin": 8})` 包住同一組矩形 → **還是偏右**，證明 `ScrollingFrame`
+   本身不是元兇。
+7. 拿掉 `style={"margin": 8}`（其餘不變，仍是同一個沒給明確 `width` 的
+   `VStack`）→ **貼齊，尺寸也正確**。鎖定元兇：**帶 `"margin"` style、
+   又沒有明確 `width` 的 `ui.VStack`，會讓巢狀在裡面的 `ui.Placer` 算出
+   錯誤的座標基準**——跟 `ScrollingFrame`、跟外層面板定位用的 `Placer`
+   （Percent offset）都無關，是這個 Kit 版本 `margin` style 本身的問題。
+
+**修法**：`_build_full_panel_content()` 包住 body 的最外層 `VStack` 拿掉
+`style={"margin": 8}`，改用四個固定像素的 `ui.Spacer()`（上下各一、左右
+各一，中間再包一層 `HStack`/`VStack`）手動圍出同樣的 8px 視覺內距。
+`ScrollingFrame` 本身保留（捲動是硬性需求），沒有被拿掉。
+
+這是這個 Kit 版本「Stack 混用沒給明確尺寸的容器＋固定像素子項時分配不
+可靠」這個系列問題的又一個變體，只是這次的觸發條件更窄（specifically
+`"margin"` style key），之後任何要在這個面板裡新增巢狀容器時，內距一律
+用 `ui.Spacer()` 手動圍，不要用 `style={"margin": ...}`。
