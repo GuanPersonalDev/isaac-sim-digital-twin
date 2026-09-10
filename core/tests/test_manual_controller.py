@@ -425,6 +425,29 @@ class TestReset:
         # Assert：排隊的請求被丟棄，不是保留到下次 IDLE 補打
         assert controller.is_shot_pending() is False
 
+    def test_reset_drops_pending_reset_confirm(self, controller: ManualController):
+        # Arrange：確認請求還沒被消費就發生 reset（例如 ERROR 復原按了
+        # 「重設球局」）
+        _advance_to_waiting(controller)
+        controller.get_action(_observation(is_ball_moving=False))  # -> READY_TO_RESET
+        controller.request_reset_confirm()
+
+        # Act
+        controller.reset()
+
+        # Assert：走完下一次循環回到 READY_TO_RESET 時，不會誤判成「已經
+        # 確認過」而立刻自動重擺——使用者這時候通常還沒看過這一局的結果，
+        # 不該有一次確認在背後排隊
+        controller.get_action(_observation(is_motion_complete=True))  # -> IDLE
+        controller.request_shot()
+        controller.get_action(_observation(is_init_state=True, is_ball_moving=False))  # -> AIMING
+        controller.get_action(_observation(is_motion_complete=True))  # -> STRIKING
+        controller.get_action(_observation(is_motion_complete=True))  # -> WAITING
+        action = controller.get_action(_observation(is_ball_moving=False))  # -> READY_TO_RESET
+
+        assert controller.get_current_state() == BilliardStatus.READY_TO_RESET
+        assert action.should_execute_action is False
+
     def test_reset_keeps_parameters(self, controller: ManualController):
         # Arrange
         controller.set_parameters(_ALT_PARAMETERS)
