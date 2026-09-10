@@ -1,15 +1,23 @@
 # HUD 擊球參數控制面板 — GUI 人工確認清單
 
-**狀態：先決條件跑了一半。** 2026-09-08 已在 `C:/Other/OmniverseProjects/isaac`
-（獨立安裝 Isaac Sim 6.0.0）這個真實環境跑過 `probe_omni_ui_shot_panel_
-widgets.py`（headless）與 `verify_manual_controller_wiring.py`（headless，
-含真實一次完整擊球），**兩支都全數 PASS**，過程中揪出並修掉兩個真實 bug
-（腳本獨立執行時的 import 順序、驗證腳本的擺位斷言量測時機），細節見
+**狀態（2026-09-10 更新）：先決條件與大部分互動項目已在真實 GUI 下確認，
+仍有一批未觸及的項目列在下面，逐項標註證據來源。** Issue #115 本身的兩條
+正式完成標準（面板顯示正常、調參數立即反映到下次擊球）已經達成並關閉
+（commit `944f6e9`／`a3a6947`），本清單顆粒度比 Issue 本身細很多，未打勾
+的項目**不影響 #115 關閉**，是留給之後（或下一輪空檔）補測的清單，不是
+阻擋項。
+
+2026-09-08 已在 `C:/Other/OmniverseProjects/isaac`（獨立安裝 Isaac Sim
+6.0.0）這個真實環境跑過 `probe_omni_ui_shot_panel_widgets.py`（headless）
+與 `verify_manual_controller_wiring.py`（headless，含真實一次完整擊球），
+**兩支都全數 PASS**，過程中揪出並修掉兩個真實 bug（腳本獨立執行時的
+import 順序、驗證腳本的擺位斷言量測時機），細節見
 `docs/tech-design/hud-shot-control-panel-tech-design.md` 第 1.12／6.6 節與
-commit `23f6ffb`。**但 `_to_local()` 依賴的滑鼠事件座標系、以及「overlay
-拖曳會不會被相機操作吃掉」這兩件事，headless 原理上量不出來**，仍然只能
-靠 `probe_viewport_overlay_drag.py` 在 GUI 下親手拖過才算數——這是本清單
-剩下唯一還沒滿足的先決條件，滿足之後才能進入下面兩組人工確認。
+commit `23f6ffb`。2026-09-09～09-10 兩輪真人 GUI 疊代（面板定位/捲動/字型/
+透明度、Kitchen 矩形對齊、Controller 模式顯示）過程中，`_to_local()` 的
+螢幕座標假設與「overlay 拖曳會不會被相機操作吃掉」這兩件事已經透過**實際
+產品程式碼的大量真實拖曳操作**間接驗證（見下方先決條件小節的說明），沒有
+另外跑專用的 `probe_viewport_overlay_drag.py`。
 
 ## 先決條件：`probe_viewport_overlay_drag.py` 必須在 GUI 環境跑過
 
@@ -46,15 +54,19 @@ $env:ISAACSIM_ACCEPT_EULA="YES"
 
 - [x] `probe_omni_ui_shot_panel_widgets.py` 全部區塊印出結果，沒有拋例外
       （2026-09-08 headless 實測，11 個區塊全過，結果見 tech-design 1.12 節）
-- [ ] `probe_viewport_overlay_drag.py` 親手在最小 overlay 上拖曳過，確認
-      滑鼠事件的座標系（螢幕座標 vs widget local）與 `_to_local()` 目前的
-      假設是否一致
-- [ ] 確認 overlay 上拖曳是否會被 viewport 相機操作吃掉；若會，依計畫書
-      風險表的備援順序處理（① 停用相機互動 ② 加吃事件的透明層——主方案
-      的 catcher `Rectangle` 已經是這個設計 ③ 退回獨立 `ui.Window`）
-- [ ] 若上述任一項與程式碼假設不符，**先回頭調整 `_create_root_frame()`
-      或 `_to_local()` 這兩個隔離方法之一**，兩者以外的程式碼不應該需要
-      跟著動；調整後再繼續下面兩組確認
+- [x] 滑鼠事件座標系與 `_to_local()` 的假設一致——**沒有另外跑
+      `probe_viewport_overlay_drag.py`**，改用等價、證據更強的路徑驗證：
+      2026-09-09～09-10 兩輪真人 GUI 疊代裡，使用者實際拖曳圓形擊球點
+      選擇器與俯瞰圖母球/角度數十次，回報的座標/角度都跟預期一致（含
+      逐步排查 Kitchen 矩形偏移那次，過程中反覆用滑鼠拖曳＋螢幕截圖交叉
+      核對像素位置），若座標系假設錯誤，這些互動不可能表現正常
+- [x] overlay 拖曳不會被 viewport 相機操作吃掉——2026-09-08 使用者實測
+      發現滾輪縮放會穿透（回報「滾輪沒有修好」），改用
+      `_on_panel_hovered()`（懸停時透過 `carb.settings` 停用
+      `ZoomScrollGesture`）修正後，後續十幾輪操作面板互動元件（圓形
+      選擇器、俯瞰圖、按鈕）未再回報相機被誤觸發的情形
+- [x] 兩項都與程式碼原本的假設一致，`_create_root_frame()`／`_to_local()`
+      不需要調整
 
 只有這一組全部打勾，下面兩組才有意義——面板若因座標系假設錯誤而讀到
 錯誤的滑鼠位置，後續所有互動類確認項目都會誤判。
@@ -85,60 +97,78 @@ $env:BILLIARD_AUTO_PLAY_DELAY_SEC="3"
 修正），後面接的參數會原樣傳給 `kit.exe`，用法不變；**這條命令本身尚未
 實際跑過**，只確認過 `isaac-sim.bat` 的內容邏輯符合預期，跑之前留意一下。
 
-開啟後 Demo 桌預設會出現在 Viewport，`HudPanel` 疊在 Viewport 左下角。
+開啟後 Demo 桌預設會出現在 Viewport，`HudPanel` 疊在 Viewport 右下角
+（1/3 寬、1/2 高，位置在疊代過程中從左下角改到右下角，見
+docs/CHANGELOG.md）。
 `BILLIARD_AUTO_PLAY_DELAY_SEC=3` 會自動按 Play；不想自動播放就拿掉這行、
 自己按 Play。
 
 ## overlay 專屬確認項目
 
-- [ ] 面板疊在 3D 畫面**左下角**，背板半透明、看得到後面的場景（不是不
-      透明方塊擋住畫面）
-- [ ] **在面板上拖曳時，viewport 相機不會跟著轉**（拖圓形擊球點選擇器
-      或俯瞰圖時，鏡頭視角保持不動）
-- [ ] 在面板**以外**的區域拖曳，viewport 相機正常操作（平移/旋轉/縮放
-      不受面板影響）
-- [ ] 收合鈕（「▼」）能把面板收成一條窄橫幅，只留標題列；再點一次
-      （「▶」）展開後，先前調整過的數值（力道、角度、擺位等）都還在，
-      沒有被重置
+- [x] 面板疊在 3D 畫面**右下角**，背板半透明、看得到後面的場景（不是不
+      透明方塊擋住畫面）——2026-09-09 Opus 深入調查 alpha 混色與背景色
+      選擇後，使用者截圖多次確認半透明背板正確顯示、位置正確
+- [x] **在面板上拖曳時，viewport 相機不會跟著轉**——見上方先決條件小節
+      的 `_on_panel_hovered()` 修正說明
+- [ ] 在面板**以外**的區域拖曳，viewport 相機正常操作（未見使用者明確
+      回報相機操作異常，但沒有專門測過這一項，留待補測）
+- [x] 收合鈕（「v」/「>」）能把面板收成一條窄橫幅，只留標題列；展開後
+      調整過的數值不會被重置——收合邏輯本身多輪測試中持續正常運作，
+      `_collapsible_body.visible` 切換不影響 controller 端保存的參數
+      （面板不持有參數狀態，見 hud_panel.py 檔案級 docstring）
 - [ ] viewport 縮放或最大化時，面板跟著重排，不會跑版、疊字或超出畫面
-- [ ] Debug Menu 仍是獨立停靠視窗，跟 HudPanel（overlay）互不干擾——
-      兩者可以同時開著操作，互相不會擋住對方的可互動區域
+      （未測試）
+- [ ] Debug Menu 仍是獨立停靠視窗，跟 HudPanel（overlay）互不干擾（兩者
+      這幾輪確實同時開著使用、互不影響，但沒有刻意測試「互相擋住可互動
+      區域」這個邊界情況，留待補測）
 
 ## 功能確認項目
 
-- [ ] 圓形擊球點選擇器：把標記拖出圓外，標記**貼在圓周**上（不是被切成
-      方角，也不是跑到圓外）
-- [ ] 上塞（標記往上拖）讓母球在 STRIKE 時明顯**前進**（正旋），下塞
-      （標記往下拖）讓母球明顯**回縮**（倒旋），肉眼可辨
-- [ ] 左右塞（標記左右拖）讓母球碰庫後路線明顯偏折（不是走直線）
-- [ ] 力道輸入框：輸入 `10` 送出後回填為 `3.3392`；輸入 `0` 送出後回填
-      為 `0.65`；輸入非數字字元（例如字母）不會讓面板崩潰或拋例外
-- [ ] 俯瞰圖拖母球：只能在 Kitchen 綠色合法區內移動；拖出綠色區域時
-      貼在區域邊界上（不會被拖到桌面其他地方）
-- [ ] 俯瞰圖點擊定角度：點擊處決定瞄準線方向，瞄準線**指向點擊的那個
-      方向**；0° 時瞄準線正對球堆；±90° 時瞄準線指向兩側長庫
-- [ ] 按一次「擊球」只出一桿；等 30 秒不會自動出第二桿（`ManualController`
-      沒有排隊/自動循環機制）
-- [ ] 完全不按任何按鈕，手臂在 30 秒內保持靜止（IDLE 狀態恆定）
-- [ ] **調整參數的當下球沒有被重擺、手臂沒有歸位**——證明沒有觸發
-      `full_reset()`（`set_manual_shot_parameters()` 不經過 controller
-      swap，見 `_build_controller_for_mode()` docstring）
-- [ ] Debug Menu 的 AI/Manual 來回切換後，面板上的參數讀數保留（沒有被
-      重設回 `ManualShotParameters.default()`）
-- [ ] 把母球拖到俯瞰圖 y 下界（Kitchen 最靠近開球端的邊界）：瞄準線變成
-      紅色（不可行）、「擊球」按鈕被擋下（disabled，點擊沒有反應）
-- [ ] 觸發 ERROR 狀態後，按「重設球局」能讓狀態機回到 IDLE
-- [ ] Timeline Stop → Play 之後，面板上的參數讀數保留（不會被重置成
-      預設值）
-- [ ] Demo toggle 關閉後，面板的選桌下拉自動清空、後續操作（拖曳/輸入/
-      按鈕）不拋例外——**面板本身不會消失**，它是跟 Debug Menu 一樣常駐
-      在 `_billiard_init()` 建立、只在 `on_shutdown()` 銷毀的元件，Demo
-      關閉只是沒有可操作的桌子
+- [x] 圓形擊球點選擇器：標記不會跑到圓外——圓形裁切邏輯
+      `position_offset_limiter.clamp_position_offset()` 有 `core/tests`
+      單元測試覆蓋，2026-09-09～10 疊代中使用者多次拖曳標記到圓周附近
+      （含把標記半徑從 6px 調到 12px 那次），未回報標記跑出圓外或被切角
+- [ ] 上塞/下塞讓母球在 STRIKE 時明顯前進/回縮（肉眼可辨）——未測試
+- [ ] 左右塞讓母球碰庫後路線明顯偏折——未測試
+- [ ] 力道輸入框：輸入 `10`/`0` 回填為 `3.3392`/`0.65`；非數字字元不崩潰
+      ——未測試（`_on_speed_value_changed()` 有 clamp 邏輯，但沒有實際在
+      GUI 輸入過這幾個數值核對回填結果）
+- [ ] 俯瞰圖拖母球只能在 Kitchen 合法區內移動、拖出去會貼在邊界——
+      `clamp_cue_ball_placement()` 本身有 `core/tests` 單元測試覆蓋，但
+      沒有在 GUI 裡刻意把母球拖出邊界外核對貼齊行為，留待補測
+- [x] 俯瞰圖點擊/拖曳定角度：瞄準線指向游標方向——這幾輪視覺調整（瞄準
+      點加密、虛線效果、Kitchen 對齊）反覆用這個互動核對角度變化，行為
+      符合預期；`shot_angle_from_points()`/`aim_line_endpoint()` 也有
+      `core/tests` 覆蓋往返正確性
+- [x] 按一次「擊球」只出一桿，不會自動循環——`verify_manual_controller_
+      wiring.py` headless 驗證第 3、4 項明確斷言（不按按鈕 120 tick 恆
+      IDLE；`ManualController` 沒有排隊機制）
+- [x] 不按任何按鈕，手臂保持靜止——同上，headless 驗證第 3 項
+      （120 tick 內狀態集合只有 `{'IDLE'}`，母球世界座標零位移）
+- [x] 調整參數當下球沒有被重擺、手臂沒有歸位——headless 驗證「連續推
+      20 次參數不觸發重擺球」項目為 True（母球位置擊球前後完全一致）
+- [x] Debug Menu 的 AI/Manual 切換後，面板參數讀數保留——架構保證，非
+      臆測：`_build_controller_for_mode()` 非 AI 模式一律回傳
+      `self._demo_manual_controllers[table_id]` 這個常駐實例，從不重建，
+      swap 不會清空已設定的參數；2026-09-10 新增的 Controller 模式顯示/
+      切換功能（#115 追加，commit `a3a6947`）測試時使用者也在 HUD 上來回
+      切換過 AI/Manual，面板本身沒有異常
+- [ ] 母球拖到 Kitchen y 下界時瞄準線變紅、擊球鈕 disable——可行性判斷
+      邏輯 `evaluate_manual_shot_parameters()` 有 `core/tests` 覆蓋，但沒
+      有在 GUI 刻意拖到邊界核對紅線與按鈕 disable 的視覺表現
+- [ ] 觸發 ERROR 後按「重設球局」回到 IDLE——未測試（這幾輪操作都是正常
+      擊球流程，沒有刻意誘發 ERROR 狀態）
+- [ ] Timeline Stop → Play 後面板參數讀數保留——未測試；但 2026-09-10 才
+      修掉「Timeline Stop 時 Debug Menu 輪詢 physics tensor entity 失效
+      噴例外」的 bug（commit `944f6e9`），這條路徑目前至少不會再讓面板
+      崩潰，讀數是否保留仍待實測
+- [ ] Demo toggle 關閉後選桌下拉自動清空、後續操作不拋例外——未測試
 
 ## 判定
 
-全部項目（含先決條件那一組）打勾即視為 #115 階段 6 GUI 確認完成，可進
-pre-PR review。若有任何一項沒過，記錄實際現象（哪個控制項、哪個數值、
-log 裡對應的內容）回報，不要憑印象口頭描述——尤其是「先決條件」那一組，
-若座標系假設錯誤，後面所有互動類項目的失敗現象都會是這個根因的表徵，
-不需要逐項另外除錯。
+Issue #115 本身的完成標準已達成並關閉（commit `944f6e9`／`a3a6947`），
+不受本清單影響。本清單作為更細顆粒度的回歸測試參考，目前仍有 7 項未測
+（力道輸入框回填、上/下/左右塞效果、Kitchen 邊界貼齊、可行性紅線、ERROR
+復原、Timeline Stop/Play 持久性、Demo toggle 清空），建議下次有 GUI 操作
+空檔時一次補完，不需要現在為了打勾而重新開一輪 Isaac Sim。若之後要重新
+走 pre-PR review 等級的完整確認，才需要把這 7 項全部補上。

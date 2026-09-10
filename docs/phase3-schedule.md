@@ -157,7 +157,7 @@
 | B-2 | Block 13 | 關節空間揮桿軌跡生成（後擺 → 加速 → 擊球點，joint target 播放）【superseded：UR3e 多關節聯合驅動卡在 manipulability ellipsoid 結構性限制，改為 UR10e＋專用線性出力機構，見 docs/issue-181-strike-status-summary.md「結案：架構轉向」】 | 12h | M7: Milestone B 手臂執行 | TRUE | 2026-09-06 | 2026-08-29 | #181 |
 | B-3 | Block 13 | 真實接觸物理校正（physics dt 1e-4 + CCD + spin_efficiency）【superseded：改用 UR10e 線性致動器直接出力，dt=1/60 已達成 flat 93.1%／bridge 109.1% 達成率，不需要列出的補償手段】 | 14h | M7: Milestone B 手臂執行 | TRUE | 2026-09-06 | 2026-09-06 | #182 |
 | B-CP | Block 13 | Fallback 檔位決策點總覽（B-CP1 8/16、B-CP2 8/29、B-CP3 9/06）【B-CP3 已驗證：flat／bridge 各同參數重跑 3 次，達成率與碰撞事件數逐位元一致，落在 fallback (b) 檔位，未降級 (c)】 | 0.5h | M7: Milestone B 手臂執行 | TRUE | 2026-09-06 | 2026-09-06 | #183 |
-| 8-2 | Block 8 | HUD 新增參數控制面板（可即時調整擊球參數） | 1h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #115 |
+| 8-2 | Block 8 | HUD 新增參數控制面板（可即時調整擊球參數） | 1h | M4: 中途展示點 LinkedIn篇6 | TRUE | 2026-09-10 | 2026-09-06 | #115 |
 | 8-3 | Block 8 | HUD 新增 ShotResult 顯示（散開分數白球狀態9號球狀態） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #116 |
 | 6-6 | Block 6 | Debug Menu 新增「顯示當前 ShotResult」按鈕手動驗證計算正確性 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-09-06 | #107 |
 | 7-6 | Block 7 | Debug Menu 新增「印出當前 Observation」按鈕 | 0.5h | M3: 擊球動作與評估 | FALSE |  | 2026-09-06 | #113 |
