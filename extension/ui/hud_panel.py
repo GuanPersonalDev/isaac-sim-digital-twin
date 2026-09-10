@@ -135,6 +135,8 @@ class HudPanel:
         on_reset_requested: Callable[[str], None],
         get_shot_status_text: Callable[[str], str],
         get_table_geometry: Callable[[str], "tuple[float, float] | None"],
+        get_controller_mode_text: Callable[[str], str],
+        on_toggle_controller_mode: Callable[[str], None],
     ) -> None:
         self._ext_id = ext_id
         self._get_parameters = get_parameters
@@ -143,6 +145,8 @@ class HudPanel:
         self._on_reset_requested = on_reset_requested
         self._get_shot_status_text = get_shot_status_text
         self._get_table_geometry = get_table_geometry
+        self._get_controller_mode_text = get_controller_mode_text
+        self._on_toggle_controller_mode = on_toggle_controller_mode
 
         # 這些屬性無論 root frame 拿不拿得到都要先設好，destroy() 才能在
         # headless（root frame 為 None）下安全呼叫。
@@ -376,6 +380,12 @@ class HudPanel:
         with ui.HStack(height=24, spacing=6):
             ui.Label("Table", width=50)
             ui.ComboBox(self._table_combo_model, width=180, height=24)
+
+        with ui.HStack(height=24, spacing=6):
+            self._controller_mode_label = ui.Label("Mode: -", width=100)
+            self._controller_mode_button = ui.Button(
+                "Switch", clicked_fn=self._on_controller_mode_button_clicked
+            )
 
         # 讀數疊在圓形選擇器下方（不是並排）：並排的 HStack 裡「固定像素
         # 圓形 + 沒給寬度的 VStack」寬度分配在這個 Kit 版本不可靠（跟上一輪
@@ -830,6 +840,14 @@ class HudPanel:
             return
         self._on_reset_requested(table_id)
 
+    def _on_controller_mode_button_clicked(self) -> None:
+        if self._table_combo_model is None:
+            return
+        table_id = self._table_combo_model.get_selected_table_id()
+        if table_id is None:
+            return
+        self._on_toggle_controller_mode(table_id)
+
     def _on_collapse_button_clicked(self) -> None:
         self._is_collapsed = not self._is_collapsed
         self._collapsible_body.visible = not self._is_collapsed
@@ -938,6 +956,19 @@ class HudPanel:
             self._last_selected_table_id = table_id
             self._refresh_controls_for_selected_table()
         self._status_label.text = self._get_shot_status_text(table_id) if table_id is not None else ""
+
+        # 模式顯示跟狀態列一樣走每 frame 輪詢，不是只在互動時重繪——Debug
+        # Menu 也能改這個狀態，面板必須反映外部變化，不能只信任自己上次
+        # 按鈕點擊後的畫面。
+        mode_text = self._get_controller_mode_text(table_id) if table_id is not None else ""
+        self._controller_mode_label.text = f"Mode: {mode_text}" if mode_text else "Mode: -"
+        if mode_text == "AI":
+            self._controller_mode_button.text = "Switch to Manual"
+        elif mode_text == "Manual":
+            self._controller_mode_button.text = "Switch to AI"
+        else:
+            self._controller_mode_button.text = "Switch"
+        self._controller_mode_button.enabled = table_id is not None
 
     # ------------------------------------------------------------------
     # 生命週期

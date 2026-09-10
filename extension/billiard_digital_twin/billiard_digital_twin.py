@@ -105,6 +105,10 @@ class BilliardExtension(omni.ext.IExt):
         # 一張 Demo 桌對應一個實例。不能在 `_build_controller_for_mode()`
         # 裡臨時 new 一個新的——理由見該方法 docstring。
         self._demo_manual_controllers: dict[str, ManualController] = {}
+        # 目前操作策略是 AI 還是 Manual，唯一寫入點是
+        # `_on_demo_controller_mode_changed()`——HUD 面板的模式顯示/切換鈕
+        # 靠這個 dict 才知道目前狀態，不是靠猜測 UI widget 最後一次的值。
+        self._demo_is_ai_mode: dict[str, bool] = {}
         # Training 球檯預設關閉（效能，見 docs/CHANGELOG.md「GUI FPS 調校」）：
         # 在 GUI Demo 情境下沒有畫面用途，需要時可從 Debug Menu 的 toggle 開回來。
         self._training_enabled = False
@@ -191,6 +195,8 @@ class BilliardExtension(omni.ext.IExt):
             self.request_manual_reset,
             self.get_manual_shot_status_text,
             self.get_table_geometry,
+            self.get_controller_mode_text,
+            self.toggle_controller_mode,
         )
 
         self._event_init()
@@ -330,6 +336,9 @@ class BilliardExtension(omni.ext.IExt):
         # 與 table_ball_set 同一個地方建立、同一個地方（_disable_demo）清理，
         # 常駐到這張 Demo 桌被 Toggle 關掉為止。
         self._demo_manual_controllers[table_id] = ManualController()
+        # 建表當下一律是 AI 模式——跟這裡緊接著建的 DemoTableOrchestrator
+        # 一樣用 `_build_model_controller()`，兩者必須一致。
+        self._demo_is_ai_mode[table_id] = True
 
         robot_manager = TableRobotManager(
             table.get_table_center(), table_id, self._stage_api, articulation_api, _ROBOT_ARM_CLASS
@@ -380,6 +389,7 @@ class BilliardExtension(omni.ext.IExt):
         self._demo_articulation_apis = {}
         self._demo_table_ball_sets = {}
         self._demo_manual_controllers = {}
+        self._demo_is_ai_mode = {}
         # #115 手動擊球面板：面板本身跟 _debug_menu 一樣常駐（_billiard_init()
         # 建立、只在 on_shutdown() 銷毀），Demo 全關時不銷毀面板，只是沒有可
         # 操作的桌子——下面 push 空清單後，面板的選桌下拉會自動清空選擇
@@ -423,6 +433,23 @@ class BilliardExtension(omni.ext.IExt):
         session.request_controller_swap(
             self._build_controller_for_mode(is_ai_mode, table_id, table_ball_set)
         )
+        self._demo_is_ai_mode[table_id] = is_ai_mode
+
+    def toggle_controller_mode(self, table_id: str) -> None:
+        """給 HUD 面板（#115）的模式切換鈕用：反轉目前模式，走跟 Debug Menu
+        同一條 `_on_demo_controller_mode_changed()`，不重複 controller swap
+        邏輯。查無 table_id 安靜 no-op，沿用既定慣例。"""
+        if table_id not in self._demo_is_ai_mode:
+            return
+        self._on_demo_controller_mode_changed(table_id, not self._demo_is_ai_mode[table_id])
+
+    def get_controller_mode_text(self, table_id: str) -> str:
+        """給 HUD 面板（#115）每 frame 輪詢顯示目前操作策略。查無 table_id
+        回傳空字串，沿用 `get_manual_shot_status_text()` 的既定慣例。"""
+        is_ai_mode = self._demo_is_ai_mode.get(table_id)
+        if is_ai_mode is None:
+            return ""
+        return "AI" if is_ai_mode else "Manual"
 
     def _on_training_toggle(self, enable: bool) -> None:
         self._training_enabled = enable
