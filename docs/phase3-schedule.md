@@ -161,7 +161,7 @@
 | 8-3 | Block 8 | HUD 新增 ShotResult 顯示（散開分數白球狀態9號球狀態） | 0.5h | M4: 中途展示點 LinkedIn篇6 | TRUE | 2026-09-11 | 2026-09-06 | #116 |
 | 6-6 | Block 6 | Debug Menu 新增「顯示當前 ShotResult」按鈕手動驗證計算正確性 | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-09-11 | 2026-09-06 | #107 |
 | 7-6 | Block 7 | Debug Menu 新增「印出當前 Observation」按鈕 | 0.5h | M3: 擊球動作與評估 | TRUE | 2026-09-11 | 2026-09-06 | #113 |
-| 8-4 | Block 8 | 確認手動調整參數 → 擊球 → 結果顯示的完整流程 | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-06 | #117 |
+| 8-4 | Block 8 | 確認手動調整參數 → 擊球 → 結果顯示的完整流程 | 0.5h | M4: 中途展示點 LinkedIn篇6 | TRUE | 2026-09-11 | 2026-09-06 | #117 |
 | 8-5 | Block 8 | 錄製展示片段（參數化擊球，素材併入最終單篇 Demo） | 0.5h | M4: 中途展示點 LinkedIn篇6 | FALSE |  | 2026-09-12 | #118 |
 | 11-1 | Block 11 | 全流程跑通確認（雲端訓練 → 匯出 policy → 本機 ModelController 執行） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #134 |
 | 11-2 | Block 11 | Debug Menu 所有按鈕確認 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #135 |
