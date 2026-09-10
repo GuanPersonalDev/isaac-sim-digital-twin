@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 
 class ModelController(BilliardStateMachineController):
     """
-    以訓練好的 RL policy 決定六維擊球參數，狀態機時序與 ScriptController 相同。
+    以訓練好的 RL policy 決定六維擊球參數，狀態機時序沿用
+    `BilliardStateMachineController` 的共用轉換邏輯（含 IDLE -> AIMING
+    之外不開放覆寫的部分）。
 
     推論固定在 IDLE -> AIMING 發生一次，AIMING -> STRIKING 重用同一份輸出：
     IDLE -> AIMING 當下球已排好且靜止，正是訓練時 policy 看到的觀測分布；重用

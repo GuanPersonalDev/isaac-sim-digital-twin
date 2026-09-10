@@ -52,3 +52,6 @@ class TableRuntime:
 
     def get_current_state(self) -> BilliardStatus:
         return self._orchestrator.get_current_state()
+
+    def confirm_reset(self) -> None:
+        self._orchestrator.confirm_reset()

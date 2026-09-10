@@ -109,6 +109,13 @@ class TestTableSession:
 
         assert table_session.get_current_state() == BilliardStatus.STRIKING
 
+    def test_confirm_reset_delegates_to_runtime(
+        self, table_session: TableSession, runtime: MagicMock
+    ):
+        table_session.confirm_reset()
+
+        runtime.confirm_reset.assert_called_once_with()
+
     def test_get_last_observation_delegates_to_runtime(
         self, table_session: TableSession, runtime: MagicMock
     ):

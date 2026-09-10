@@ -212,6 +212,10 @@ class TestFullShotCycle:
         assert controller.get_current_state() == BilliardStatus.WAITING
 
         controller.get_action(_observation(is_ball_moving=False))
+        assert controller.get_current_state() == BilliardStatus.READY_TO_RESET
+
+        controller.request_reset_confirm()
+        controller.get_action(_observation(is_ball_moving=False))
         assert controller.get_current_state() == BilliardStatus.RESET
 
         controller.get_action(_observation(is_motion_complete=True))
@@ -241,6 +245,8 @@ class TestFullShotCycle:
         # 走完整個循環回到 IDLE 之後也不會補打欠下的請求
         controller.get_action(_observation(is_motion_complete=True))  # -> STRIKING
         controller.get_action(_observation(is_motion_complete=True))  # -> WAITING
+        controller.get_action(_observation(is_ball_moving=False))  # -> READY_TO_RESET
+        controller.request_reset_confirm()
         controller.get_action(_observation(is_ball_moving=False))  # -> RESET
         controller.get_action(_observation(is_motion_complete=True))  # -> IDLE
         assert controller.get_current_state() == BilliardStatus.IDLE
@@ -283,7 +289,7 @@ class TestWaitingToReset:
         # Assert
         assert controller.get_current_state() == BilliardStatus.WAITING
 
-    def test_transitions_to_reset_when_balls_stop(self, controller: ManualController):
+    def test_transitions_to_ready_to_reset_when_balls_stop(self, controller: ManualController):
         # Arrange
         _advance_to_waiting(controller)
 
@@ -291,7 +297,60 @@ class TestWaitingToReset:
         controller.get_action(_observation(is_ball_moving=False))
 
         # Assert
+        assert controller.get_current_state() == BilliardStatus.READY_TO_RESET
+
+
+class TestReadyToResetToReset:
+    def test_stays_ready_to_reset_without_confirm(self, controller: ManualController):
+        """驗收錨點：沒按 Next Rack，狀態必須無限期停在 READY_TO_RESET，
+        不能像舊版一樣球一停就自動重擺。"""
+        # Arrange
+        _advance_to_waiting(controller)
+        controller.get_action(_observation(is_ball_moving=False))
+
+        # Act & Assert
+        for _ in range(100):
+            action = controller.get_action(_observation(is_ball_moving=False))
+            assert controller.get_current_state() == BilliardStatus.READY_TO_RESET
+            assert action.should_execute_action is False
+
+    def test_transitions_to_reset_after_confirm(self, controller: ManualController):
+        # Arrange
+        _advance_to_waiting(controller)
+        controller.get_action(_observation(is_ball_moving=False))
+
+        # Act
+        controller.request_reset_confirm()
+        action = controller.get_action(_observation(is_ball_moving=False))
+
+        # Assert
         assert controller.get_current_state() == BilliardStatus.RESET
+        assert action.should_execute_action is True
+
+    def test_multiple_confirms_before_consumed_merge_into_one(
+        self, controller: ManualController
+    ):
+        # Arrange：連按 3 次
+        _advance_to_waiting(controller)
+        controller.get_action(_observation(is_ball_moving=False))
+        controller.request_reset_confirm()
+        controller.request_reset_confirm()
+        controller.request_reset_confirm()
+
+        # Act：只應該觸發一次 READY_TO_RESET -> RESET
+        controller.get_action(_observation(is_ball_moving=False))
+        assert controller.get_current_state() == BilliardStatus.RESET
+
+        # 走完整個循環回到下一次 READY_TO_RESET 也不會補觸發欠下的確認
+        controller.get_action(_observation(is_motion_complete=True))  # -> IDLE
+        controller.request_shot()
+        controller.get_action(_observation(is_init_state=True, is_ball_moving=False))  # -> AIMING
+        controller.get_action(_observation(is_motion_complete=True))  # -> STRIKING
+        controller.get_action(_observation(is_motion_complete=True))  # -> WAITING
+        action = controller.get_action(_observation(is_ball_moving=False))  # -> READY_TO_RESET
+
+        assert controller.get_current_state() == BilliardStatus.READY_TO_RESET
+        assert action.should_execute_action is False
 
 
 class TestPendingNoneEntersErrorWithoutRaising:

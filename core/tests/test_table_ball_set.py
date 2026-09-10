@@ -284,3 +284,91 @@ class TestTableBallSet:
         prim_paths = table_ball_set.get_ball_prim_paths()
 
         assert prim_paths == [_prim_path(ball_id) for ball_id in range(10)]
+
+
+class TestMarkBallPocketed:
+    def test_mark_ball_pocketed_adds_ball_id_to_pocketed_ids(
+        self,
+        table_ball_set,
+        rigid_body_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        rigid_body_api.get_position.return_value = (0.5, -0.3, 0.8)
+
+        table_ball_set.mark_ball_pocketed(3)
+
+        assert table_ball_set.get_pocketed_ball_ids() == {3}
+
+    def test_mark_ball_pocketed_hides_the_ball(
+        self,
+        table_ball_set,
+        stage_api: MagicMock,
+        rigid_body_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        rigid_body_api.get_position.return_value = (0.5, -0.3, 0.8)
+
+        table_ball_set.mark_ball_pocketed(3)
+
+        stage_api.set_visibility.assert_called_with(_prim_path(3), visible=False)
+
+    def test_mark_ball_pocketed_stores_position_relative_to_table(
+        self,
+        offset_table_ball_set,
+        rigid_body_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        # offset_table_ball_set 的 table_position=(2.0, 3.0)，世界座標
+        # (2.5, 2.7, 0.8) 換算成桌台相對座標應為 (0.5, -0.3)，用來驗證
+        # 減法方向沒有寫反。
+        offset_table_ball_set.build(positions)
+        rigid_body_api.get_position.return_value = (2.5, 2.7, 0.8)
+
+        offset_table_ball_set.mark_ball_pocketed(3)
+
+        assert offset_table_ball_set.get_pocketed_ball_position(3) == pytest.approx((0.5, -0.3))
+
+    def test_get_pocketed_ball_position_returns_stored_value(
+        self,
+        table_ball_set,
+        rigid_body_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        rigid_body_api.get_position.return_value = (0.1, 0.2, 0.8)
+
+        table_ball_set.mark_ball_pocketed(5)
+
+        assert table_ball_set.get_pocketed_ball_position(5) == pytest.approx((0.1, 0.2))
+
+    def test_mark_ball_pocketed_twice_tracks_both_balls_independently(
+        self,
+        table_ball_set,
+        rigid_body_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        rigid_body_api.get_position.side_effect = [(0.1, 0.2, 0.8), (0.3, 0.4, 0.8)]
+
+        table_ball_set.mark_ball_pocketed(2)
+        table_ball_set.mark_ball_pocketed(7)
+
+        assert table_ball_set.get_pocketed_ball_ids() == {2, 7}
+        assert table_ball_set.get_pocketed_ball_position(2) == pytest.approx((0.1, 0.2))
+        assert table_ball_set.get_pocketed_ball_position(7) == pytest.approx((0.3, 0.4))
+
+    def test_reset_clears_pocketed_ball_ids(
+        self,
+        table_ball_set,
+        rigid_body_api: MagicMock,
+        positions: dict[int, tuple[float, float]],
+    ):
+        table_ball_set.build(positions)
+        rigid_body_api.get_position.return_value = (0.1, 0.2, 0.8)
+        table_ball_set.mark_ball_pocketed(4)
+
+        table_ball_set.reset(positions)
+
+        assert table_ball_set.get_pocketed_ball_ids() == set()

@@ -24,3 +24,8 @@ class ControllerBase(ABC):
     def reset(self) -> None:
         """將控制器生命週期重設為 BilliardStatus.RESET。"""
         ...
+
+    @abstractmethod
+    def request_reset_confirm(self) -> None:
+        """UI 執行緒呼叫：確認可以觸發真正的重擺（瞬移回開球擺位）。"""
+        ...

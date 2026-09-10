@@ -45,6 +45,8 @@ class TableBallSet:
         self._built = False
         self._ball_prim_list: list[str] = []
         self.ball_motion_monitor: BallMotionMonitor = None
+        self._pocketed_ball_ids: set[int] = set()
+        self._pocketed_ball_positions: dict[int, tuple[float, float]] = {}
 
     def build(self, positions: dict[int, tuple[float, float]]) -> None:
         """
@@ -121,6 +123,34 @@ class TableBallSet:
         ball_prim_path = self._get_ball_prim_path(ball_id)
         self._stage_api.set_visibility(ball_prim_path, visible=True)
 
+    def mark_ball_pocketed(self, ball_id: int) -> None:
+        """
+        球落袋時呼叫（見 PocketEventHandler 的 on_ball_pocketed callback）。
+        除了呼叫 hide_ball() 關閉顯示，還會記錄落袋當下的桌台相對座標——
+        球進袋後 PhysX 可能持續掉落（trigger 體積不保證底下有實體地板接
+        住），事後讀即時位置不可靠，必須在這裡就存一次快照。
+        """
+        self._check_built()
+        self._check_ball_id(ball_id)
+        prim_path = self._get_ball_prim_path(ball_id)
+        world_x, world_y, _ = self._rigid_body_api.get_position(prim_path)
+        self._pocketed_ball_positions[ball_id] = (world_x - self._table_x, world_y - self._table_y)
+        self._pocketed_ball_ids.add(ball_id)
+        self.hide_ball(ball_id)
+
+    def get_pocketed_ball_ids(self) -> set[int]:
+        """
+        目前已落袋的 ball_id 集合，reset() 時清空。
+        """
+        return set(self._pocketed_ball_ids)
+
+    def get_pocketed_ball_position(self, ball_id: int) -> tuple[float, float]:
+        """
+        該球落袋當下的桌台相對座標。只給已經在 get_pocketed_ball_ids() 回傳
+        集合內的 ball_id 呼叫。
+        """
+        return self._pocketed_ball_positions[ball_id]
+
     def reset(self, positions: dict[int, tuple[float, float]]) -> None:
         """
         將全部球設為可見，並移回 positions 指定的座標。
@@ -130,6 +160,9 @@ class TableBallSet:
             raise ValueError(
                 f"positions 須包含 key 0-9，實際收到：{sorted(positions.keys())}"
             )
+
+        self._pocketed_ball_ids = set()
+        self._pocketed_ball_positions = {}
 
         z = self._table_z + self._ball_radius
         for ball_id in range(10):

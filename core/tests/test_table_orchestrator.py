@@ -147,6 +147,26 @@ class TestGetCurrentState:
         assert training_orchestrator.get_current_state() == BilliardStatus.IDLE
 
 
+class TestConfirmReset:
+    def test_demo_orchestrator_confirm_reset_delegates_to_script_controller(
+        self,
+        demo_orchestrator: DemoTableOrchestrator,
+        script_controller: MagicMock,
+    ):
+        demo_orchestrator.confirm_reset()
+
+        script_controller.request_reset_confirm.assert_called_once_with()
+
+    def test_training_orchestrator_confirm_reset_delegates_to_script_controller(
+        self,
+        training_orchestrator: TrainingTableOrchestrator,
+        script_controller: MagicMock,
+    ):
+        training_orchestrator.confirm_reset()
+
+        script_controller.request_reset_confirm.assert_called_once_with()
+
+
 class TestSetController:
     def test_demo_orchestrator_set_controller_replaces_the_one_get_current_state_uses(
         self,

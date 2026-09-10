@@ -61,6 +61,9 @@ class TableSession:
     def get_current_state(self) -> BilliardStatus:
         return self._runtime.get_current_state()
 
+    def confirm_reset(self) -> None:
+        self._runtime.confirm_reset()
+
     def get_last_observation(self) -> Observation | None:
         return self._runtime.get_last_observation()
 

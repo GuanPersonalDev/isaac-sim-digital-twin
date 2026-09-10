@@ -137,6 +137,9 @@ class HudPanel:
         get_table_geometry: Callable[[str], "tuple[float, float] | None"],
         get_controller_mode_text: Callable[[str], str],
         on_toggle_controller_mode: Callable[[str], None],
+        confirm_reset: Callable[[str], None],
+        is_ready_to_reset: Callable[[str], bool],
+        get_shot_result_text: Callable[[str], str],
     ) -> None:
         self._ext_id = ext_id
         self._get_parameters = get_parameters
@@ -147,6 +150,9 @@ class HudPanel:
         self._get_table_geometry = get_table_geometry
         self._get_controller_mode_text = get_controller_mode_text
         self._on_toggle_controller_mode = on_toggle_controller_mode
+        self._confirm_reset = confirm_reset
+        self._is_ready_to_reset = is_ready_to_reset
+        self._get_shot_result_text = get_shot_result_text
 
         # 這些屬性無論 root frame 拿不拿得到都要先設好，destroy() 才能在
         # headless（root frame 為 None）下安全呼叫。
@@ -429,7 +435,16 @@ class HudPanel:
                 "Reset Table", clicked_fn=self._on_reset_button_clicked
             )
 
+        # 獨立一顆按鈕，不跟上面的 Reset Table 合併：Reset Table 是隨時可按
+        # 的強制重開整局（ERROR 復原用），Next Rack 是球停下來後、確認要
+        # 重擺才重擺的一般流程，兩者語意不同。
+        with ui.HStack(height=24, spacing=6):
+            self._next_rack_button = ui.Button(
+                "Next Rack", clicked_fn=self._on_next_rack_button_clicked
+            )
+
         self._status_label = ui.Label("", word_wrap=True)
+        self._shot_result_label = ui.Label("", word_wrap=True)
 
     def _build_offset_picker(self) -> None:
         """圓形擊球點選擇器：母球大圓 + 十字準星 + 可拖曳標記 + 透明滑鼠捕手。
@@ -848,6 +863,14 @@ class HudPanel:
             return
         self._on_toggle_controller_mode(table_id)
 
+    def _on_next_rack_button_clicked(self) -> None:
+        if self._table_combo_model is None:
+            return
+        table_id = self._table_combo_model.get_selected_table_id()
+        if table_id is None:
+            return
+        self._confirm_reset(table_id)
+
     def _on_collapse_button_clicked(self) -> None:
         self._is_collapsed = not self._is_collapsed
         self._collapsible_body.visible = not self._is_collapsed
@@ -969,6 +992,13 @@ class HudPanel:
         else:
             self._controller_mode_button.text = "Switch"
         self._controller_mode_button.enabled = table_id is not None
+
+        self._shot_result_label.text = (
+            self._get_shot_result_text(table_id) if table_id is not None else ""
+        )
+        self._next_rack_button.enabled = (
+            self._is_ready_to_reset(table_id) if table_id is not None else False
+        )
 
     # ------------------------------------------------------------------
     # 生命週期

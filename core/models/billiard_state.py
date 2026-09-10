@@ -7,6 +7,7 @@ class BilliardStatus(Enum):
     AIMING = "aiming"
     STRIKING = "striking"
     WAITING = "waiting"
+    READY_TO_RESET = "ready_to_reset"
     RESET = "reset"
     ERROR = "error"
 

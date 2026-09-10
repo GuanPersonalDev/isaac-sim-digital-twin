@@ -154,6 +154,15 @@ class TestTableRuntime:
         orchestrator.reset.assert_called_once_with()
         orchestrator.full_reset.assert_not_called()
 
+    def test_confirm_reset_delegates_to_orchestrator(
+        self,
+        table_runtime: TableRuntime,
+        orchestrator: MagicMock,
+    ):
+        table_runtime.confirm_reset()
+
+        orchestrator.confirm_reset.assert_called_once_with()
+
     def test_request_full_reset_drops_the_observation_left_over_from_the_previous_run(
         self,
         table_runtime: TableRuntime,

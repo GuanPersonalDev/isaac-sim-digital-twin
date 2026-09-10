@@ -19,6 +19,7 @@ for p in [_EXT_DIR, _PROJECT_ROOT]:
 from core.controllers.controller_base import ControllerBase
 from core.controllers.manual_controller import ManualController
 from core.controllers.model_controller import ModelController
+from core.models.billiard_state import BilliardStatus
 from core.models.manual_shot_parameters import ManualShotParameters
 from core.models.table_ball_set import TableBallSet
 from core.models.robot_arm import RobotArm
@@ -51,6 +52,7 @@ from core.services.error_state import ErrorState
 from core.services.impulse_striking_service import ImpulseStrikingService
 from core.services.pocket_event_handler import PocketEventHandler
 from core.services.rolling_resistance_service import RollingResistanceService
+from core.services.spread_score_calculator import calculate_spread_score
 
 _TABLE_COUNT = 1
 _TOOL_MENU_NAME = "Tools"
@@ -197,6 +199,9 @@ class BilliardExtension(omni.ext.IExt):
             self.get_table_geometry,
             self.get_controller_mode_text,
             self.toggle_controller_mode,
+            self.confirm_reset,
+            self.is_ready_to_reset,
+            self.get_shot_result_text,
         )
 
         self._event_init()
@@ -247,7 +252,7 @@ class BilliardExtension(omni.ext.IExt):
             physics_api=physics_api,
             pocket_prim_paths=table.get_pocket_prim_paths(),
             ball_prim_paths=table_ball_set.get_ball_prim_paths(),
-            on_ball_pocketed=table_ball_set.hide_ball,
+            on_ball_pocketed=table_ball_set.mark_ball_pocketed,
         )
         handler.start()
         return handler
@@ -450,6 +455,54 @@ class BilliardExtension(omni.ext.IExt):
         if is_ai_mode is None:
             return ""
         return "AI" if is_ai_mode else "Manual"
+
+    def confirm_reset(self, table_id: str) -> None:
+        """對應 HUD 面板的「Next Rack」按鈕：確認可以把球重擺回開球擺位。
+        查無 table_id 安靜 no-op，沿用既定慣例。"""
+        session = self._find_session(table_id)
+        if session is None:
+            return
+        session.confirm_reset()
+
+    def is_ready_to_reset(self, table_id: str) -> bool:
+        """給 HUD 面板每 frame 輪詢，決定「Next Rack」按鈕是否 enabled。查無
+        table_id 回傳 False，沿用「查不到就給安全預設值」的既定慣例。"""
+        session = self._find_session(table_id)
+        if session is None:
+            return False
+        return session.get_current_state() == BilliardStatus.READY_TO_RESET
+
+    def get_shot_result_text(self, table_id: str) -> str:
+        """給 HUD 面板（#116）每 frame 輪詢顯示上一次擊球的結果。狀態機停在
+        READY_TO_RESET 時球是真正的落點（還沒被「Next Rack」瞬移回開球擺
+        位），其餘狀態顯示佔位文字。查無 table_id 回傳空字串，沿用既定
+        慣例。"""
+        session = self._find_session(table_id)
+        table_ball_set = self._demo_table_ball_sets.get(table_id)
+        if session is None or table_ball_set is None:
+            return ""
+        if session.get_current_state() != BilliardStatus.READY_TO_RESET:
+            return "Shot Result: -"
+        observation = session.get_last_observation()
+        if observation is None:
+            return "Shot Result: -"
+
+        pocketed_ids = table_ball_set.get_pocketed_ball_ids()
+        table_x, table_y = table_ball_set.get_table_x_y()
+        ball_positions: dict[int, tuple[float, float]] = {}
+        for ball_id in range(1, 10):
+            if ball_id in pocketed_ids:
+                ball_positions[ball_id] = table_ball_set.get_pocketed_ball_position(ball_id)
+            else:
+                world_x, world_y, _ = observation.ball_positions[ball_id]
+                ball_positions[ball_id] = (world_x - table_x, world_y - table_y)
+
+        spread_score = calculate_spread_score(ball_positions, pocketed_ids)
+        return (
+            f"Spread Score: {spread_score:.3f}\n"
+            f"Cue Ball Pocketed: {0 in pocketed_ids}\n"
+            f"9-Ball Pocketed: {9 in pocketed_ids}"
+        )
 
     def _on_training_toggle(self, enable: bool) -> None:
         self._training_enabled = enable

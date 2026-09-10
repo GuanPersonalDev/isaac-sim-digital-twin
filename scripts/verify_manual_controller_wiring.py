@@ -235,9 +235,15 @@ def _verify(extension) -> bool:
     print(f"[verify] 全程 has_error 恆為 False：{not had_error}")
 
     # 項目 5：連續推 20 次參數不觸發重擺球。要先等這一局自然走完
-    # WAITING -> RESET -> IDLE（正常擊球流程本身就會 _reset_balls()，跟
-    # controller swap 觸發的 full_reset() 是兩回事），再開始記錄基準位置，
-    # 否則量到的位移會是這一局本身造成的，不是要驗的重擺球問題。
+    # WAITING -> READY_TO_RESET -> RESET -> IDLE（正常擊球流程本身就會
+    # _reset_balls()，跟 controller swap 觸發的 full_reset() 是兩回事），
+    # 再開始記錄基準位置，否則量到的位移會是這一局本身造成的，不是要驗的
+    # 重擺球問題。球停止移動後狀態機停在 READY_TO_RESET 不會自動往下走
+    # （Next Rack 閘門，見 docs/tech-design/next-rack-manual-reset-gate-
+    # tech-design.md），這裡模擬使用者按下「Next Rack」才繼續。
+    ticks_to_ready = _wait_for_state(session, "READY_TO_RESET", _MAX_TICKS_BACK_TO_IDLE, app)
+    if ticks_to_ready is not None:
+        extension.confirm_reset(table_id)
     ticks_back_to_idle = _wait_for_state(session, "IDLE", _MAX_TICKS_BACK_TO_IDLE, app)
     back_to_idle = ticks_back_to_idle is not None
     print(f"[verify] 這一局結束後在 {_MAX_TICKS_BACK_TO_IDLE} tick 預算內回到 IDLE："

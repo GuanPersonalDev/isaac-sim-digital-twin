@@ -11,12 +11,12 @@ logger = logging.getLogger(__name__)
 
 class ManualController(BilliardStateMachineController):
     """由使用者透過 HUD 面板（#115）手動決定六維擊球參數，按下「擊球」鈕才
-    出一桿一次，不像 `ScriptController` 那樣自動循環。
+    出一桿一次，不會自動循環。
 
     只覆寫 `_idle_state_action_result()`、`_aiming_state_action_result()`、
-    `_on_reset()` 這三個基底類別明確開放的擴充點，其餘 4 個狀態轉換（含
-    STRIKING/WAITING/RESET 的條件與 no-op Action 格式）沿用基底類別，是
-    `ScriptController` 與 `ModelController` 共用的契約，本類別不例外。
+    `_on_reset()` 這三個基底類別明確開放的擴充點，其餘狀態轉換（含
+    STRIKING/WAITING/READY_TO_RESET/RESET 的條件與 no-op Action 格式）沿用
+    基底類別，是 `ModelController` 共用的契約，本類別不例外。
 
     **不呼叫 `decode_rl_action()`/`normalize_action()`**：參數來自使用者
     拖曳/輸入，已經在 `shot_panel_input_mapper` 的各個裁切函式夾過邊界，
@@ -28,12 +28,12 @@ class ManualController(BilliardStateMachineController):
     `manual_shot_bounds.py` 檔案級 docstring 的「兩把尺」說明）。
 
     **為什麼沒按鈕就會永遠停在 IDLE**：`BilliardStateMachineController` 的
-    5 個狀態轉換裡，只有 IDLE -> AIMING 的條件由子類別決定。
-    `ScriptController` 那裡的條件永遠成立（開球後自動循環）；本類別多一個
-    「有排隊請求」的前提（`is_shot_pending()`）。一旦條件成立進了 AIMING，
-    AIMING -> STRIKING -> WAITING -> RESET -> IDLE 就照基底類別的邏輯自己
-    跑完，回到 IDLE 時因為請求已經被消費，不會再自動觸發下一次——不需要、
-    也不應該去動基底類別。
+    狀態轉換裡，只有 IDLE -> AIMING 的條件由子類別決定，本類別的條件是
+    「有排隊請求」（`is_shot_pending()`）。一旦條件成立進了 AIMING，
+    AIMING -> STRIKING -> WAITING -> READY_TO_RESET -> RESET -> IDLE 就照
+    基底類別的邏輯自己跑完（READY_TO_RESET -> RESET 那一步要等 HUD 的
+    「Next Rack」按鈕確認），回到 IDLE 時因為請求已經被消費，不會再自動
+    觸發下一次——不需要、也不應該去動基底類別。
 
     **為什麼 AIM 與 STRIKE 要讀同一份快照 `_pending`**：兩次分派之間（AIM
     發生在 IDLE -> AIMING、STRIKE 發生在 AIMING -> STRIKING）使用者可能已

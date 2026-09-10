@@ -131,6 +131,10 @@ class TestLifecycle:
         assert controller.get_current_state() == BilliardStatus.WAITING
 
         controller.get_action(_observation(is_ball_moving=False))
+        assert controller.get_current_state() == BilliardStatus.READY_TO_RESET
+
+        controller.request_reset_confirm()
+        controller.get_action(_observation(is_ball_moving=False))
         assert controller.get_current_state() == BilliardStatus.RESET
 
     def test_stays_idle_when_balls_not_ready(
@@ -197,7 +201,10 @@ class TestInference:
     ):
         # Arrange
         _advance_to_waiting(controller)
-        controller.get_action(_observation(is_ball_moving=False))
+        controller.get_action(_observation(is_ball_moving=False))  # -> READY_TO_RESET
+        controller.request_reset_confirm()
+        controller.get_action(_observation(is_ball_moving=False))  # -> RESET
+        controller.get_action(_observation(is_motion_complete=True))  # -> IDLE
         policy.output = [1.0] * ACTION_DIM
 
         # Act

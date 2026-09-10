@@ -106,6 +106,9 @@ class TableOrchestrator(ABC):
     def get_current_state(self) -> BilliardStatus:
         return self._script_controller.get_current_state()
 
+    def confirm_reset(self) -> None:
+        self._script_controller.request_reset_confirm()
+
     def _check_downstream_failure(self) -> None:
         """
         下游動作失敗（逾時）時標記 error_state，預設無下游可檢查。

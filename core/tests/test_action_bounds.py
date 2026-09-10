@@ -2,7 +2,6 @@ import math
 
 import pytest
 
-from core.controllers.script_controller import ScriptController
 from core.models.action_bounds import (
     ACTION_BOUNDS,
     ACTION_DIM,
@@ -15,8 +14,6 @@ from core.models.action_bounds import (
     POSITION_OFFSET_VERTICAL,
     SHOT_ANGLE,
 )
-from core.models.billiard_state import BilliardStatus
-from core.models.observation import Observation
 from core.models.table_ball_set import TableBallSet
 from core.services.break_shot_position_provider import BREAK_SHOT_POSITIONS
 from core.services.rolling_resistance_service import GRAVITY, ROLLING_FRICTION_COEFF
@@ -182,40 +179,3 @@ class TestDimensionSemantics:
 
         # Assert
         assert CUE_BALL_SPEED[0] > minimum_speed
-
-
-class TestSingleSourceOfTruth:
-    def test_script_controller_no_longer_defines_its_own_speed_limit(self):
-        # 3.3392 曾同時存在於 ScriptController.MAX_CUE_BALL_SPEED；#114 要求
-        # 單一來源，重新引入類別常數會讓兩處數值有機會漂移。
-        # Assert
-        assert not hasattr(ScriptController, "MAX_CUE_BALL_SPEED")
-
-    def test_striking_action_uses_the_shared_upper_bound(self):
-        # Arrange
-        controller = ScriptController()
-        controller.get_action(_observation(is_motion_complete=True))
-        controller.get_action(_observation(is_init_state=True))
-
-        # Act
-        action = controller.get_action(_observation(is_motion_complete=True))
-
-        # Assert
-        assert controller.get_current_state() == BilliardStatus.STRIKING
-        assert action.cue_ball_speed == CUE_BALL_SPEED[1]
-
-
-def _observation(
-    is_init_state: bool = False,
-    is_ball_moving: bool = False,
-    is_motion_complete: bool = False,
-    has_error: bool = False,
-) -> Observation:
-    return Observation(
-        ball_positions=[[0.0, 0.0, 0.0]],
-        cue_ball_position=[-0.3, 0.0, 0.0],
-        is_init_state=is_init_state,
-        is_ball_moving=is_ball_moving,
-        is_motion_complete=is_motion_complete,
-        has_error=has_error,
-    )

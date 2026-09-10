@@ -37,9 +37,9 @@ class ErrorState:
 
     def clear(self) -> None:
         """
-        必須與 ScriptController.reset() 同時發生：
-        ScriptController.get_action() 判斷 has_error 優先於 current_state，
-        只清一邊會讓狀態機瞬間又跳回 ERROR。見 TableOrchestrator.reset()。
+        必須與 BilliardStateMachineController.reset() 同時發生：
+        get_action() 判斷 has_error 優先於 current_state，只清一邊會讓狀態機
+        瞬間又跳回 ERROR。見 TableOrchestrator.reset()。
         """
         with self._lock:
             self._has_error = False

@@ -54,6 +54,9 @@ class ConcreteController(ControllerBase):
     def get_current_state(self) -> BilliardStatus:
         return self.current_state
 
+    def request_reset_confirm(self) -> None:
+        pass
+
 
 @pytest.fixture
 def observation() -> Observation:
