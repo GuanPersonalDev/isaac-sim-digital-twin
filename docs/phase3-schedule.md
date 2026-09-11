@@ -169,11 +169,15 @@
 | 11-4 | Block 11 | API 掃描：執行 api-scanner 掃描 isaac_sim_impl_6_0/ 產出 API 使用清單 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #137 |
 | 11-5 | Block 11 | 補坑收尾 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-12 | #138 |
 | 12-C1 | Block 12 | 本機 Demo 播放與錄影流程（GUI 運鏡錄影 ＋ 4 階段 checkpoint 對照回放 ＋ 多環境並行示意） | 2h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #227 |
-| 12-1 | Block 12 | Demo 影片腳本規劃（完整故事弧線：參數化控制 → RL 訓練 → 手臂執行） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #139 |
-| 12-2 | Block 12 | 錄製 Demo 影片（OBS） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #140 |
-| 12-3 | Block 12 | 影片剪輯確認 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #141 |
+| 12-1 | Block 12 | Demo 影片腳本規劃（完整故事弧線：參數化控制 → RL 訓練 → 手臂執行）【規劃變更 2026-09-11：不再發布單篇整合 Demo，改為 LinkedIn 系列化發布，此任務語意不再成立，角色拆分至篇6/7/8/9 各自 Issue，詳見 docs/content-plan/demo-linkedin-series-plan.md】 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #139（not planned）→ 見 #238/#239/#240/#241 |
+| 12-2 | Block 12 | 錄製 Demo 影片（OBS）【規劃變更 2026-09-11：改為系列化發布，錄製工作拆到篇6/篇8 各自 Issue（篇7 為全新錄製單元，不適用本任務拆分）】 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #140（not planned）→ 見 #238/#240 |
+| 12-3 | Block 12 | 影片剪輯確認【規劃變更 2026-09-11：改為系列化發布，剪輯工作拆到篇6/篇8 各自 Issue（篇7 不適用，見 #239）】 | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-13 | #141（not planned）→ 見 #238/#240 |
 | 12-4 | Block 12 | README 架構圖 + 技術亮點撰寫 | 1.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #142 |
 | 12-5 | Block 12 | README 接口設計說明（雲端 RL 訓練架構 + 版本升級策略） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #143 |
 | 12-6 | Block 12 | README 收尾確認上傳 GitHub | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #144 |
-| 12-7 | Block 12 | LinkedIn 草稿撰寫與發布（單篇整合版，含精度/速度 trade-off 敘事） | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #145 |
-| 12-8 | Block 12 | LinkedIn 潤稿確認 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #146 |
+| 12-7 | Block 12 | LinkedIn 草稿撰寫與發布（單篇整合版，含精度/速度 trade-off 敘事）【規劃變更 2026-09-11：改為系列化發布，拆到篇6/7/8 各自 Issue】 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #145（not planned）→ 見 #238/#239/#240 |
+| 12-8 | Block 12 | LinkedIn 潤稿確認【規劃變更 2026-09-11：改為系列化發布，拆到篇6/7/8 各自 Issue】 | 0.5h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #146（not planned）→ 見 #238/#239/#240 |
+| 12-篇6 | Block 12 | LinkedIn 篇6 文案撰寫與發布——參數化控制展示（素材沿用 #118，不含錄製） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-19 | #238 |
+| 12-篇7 | Block 12 | LinkedIn 篇7 錄製與發布——CueActuator 平推機構實作（新錄製＋文案＋發布一體，明確排除 #230 相關數據） | 2h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-26 | #239 |
+| 12-篇8 | Block 12 | LinkedIn 篇8 文案撰寫與發布——RL 訓練成果（素材沿用 #227，不含錄製） | 1h | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  | 2026-09-26 | #240 |
+| 12-篇9 | Block 12 | LinkedIn 篇9（可選）——整合總結，內容視篇6/7/8 迴響決定，暫不展開細節 |  | M6: 整合測試與發布 LinkedIn篇8 | FALSE |  |  | #241 |
