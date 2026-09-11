@@ -18,15 +18,16 @@ class TestManualShotAngle:
         _, high = manual_shot_bounds.MANUAL_SHOT_ANGLE
         assert high < 162.8
 
-    def test_is_wider_than_the_rl_training_shot_angle(self):
-        # 這是兩把尺的核心斷言：手動面板的角度範圍必須明顯寬於 RL 為了
-        # 訓練信號密度收窄的 action_bounds.SHOT_ANGLE（#231），否則
-        # MANUAL_SHOT_ANGLE 這個獨立常數就沒有存在的必要。
+    def test_is_independent_of_the_rl_training_shot_angle(self):
+        # 兩把尺各自獨立（#115）：手動面板是基座不撞桌的安全區 ±160°，
+        # RL 契約已復原整圈 (-180, 180)（#232-core）。獨立常數仍有存在
+        # 必要——安全區不是整圈，也不是訓練用的收窄尺。
         # Assert
         manual_low, manual_high = manual_shot_bounds.MANUAL_SHOT_ANGLE
         rl_low, rl_high = action_bounds.SHOT_ANGLE
-        assert manual_low < rl_low
-        assert manual_high > rl_high
+        assert (manual_low, manual_high) != (rl_low, rl_high)
+        assert manual_low > rl_low
+        assert manual_high < rl_high
 
 
 class TestReExportedPhysicalBounds:
@@ -64,20 +65,18 @@ class TestReExportedPhysicalBounds:
         assert getattr(manual_shot_bounds, name) is getattr(action_bounds, name)
 
 
-class TestManualActionRejectedByRlNormalization:
+class TestManualActionExpressibleInRlNormalization:
     """給未來想把手動 Action 接進 RL 記錄管線的人看的可執行文件。"""
 
-    def test_widened_angle_is_rejected_by_normalize_action_by_design(self):
-        # 這是預期行為，不是 bug：手動面板允許 ±160°，遠寬於 RL 收窄後的
-        # action_bounds.SHOT_ANGLE（±30°，Milestone A #231）。手動 Action
-        # 直接餵進 normalize_action() 必然因為超出可表達範圍而拋
-        # ValueError——夾住會把 90° 謊報成 30°（不同方向），所以刻意不接受
-        # 靜默夾住這條路。想把手動 Action 接進 RL 記錄管線的人會在這裡被
-        # 擋下並讀到這段說明。
+    def test_manual_safety_zone_is_expressible_in_rl_after_full_circle_restore(
+        self,
+    ):
+        # Milestone A 收窄 ±30 時，手動 ±160 餵 normalize_action 會拋
+        # ValueError。#232 復原整圈後 ±160 是合法方向，必須能正規化。
         # Arrange
-        low, high = manual_shot_bounds.MANUAL_SHOT_ANGLE
+        high = manual_shot_bounds.MANUAL_SHOT_ANGLE[1]
         rl_low, rl_high = action_bounds.SHOT_ANGLE
-        assert not (rl_low <= high <= rl_high)  # 前提成立才有意義
+        assert rl_low <= high <= rl_high
         manual_action = Action(
             cue_ball_placement=[0.0, action_bounds.CUE_BALL_PLACEMENT_Y[0]],
             shot_angle=high,
@@ -86,6 +85,8 @@ class TestManualActionRejectedByRlNormalization:
             should_execute_action=True,
         )
 
-        # Act / Assert
-        with pytest.raises(ValueError, match="shot_angle"):
-            normalize_action(manual_action)
+        # Act
+        recovered = normalize_action(manual_action)
+
+        # Assert
+        assert -1.0 <= recovered[2] <= 1.0

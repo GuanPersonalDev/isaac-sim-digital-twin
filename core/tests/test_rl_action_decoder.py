@@ -155,11 +155,9 @@ class TestShotAngleWrap:
     def test_decoded_angle_always_lands_inside_the_action_space(
         self, normalized: float
     ):
-        # 折回以**區間中心**為錨，涵蓋整圈與收窄兩種情形都成立：
-        #   (-180, 180) 兩端點同方向 → +1 折成 -180，仍在區間內
-        #   (-30, 30)   兩端點不同方向 → +1 停在 +30，不該被折走
-        # 用下界當錨的話後者會變成 [-30, 330)，-31 會折成 329——離動作空間
-        # 更遠而不是更近。
+        # 折回以**區間中心**為錨。現行整圈 (-180, 180) 兩端點同方向，
+        # +1 折成 -180，仍在區間內。歷史收窄 ±30 時兩端點是不同方向、
+        # +1 停在 +30 不該被折走——用下界當錨會把那種區間折成 [-30, 330)。
         # Act
         action = decode_rl_action(_unit_vector(_SHOT_ANGLE, normalized), 1.0)
 
@@ -190,24 +188,38 @@ class TestShotAngleWrap:
     def test_out_of_interval_angles_fold_to_the_same_direction(
         self, physical_angle: float, equivalent_angle: float
     ):
-        # 週期固定是 360，**不是**區間寬度。收窄到 ±30 之後寬度是 60，拿它當
-        # 週期會把 45° 折成 -15°——完全不同的方向。normalize_action 是公開
-        # 介面，外部傳進來的角度不保證已經折過。
+        # 週期固定是 360，**不是**區間寬度。歷史收窄到 ±30 時寬度是 60，
+        # 拿它當週期會把 45° 折成 -15°——完全不同的方向。normalize_action
+        # 是公開介面，外部傳進來的角度不保證已經折過。
         # Assert
         assert normalize_action(
             _action(shot_angle=physical_angle)
         ) == pytest.approx(normalize_action(_action(shot_angle=equivalent_angle)))
 
-    @pytest.mark.parametrize("unreachable_angle", [90.0, -90.0, 180.0, 270.0])
-    def test_angles_outside_the_narrowed_action_space_are_rejected(
-        self, unreachable_angle: float
-    ):
-        # Milestone A 收窄到 ±30° 之後，90° 是合法的物理角度但 policy 輸不
-        # 出來。夾住等於把 90° 謊報成 30°（不同方向），所以拋例外——
-        # Milestone B 把區間改回整圈時，任何殘留的假設會在這裡大聲失敗。
+    @pytest.mark.parametrize(
+        "physical_angle",
+        [90.0, -90.0, 270.0, 180.0, -180.0],
+    )
+    def test_finite_angles_normalize_without_raising(self, physical_angle: float):
+        # #232：整圈之下任何有限角都能表達。90°／-90°／270°／±180 先前在
+        # Milestone A ±30 收窄下會被拒絕，復原後必須通過。
+        # Act
+        recovered = normalize_action(_action(shot_angle=physical_angle))
+
         # Assert
-        with pytest.raises(ValueError, match="shot_angle"):
-            normalize_action(_action(shot_angle=unreachable_angle))
+        assert -1.0 <= recovered[_SHOT_ANGLE] <= 1.0
+
+    def test_plus_and_minus_180_are_direction_equivalent_under_normalize_action(
+        self,
+    ):
+        # 半開區間 [-180, 180)：+180 折成 -180，正規化後都是 -1。
+        # Act
+        plus = normalize_action(_action(shot_angle=180.0))
+        minus = normalize_action(_action(shot_angle=-180.0))
+
+        # Assert
+        assert plus == pytest.approx(minus)
+        assert plus[_SHOT_ANGLE] == pytest.approx(-1.0)
 
 
 class TestClampRunsBeforeDenormalization:
@@ -355,15 +367,19 @@ class TestRoundTrip:
     def test_angle_round_trips_exactly_inside_the_action_space(
         self, normalized: float
     ):
-        # 區間收窄後兩個端點是不同方向，折回不再改變任何值，往返是精確的。
-        # （涵蓋整圈時 +1 會折成下界，往返只能斷言方向等價——那是
-        # SHOT_ANGLE 涵蓋整圈時才有的特例，Milestone B 改回去要一併復原。）
+        # 半開區間 [-180, 180)：decode(+1) 還原成 +180 再折成 -180，
+        # normalize 得到 -1。+1 與 -1 是同一個方向，往返只能斷言方向等價。
+        # 中間值（含 -1）不觸及這次折回，往返仍精確。
         # Act
         action = decode_rl_action(_unit_vector(_SHOT_ANGLE, normalized), 1.0)
         recovered = normalize_action(action)
 
         # Assert
-        assert recovered[_SHOT_ANGLE] == pytest.approx(normalized)
+        if abs(normalized) == 1.0:
+            assert recovered[_SHOT_ANGLE] == pytest.approx(-1.0)
+            assert action.shot_angle == pytest.approx(-180.0)
+        else:
+            assert recovered[_SHOT_ANGLE] == pytest.approx(normalized)
 
 
 class TestNormalizeActionInputContract:
@@ -392,9 +408,8 @@ class TestNormalizeActionInputContract:
     ):
         # core-review finding 2：decode 尾端有折回，反向沒有。傳入 370.0
         # 會算出越界值，下游若做 Box.contains() 檢查會是未定義行為。
-        # 這裡的案例都是「折回後落在動作空間內」的；折回後仍在外面的
-        # （90°、270°…）由 test_angles_outside_the_narrowed_action_space...
-        # 涵蓋，那是拋例外而不是回傳越界值。
+        # 這裡的案例都是「折回後落在動作空間內」的；整圈復原後有限角折完
+        # 都會落進區間（見 test_finite_angles_normalize_without_raising）。
         # Act
         recovered = normalize_action(_action(shot_angle=shot_angle))
 
@@ -424,9 +439,9 @@ def _expected_endpoint(index: int, sign: float) -> float:
     bound = ACTION_HIGH[index] if sign > 0 else ACTION_LOW[index]
     if index != _SHOT_ANGLE:
         return bound
-    # 角度以**區間中心**為錨折回：涵蓋整圈時兩端點同方向（+180 → -180），
-    # 收窄後兩端點是不同方向（+30 停在 +30）。不能寫成 `bound % 360`——
-    # Python 的 % 對負數取正餘數，-180 會變成 +180，正好折反邊。
+    # 角度以**區間中心**為錨折回：現行整圈兩端點同方向（+180 → -180）。
+    # 不能寫成 `bound % 360`——Python 的 % 對負數取正餘數，-180 會變成
+    # +180，正好折反邊。
     center = (SHOT_ANGLE[0] + SHOT_ANGLE[1]) / 2.0
     half = _ANGLE_PERIOD / 2.0
     return (bound - center + half) % _ANGLE_PERIOD - half + center
