@@ -20,27 +20,13 @@ CUE_BALL_PLACEMENT_Y = (-1.241425, -0.635)
 #
 # 端點選在 (-180, 180) 而非 (0, 360)：讓不連續點落在 ±180°（背對球堆），
 # Gaussian policy 初始輸出集中的 normalized 0 對應開球最佳方向 0°（正對
-# 球堆），推導過程見 docs/CHANGELOG.md（#231）。
+# 球堆），推導過程見 docs/CHANGELOG.md（#231 問題 1）。#232 把契約復原為
+# 這組整圈端點；訓練超參（init_std）重評不在本檔。
 #
-# 🔴 Milestone A 期間收窄為 ±30°（#231 問題 2，2026-08-11，訓練信號密度
-# 不足，見 docs/CHANGELOG.md 的 PPO 實測數據）。**Milestone B 之前必須改回
-# (-180, 180) 並重訓**——走位球要能瞄任意方向。
-#
-# 30 這個值不是拍腦袋：母球從任何合法擺位瞄準 1 號球所需的最大角度是
-# ±25.524°（kitchen 兩個 head string 角落），加上接觸窗口 ±2.062° 共
-# ±27.586°，30 留 2.4° 餘裕。由
-# `test_shot_angle_covers_every_legal_aim_at_the_one_ball` 從幾何現算釘住。
-#
-# ⚠️ 收窄之後區間不再涵蓋整圈，`[-30, 30]` 是閉區間而非半開——兩個端點是
-#    不同方向，不該互相折回。`rl_action_decoder._wrap_angle()` 以區間中心
-#    為錨折回，涵蓋整圈與收窄兩種情形都正確。
-# ⚠️ `normalize_action()` 對超出可表達範圍的角度會拋 ValueError，刻意如此：
-#    Milestone B 改回整圈時，任何殘留假設會大聲失敗而不是靜默算出越界值。
-SHOT_ANGLE = (-30.0, 30.0)
-
-# 🧭 手動擊球參數面板（#115）不受這條收窄約束——它不走 decode_rl_action()／
+# 🧭 手動擊球參數面板（#115）不受此尺約束——它不走 decode_rl_action()／
 #    normalize_action() 的正規化路徑，用的是自己的一把尺，見
 #    `core/models/manual_shot_bounds.py` 檔案級 docstring 的「兩把尺」說明。
+SHOT_ANGLE = (-180.0, 180.0)
 
 # 母球目標初速（m/s），不是球桿桿尖速度。
 #

@@ -18,7 +18,7 @@ _TABLE_POSITION = (1.5, -2.0)
 _MAX_OFFSET = 0.6
 _BALL_COUNT = 10
 # 動作空間各維的中心；正規化域的 0 反正規化後就是這個值。
-# 一律現算，不得寫死 3.3392 或 ±30——Milestone B 把 SHOT_ANGLE 改回整圈時，
+# 一律現算，不得寫死 3.3392 或 ±180——SHOT_ANGLE 已復原整圈（#232），
 # 任何殘留的假設要在這裡大聲失敗（見 core/models/action_bounds.py）。
 _ACTION_CENTER = [(low + high) / 2.0 for low, high in ACTION_BOUNDS]
 
@@ -238,7 +238,9 @@ class TestActionDecoding:
         # Assert
         assert action.cue_ball_placement[0] == pytest.approx(ACTION_BOUNDS[0][1])
         assert action.cue_ball_placement[1] == pytest.approx(ACTION_BOUNDS[1][0])
-        assert action.shot_angle == pytest.approx(ACTION_BOUNDS[2][1])
+        # 半開區間 [-180, 180)：clip 到 +1 還原成 +180，再折成 -180
+        # （與 ACTION_BOUNDS[2][0] 同方向）。不能拿閉區間 high 當可達值。
+        assert action.shot_angle == pytest.approx(ACTION_BOUNDS[2][0])
         assert action.cue_ball_speed == pytest.approx(ACTION_BOUNDS[3][0])
 
     def test_offset_is_circle_clipped_to_max_offset_preserving_direction(

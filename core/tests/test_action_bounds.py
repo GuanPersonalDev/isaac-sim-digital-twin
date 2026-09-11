@@ -25,7 +25,7 @@ from core.services.rolling_resistance_service import GRAVITY, ROLLING_FRICTION_C
 _ISSUE_110_INDEX_TABLE = (
     ("placement_x", 0, "cue_ball_placement[0]", (-0.606425, 0.606425)),
     ("placement_y", 1, "cue_ball_placement[1]", (-1.241425, -0.635)),
-    ("shot_angle", 2, "shot_angle", (-30.0, 30.0)),
+    ("shot_angle", 2, "shot_angle", (-180.0, 180.0)),
     ("cue_ball_speed", 3, "cue_ball_speed", (0.65, 3.3392)),
     ("offset_vertical", 4, "position_offset[0]", (-0.5, 0.5)),
     ("offset_horizontal", 5, "position_offset[1]", (-0.5, 0.5)),
@@ -108,13 +108,11 @@ class TestDimensionSemantics:
         assert (SHOT_ANGLE[0] + SHOT_ANGLE[1]) / 2 == 0.0
 
     def test_shot_angle_covers_every_legal_aim_at_the_one_ball(self):
-        # #231 問題 2：Milestone A 把區間收窄到 ±30° 換取探索解析度
-        # （命中質量比 2.9% → 17.2%）。收窄的下限由幾何決定，不是拍腦袋的
-        # 數字——母球從**任何**合法 kitchen 擺位都必須瞄得到 1 號球，再加上
-        # 接觸本身的容錯窗口。
-        #
-        # 這條測試現算而不寫死：桌台尺寸、開球擺位或 kitchen 範圍一改，
-        # 收窄過頭會直接失敗，而不是變成「某些擺位打不到球堆」的靜默缺陷。
+        # 下界檢查（#231 問題 2 留下的幾何）：母球從**任何**合法 kitchen
+        # 擺位都必須瞄得到 1 號球，再加上接觸本身的容錯窗口。區間已復原
+        # 整圈（#232），此測試仍釘住「至少涵蓋 legal aim」——桌台、開球擺位
+        # 或 kitchen 一改，若有人再次收窄過頭會直接失敗，而不是變成「某些
+        # 擺位打不到球堆」的靜默缺陷。
         # Arrange
         one_ball_x, one_ball_y = BREAK_SHOT_POSITIONS[1]
         ball_diameter = 2 * TableBallSet.DEFAULT_BALL_RADIUS
