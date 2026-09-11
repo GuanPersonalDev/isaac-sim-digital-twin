@@ -184,6 +184,10 @@ critic 五個 iteration 就把 value loss 壓到 0.01——因為答案永遠是
 
 契約復原為整圈半開語意；收窄歷史見上一條。`init_std` 重評與重訓見 #232-train。
 
+### `init_std` — 整圈下改為 0.067（#245 / #232-train，2026-09-11）
+
+見 [tech-design-245-init-std.md](tech-design-245-init-std.md) 與 [issue-245-training-runs.md](issue-245-training-runs.md)。
+
 ### `CUE_BALL_SPEED` — 上界飽和假設已被推翻（2026-08-11）
 
 原本寫「spread 要到約 1.8 m/s 才飽和」，那個數字來自一個被 RunPod 實測推翻的 2D 模型，已證實錯誤。真實 PhysX 的速度掃描（各 500+ 筆 first_contact == 1）顯示完全沒有飽和：

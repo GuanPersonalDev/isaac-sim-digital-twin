@@ -43,15 +43,15 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         # init_std=1.0 在正規化域 [-1, 1] 上等於「幾乎均勻亂打」。#123 的 800 局
         # 實測沒有任何一局合法開球，主因不是 reward 而是根本瞄不準。
         #
-        # 0.4 配上 #231 收窄後的 SHOT_ANGLE（Milestone A 為 ±30°）是 ±12° 的
-        # 探索半寬，對上 ±2.062° 的接觸窗口 → 命中質量比約 17.2%。收窄前是
-        # ±72° 對 ±2.062°，只有 2.9%——2026-08-11 的 pod 短訓練就卡在那裡：
-        # critic 五個 iteration 把 value loss 壓到 0.01（答案永遠是 -1.5）、
-        # advantage ≈ 0、action std 完全不動。
+        # SHOT_ANGLE 已是整圈（#244），半跨 180°。init_std=0.067 → 探索半寬約
+        # ±12°（180°×0.067），對上接觸窗口 ±2.062° → 命中質量比約 17.2%，對齊
+        # Milestone A（當時 ±30° 配 0.4 也是同一組數字）。沿用 0.4 會退回 ±72°、
+        # 命中質量比僅 2.9%，#123／A 前期短訓就卡在 critic 壓扁 value、advantage≈0、
+        # action std 不動。選定與推導見 #245。
         #
-        # ⚠️ Milestone B 把 SHOT_ANGLE 改回 ±180° 時，這個值要一起重新評估——
-        #    同樣的 0.4 在整圈區間上會退回 2.9% 的命中率。
-        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.4),
+        # 若短訓仍學不動，可考慮熱啟動（把 Milestone A checkpoint 的角度維
+        # 權重／bias 除以 6）作為後續——本 PR 不實作。
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.067),
     )
     critic = RslRlMLPModelCfg(
         hidden_dims=[256, 128, 64],
