@@ -18,6 +18,12 @@
 因為是練習性質的個人專案，程式碼與文件仍在持續調整中，架構設計文件
 （`docs/architecture-spec.md`）與實際目錄結構偶爾會有落差，請以實際程式碼為準。
 
+## Demo
+
+點擊縮圖觀看 Demo 影片（YouTube）：
+
+[![Isaac Sim Digital Twin — 九球撞球機器人模擬 Demo](https://img.youtube.com/vi/TXiL3SOIadM/maxresdefault.jpg)](https://www.youtube.com/watch?v=TXiL3SOIadM)
+
 ## 技術棧
 
 - **Isaac Sim**：6.0.0.1（Warp-based Core Experimental API）

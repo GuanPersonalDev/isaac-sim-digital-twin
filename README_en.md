@@ -21,6 +21,12 @@ Since this is a practice project, the code and docs are still evolving. The
 architecture spec (`docs/architecture-spec.md`) can drift slightly out of sync
 with the actual directory layout — treat the code as the source of truth.
 
+## Demo
+
+Click the thumbnail to watch the demo on YouTube:
+
+[![Isaac Sim Digital Twin — 9-Ball Billiard Robot Simulation Demo](https://img.youtube.com/vi/TXiL3SOIadM/maxresdefault.jpg)](https://www.youtube.com/watch?v=TXiL3SOIadM)
+
 ## Tech Stack
 
 - **Isaac Sim**: 6.0.0.1 (Warp-based Core Experimental API)
